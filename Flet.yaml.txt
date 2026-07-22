@@ -1,0 +1,6 @@
+app:
+  name: WorkoutTracker
+  version: 1.0.0
+  description: "My Workout Tracker"
+  entry: main.py
+  icon: assets/icon.png  # Optional: only if you have an icon
