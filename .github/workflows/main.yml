@@ -1,0 +1,49 @@
+name: Build APK
+
+on:
+  push:
+    branches: [ "main", "refactor-v1" ]
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  FLET_SKIP_FLUTTER_PROMPT: "true"
+  SERIOUS_PYTHON_VERSION: "3.12"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; else pip install flet; fi
+          
+      - name: Python syntax check
+        run: |
+          python -m py_compile main.py database.py
+          
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.41.7'
+          
+      - name: Accept Android SDK Licenses
+        run: yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
+          
+      - name: Build
+        run: |
+          flet build apk --yes --product "IronCycle"
+          
+      # --- HARDENED FIX: Use a wildcard to guarantee it finds the APK ---
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-apk
+          path: '**/*.apk'
