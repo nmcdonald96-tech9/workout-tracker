@@ -92,6 +92,9 @@ class ExerciseCard(ft.Card):
     def reset_target_preview(self, set_idx, orig_w, orig_r, is_bw):
         self.reps_fields[set_idx].label = f"Tgt: {orig_r}"
         self.reps_fields[set_idx].hint_text = "Reps"
+        self.reps_fields[set_idx].value = str(orig_r)
+        if self.db_id in self.app.sets and set_idx < len(self.app.sets[self.db_id]):
+            self.app.sets[self.db_id][set_idx]["r"] = str(orig_r)
         self.reps_fields[set_idx].update()
 
         if set_idx == 0:
@@ -102,6 +105,12 @@ class ExerciseCard(ft.Card):
 
     def make_rpe_updater(self, set_idx):
         def rpe_handler(ev):
+            # Same first-touch capture as the weight/reps handler -- RPE is
+            # sometimes the first field a user fills in for a set.
+            self.app.set_touch_times.setdefault(self.db_id, {})
+            if set_idx not in self.app.set_touch_times[self.db_id]:
+                self.app.set_touch_times[self.db_id][set_idx] = datetime.now()
+
             try:
                 val = float(ev.control.value)
                 self.rpe_warning.visible = val >= 9.5
@@ -224,7 +233,7 @@ class ExerciseCard(ft.Card):
                 """, (self.exercise, self.app.current_meso))
                 past_records = cursor.fetchall()
                 
-                cursor.execute("SELECT weight, reps, rpe FROM workout_sets WHERE session_id = ? ORDER BY set_number ASC", (self.db_id,))
+                cursor.execute("SELECT weight, reps, rpe, rest_seconds FROM workout_sets WHERE session_id = ? ORDER BY set_number ASC", (self.db_id,))
                 saved_sets = cursor.fetchall()
                 
                 cursor.execute("SELECT setup_notes FROM exercise_dict WHERE name = ?", (self.exercise,))
@@ -324,15 +333,15 @@ class ExerciseCard(ft.Card):
         if self.db_id not in self.app.sets:
             self.app.sets[self.db_id] = []
             if saved_sets:
-                for sw, sr, srpe in saved_sets:
+                for sw, sr, srpe, s_rest in saved_sets:
                     w_str = str(sw) if sw is not None and str(sw) != "None" else ""
                     r_str = str(sr) if sr is not None and str(sr) != "None" else ""
                     rpe_str = str(srpe) if srpe is not None and str(srpe) != "None" else ""
-                    self.app.sets[self.db_id].append({"w": w_str, "r": r_str, "rpe": rpe_str})
+                    self.app.sets[self.db_id].append({"w": w_str, "r": r_str, "rpe": rpe_str, "rest": s_rest})
             else:
                 num_sets = 4 if len(past_w_list) >= 4 else default_sets
                 for _ in range(num_sets):
-                    self.app.sets[self.db_id].append({"w": str(base_target_w), "r": "", "rpe": ""})
+                    self.app.sets[self.db_id].append({"w": str(base_target_w), "r": "", "rpe": "", "rest": None})
 
         # --- UI CONSTRUCTION ---
         sets_column = ft.Column(spacing=4)
@@ -414,7 +423,24 @@ class ExerciseCard(ft.Card):
             
             # --- KINETIC WRAPPER ---
             set_row = ft.Row([set_indicator, w_f, r_f, rpe_f], alignment="start", vertical_alignment="center", spacing=8)
-            row_container = ft.Container(content=set_row, padding=6, border_radius=8)
+
+            # Rest-time caption: only for already-completed sets that have a
+            # computed gap (set 1 of an exercise never has one -- no prior
+            # set to compare against, which is intentional, not a bug).
+            rest_secs = set_data.get("rest")
+            rest_str = format_duration_seconds(rest_secs)
+            if self.status == STATUS_COMPLETED and rest_str is not None:
+                rest_caption = ft.Text(
+                    f"⏱️ {rest_str} since previous set",
+                    size=10, color="white38", italic=True
+                )
+                row_container = ft.Container(
+                    content=ft.Column([set_row, rest_caption], spacing=2, tight=True),
+                    padding=6, border_radius=8
+                )
+            else:
+                row_container = ft.Container(content=set_row, padding=6, border_radius=8)
+
             self.set_ui_rows.append(row_container)
             sets_column.controls.append(row_container)
 
@@ -565,7 +591,16 @@ class ExerciseCard(ft.Card):
     def make_live_updater(self, set_idx, key_type):
         def live_update_event(ev):
             raw_val = ev.control.value
-            
+
+            # Rest-time tracking: record the FIRST time this set row is
+            # touched (either field), regardless of key_type. This is the
+            # proxy for "just finished this set" since there's no explicit
+            # start/stop action -- guarded so later edits to the same row
+            # never overwrite the original touch moment.
+            self.app.set_touch_times.setdefault(self.db_id, {})
+            if set_idx not in self.app.set_touch_times[self.db_id]:
+                self.app.set_touch_times[self.db_id][set_idx] = datetime.now()
+
             if self.db_id in self.app.sets and set_idx < len(self.app.sets[self.db_id]):
                 self.app.sets[self.db_id][set_idx][key_type] = raw_val
                 self.autosave_pending_sets() # <-- NEW: Bulletproof keystroke saving
@@ -621,7 +656,11 @@ class ExerciseCard(ft.Card):
 
                 self.reps_fields[set_idx].label = f"Tgt: {new_target_r}"
                 self.reps_fields[set_idx].hint_text = "Reps"
+                self.reps_fields[set_idx].value = str(new_target_r)
+                if self.db_id in self.app.sets and set_idx < len(self.app.sets[self.db_id]):
+                    self.app.sets[self.db_id][set_idx]["r"] = str(new_target_r)
                 self.reps_fields[set_idx].update()
+                self.autosave_pending_sets()
 
                 if set_idx == 0:
                     banner_w = self.format_target_weight(is_bw, new_w)
@@ -652,7 +691,7 @@ class ExerciseCard(ft.Card):
     def on_add_set(self, ev):
         if self.db_id not in self.app.sets: return
         last_w = self.app.sets[self.db_id][-1].get("w", "") if self.app.sets[self.db_id] else str(self.tgt_w)
-        self.app.sets[self.db_id].append({"w": last_w, "r": "", "rpe": ""})
+        self.app.sets[self.db_id].append({"w": last_w, "r": "", "rpe": "", "rest": None})
         self.autosave_pending_sets() # Force save draft
         self.app.rebuild_entire_display()
 
@@ -682,6 +721,8 @@ class ExerciseCard(ft.Card):
             conn.commit()
         if self.db_id in self.app.sets:
             del self.app.sets[self.db_id]
+        if self.db_id in self.app.set_touch_times:
+            del self.app.set_touch_times[self.db_id]
 
         try:
             self.app.check_and_route_day()
@@ -747,7 +788,7 @@ class ExerciseCard(ft.Card):
             else:
                 rpe_val = 10.0
 
-            rows_to_save.append((w_val, r_val, rpe_val))
+            rows_to_save.append((w_val, r_val, rpe_val, idx - 1))  # idx-1 = original 0-based set position, needed to look up its touch time
 
         if not rows_to_save:
             return
@@ -771,7 +812,7 @@ class ExerciseCard(ft.Card):
                     
             current_max_e1rm = 0.0
             best_raw_w, best_raw_r = 0.0, 0
-            for w_val, r_val, _ in rows_to_save:
+            for w_val, r_val, _, _ in rows_to_save:
                 c_e1rm = calculate_e1rm(float(w_val), int(r_val), current_bw if is_bw else 0.0)
                 if c_e1rm > current_max_e1rm:
                     current_max_e1rm = c_e1rm
@@ -785,8 +826,22 @@ class ExerciseCard(ft.Card):
             cursor.execute("UPDATE exercise_dict SET setup_notes = ? WHERE name = ?", (self.notes_field.value.strip(), self.exercise))
 
             cursor.execute("DELETE FROM workout_sets WHERE session_id = ?", (self.db_id,))
-            for i, (w_val, r_val, rpe_val) in enumerate(rows_to_save, start=1):
-                cursor.execute("INSERT INTO workout_sets (session_id, set_number, weight, reps, rpe) VALUES (?, ?, ?, ?, ?)", (self.db_id, i, float(w_val), int(r_val), float(rpe_val)))
+
+            touch_times = self.app.set_touch_times.get(self.db_id, {})
+            prev_touch = None
+            for i, (w_val, r_val, rpe_val, orig_idx) in enumerate(rows_to_save, start=1):
+                this_touch = touch_times.get(orig_idx)
+                rest_secs = None
+                if prev_touch is not None and this_touch is not None:
+                    delta = (this_touch - prev_touch).total_seconds()
+                    if delta >= 0:
+                        rest_secs = int(round(delta))
+                if this_touch is not None:
+                    prev_touch = this_touch  # only advance when we actually have a timestamp; otherwise keep the last known one
+                cursor.execute(
+                    "INSERT INTO workout_sets (session_id, set_number, weight, reps, rpe, rest_seconds) VALUES (?, ?, ?, ?, ?, ?)",
+                    (self.db_id, i, float(w_val), int(r_val), float(rpe_val), rest_secs)
+                )
             
             true_completion_date = datetime.now().strftime("%Y-%m-%d")
             cursor.execute(f"UPDATE workout_sessions SET status = '{STATUS_COMPLETED}', date = ?, bodyweight_snapshot = ? WHERE id = ?", (true_completion_date, current_bw, self.db_id))
@@ -794,6 +849,8 @@ class ExerciseCard(ft.Card):
 
         if self.db_id in self.app.sets:
             del self.app.sets[self.db_id]
+        if self.db_id in self.app.set_touch_times:
+            del self.app.set_touch_times[self.db_id]
 
         if is_new_pr:
             self.app.pr_celebrations[self.db_id] = True
@@ -846,6 +903,13 @@ class WorkoutTrackerApp:
         self.pr_celebrations = {}
         self.strength_badges = {}
         self.meso_just_completed = False
+        # Tracks the first-touch timestamp per (session_id, set_idx) -- the
+        # moment the user starts entering weight/reps for a set, used as a
+        # proxy for "when that set finished" so rest time between sets can be
+        # measured without an explicit start/stop timer. Lives at the app
+        # level (like self.sets) so it survives card rebuilds triggered by
+        # other exercises on the page.
+        self.set_touch_times = {}
         self.view_mode = "workout" 
         self.collapsed_categories = {}
         self.delete_dialog_id = None
@@ -1263,6 +1327,8 @@ class WorkoutTrackerApp:
             
             if self.delete_dialog_id in self.sets:
                 del self.sets[self.delete_dialog_id]
+            if self.delete_dialog_id in self.set_touch_times:
+                del self.set_touch_times[self.delete_dialog_id]
                 
             self.delete_dialog_id = None
             
@@ -2751,7 +2817,7 @@ class WorkoutTrackerApp:
                     break
 
             cursor.execute("""
-                SELECT s.weight, s.reps, s.rpe, ws.exercise, ws.category, ws.bodyweight_snapshot
+                SELECT s.weight, s.reps, s.rpe, ws.exercise, ws.category, ws.bodyweight_snapshot, s.rest_seconds
                 FROM workout_sets s
                 JOIN workout_sessions ws ON s.session_id = ws.id
                 WHERE ws.meso_number = ? AND ws.week = ? AND ws.day_of_week = ? AND ws.status = 'Completed'
@@ -2761,9 +2827,11 @@ class WorkoutTrackerApp:
             total_sets = 0
             total_rpe = 0.0
             valid_rpe_sets = 0
+            total_rest = 0
+            valid_rest_sets = 0
             group_stats = {}
 
-            for sw, sr, srpe, ex_name, cat, snap_bw in cursor.fetchall():
+            for sw, sr, srpe, ex_name, cat, snap_bw, rest_secs in cursor.fetchall():
                 is_bw = EXERCISE_METADATA.get(ex_name, {}).get("equipment") == "Bodyweight"
                 bw_to_use = snap_bw if snap_bw is not None else bw
                 effective_weight = (sw + bw_to_use) if is_bw else sw
@@ -2785,8 +2853,13 @@ class WorkoutTrackerApp:
                 except:
                     pass
 
+                if rest_secs is not None:
+                    total_rest += rest_secs
+                    valid_rest_sets += 1
+
         pr_count = len(self.pr_celebrations)
         avg_rpe = (total_rpe / valid_rpe_sets) if valid_rpe_sets > 0 else 0.0
+        avg_rest_today = (total_rest / valid_rest_sets) if valid_rest_sets > 0 else None
 
         title = ft.Text(
             "Workout Complete!",
@@ -2851,7 +2924,15 @@ class WorkoutTrackerApp:
                 size=16,
                 color="amber300" if avg_rpe >= 8 else "white"
             ),
-            ft.Container(height=4),
+        ], alignment="center", horizontal_alignment="center")
+
+        if avg_rest_today is not None:
+            stats_col.controls.append(
+                ft.Text(f"Avg Rest Between Sets: {format_duration_seconds(avg_rest_today)}", size=16, color="cyan200")
+            )
+
+        stats_col.controls.append(ft.Container(height=4))
+        stats_col.controls.append(
             ft.Text(
                 snark_msg,
                 size=12,
@@ -2859,7 +2940,7 @@ class WorkoutTrackerApp:
                 italic=True,
                 text_align=ft.TextAlign.CENTER
             )
-        ], alignment="center", horizontal_alignment="center")
+        )
 
         if pr_count > 0:
             stats_col.controls.append(ft.Container(height=4))
@@ -3121,6 +3202,18 @@ class WorkoutTrackerApp:
             """, (meso, final_week))
             final_volume_rows = cursor.fetchall()
 
+            # Meso-wide average rest between sets -- spans the whole cycle
+            # (not just first/final week), excluding Deload for consistency
+            # with the other meso-level stats above, since deload rest
+            # patterns are intentionally different and would skew this.
+            cursor.execute("""
+                SELECT s.rest_seconds FROM workout_sessions ws
+                JOIN workout_sets s ON s.session_id = ws.id
+                WHERE ws.meso_number = ? AND ws.status = 'Completed'
+                  AND COALESCE(ws.week, '') != 'Deload' AND s.rest_seconds IS NOT NULL
+            """, (meso,))
+            meso_rest_values = [r[0] for r in cursor.fetchall()]
+
         if first_week == final_week:
             self.meso_report_canvas.controls.append(
                 ft.Container(content=ft.Text("Only one week of data — log a few more weeks to see a trend.", color="white54"), padding=20)
@@ -3198,6 +3291,7 @@ class WorkoutTrackerApp:
         vol_pct = pct_change(vol_first, vol_final)
         load_up_count = sum(1 for c in comparisons if c["load_delta"] > 0)
         e1rm_up_count = sum(1 for c in comparisons if c["e1rm_delta"] > 0)
+        avg_meso_rest = (sum(meso_rest_values) / len(meso_rest_values)) if meso_rest_values else None
 
         self.meso_report_canvas.controls.append(
             ft.Container(
@@ -3230,6 +3324,13 @@ class WorkoutTrackerApp:
                 content=ft.Column([
                     ft.Text(f"{vol_pct:+.0f}%", size=20, weight="bold", color="cyan300" if vol_pct >= 0 else "red300"),
                     ft.Text("Volume", size=10, color="white54"),
+                ], horizontal_alignment="center", spacing=2),
+                bgcolor="white10", border_radius=8, padding=12, expand=True
+            ),
+            ft.Container(
+                content=ft.Column([
+                    ft.Text(format_duration_seconds(avg_meso_rest) if avg_meso_rest is not None else "—", size=20, weight="bold", color="amber300"),
+                    ft.Text("Avg Rest/Set", size=10, color="white54"),
                 ], horizontal_alignment="center", spacing=2),
                 bgcolor="white10", border_radius=8, padding=12, expand=True
             ),
@@ -3566,7 +3667,7 @@ class WorkoutTrackerApp:
         with get_db() as conn:
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT ws.category, ws.week, wst.weight, wst.reps, ws.exercise, ws.bodyweight_snapshot
+                SELECT ws.category, ws.week, wst.weight, wst.reps, ws.exercise, ws.bodyweight_snapshot, wst.rest_seconds
                 FROM workout_sessions ws
                 JOIN workout_sets wst ON ws.id = wst.session_id
                 WHERE ws.status = 'Completed' AND ws.meso_number = ?
@@ -3578,7 +3679,8 @@ class WorkoutTrackerApp:
             return
             
         category_data = {}
-        for c, w, weight, reps, ex_name, snap_bw in rows:
+        week_rest_data = {}  # week -> [sum_seconds, count] -- one aggregate per week, not per exercise/category
+        for c, w, weight, reps, ex_name, snap_bw, rest_secs in rows:
             is_bw = EXERCISE_METADATA.get(ex_name, {}).get("equipment") == "Bodyweight"
             bw_to_use = snap_bw if snap_bw is not None else bw
             effective_weight = (weight + bw_to_use) if is_bw else weight
@@ -3588,7 +3690,16 @@ class WorkoutTrackerApp:
             category_data[c][w]['vol'] += (effective_weight * reps)
             category_data[c][w]['sets'] += 1
             category_data[c][w]['reps'] += reps
+
+            if rest_secs is not None:
+                if w not in week_rest_data:
+                    week_rest_data[w] = [0, 0]
+                week_rest_data[w][0] += rest_secs
+                week_rest_data[w][1] += 1
             
+        def week_sort_key(wk):
+            return 999 if str(wk).lower() == 'deload' else int(wk)
+
         cat_colors = {
             "Chest": "blue400", "Back": "green400", "Shoulders": "purple400", "Legs": "amber400",
             "Quads": "amber400", "Hamstrings": "orange400", "Glutes": "deeporange400", "Calves": "yellow400", 
@@ -3598,10 +3709,27 @@ class WorkoutTrackerApp:
         col = ft.Column(spacing=10, scroll="auto", height=480)
         col.controls.append(ft.Text("RP Muscle Group Progression", size=14, weight="bold"))
         col.controls.append(ft.Text("Tracking working sets, total reps, and tonnage.", size=11, color="white54"))
+
+        if week_rest_data:
+            rest_chip_row = ft.Row(spacing=8, wrap=True)
+            for w in sorted(week_rest_data.keys(), key=week_sort_key):
+                total_secs, count = week_rest_data[w]
+                avg_str = format_duration_seconds(total_secs / count) if count else None
+                if avg_str:
+                    w_label = f"W{w}" if str(w).isdigit() else str(w)
+                    rest_chip_row.controls.append(
+                        ft.Container(
+                            content=ft.Column([
+                                ft.Text(w_label, size=10, color="white54"),
+                                ft.Text(avg_str, size=14, weight="bold", color="cyan300"),
+                            ], spacing=1, horizontal_alignment="center"),
+                            bgcolor="white10", border_radius=8, padding=ft.Padding.symmetric(horizontal=12, vertical=6)
+                        )
+                    )
+            col.controls.append(ft.Text("Avg Rest Between Sets", size=12, weight="bold", color="cyan200"))
+            col.controls.append(rest_chip_row)
+            col.controls.append(ft.Divider(height=1, color="white10"))
         
-        def week_sort_key(wk):
-            return 999 if str(wk).lower() == 'deload' else int(wk)
-            
         for cat, weeks in category_data.items():
             cat_color = cat_colors.get(cat, "white50")
             max_sets = max(data['sets'] for data in weeks.values()) if weeks else 1
@@ -4780,9 +4908,9 @@ class WorkoutTrackerApp:
                         
                     if session_ids:
                         placeholders = ",".join("?" for _ in session_ids)
-                        cursor.execute(f"SELECT session_id, weight, reps, rpe FROM workout_sets WHERE session_id IN ({placeholders}) ORDER BY set_number ASC", session_ids)
-                        for sid, w, r, rpe in cursor.fetchall():
-                            pre_saved_sets[sid].append((w, r, rpe))
+                        cursor.execute(f"SELECT session_id, weight, reps, rpe, rest_seconds FROM workout_sets WHERE session_id IN ({placeholders}) ORDER BY set_number ASC", session_ids)
+                        for sid, w, r, rpe, rest_secs in cursor.fetchall():
+                            pre_saved_sets[sid].append((w, r, rpe, rest_secs))
                             
                         cursor.execute(f"SELECT id, bodyweight_snapshot FROM workout_sessions WHERE id IN ({placeholders})", session_ids)
                         for sid, snap in cursor.fetchall():
