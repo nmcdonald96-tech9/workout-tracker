@@ -99,6 +99,18 @@ def init_and_seed_db():
             cursor.execute("ALTER TABLE workout_sessions ADD COLUMN bodyweight_snapshot REAL")
             conn.commit()
 
+        # --- SAFE MIGRATION: REST TIME BETWEEN SETS ---
+        # Records seconds elapsed between the first edit of the previous set's
+        # weight/reps and the first edit of this set's -- i.e. real elapsed
+        # rest time, not a countdown. NULL for a set's first row in a session
+        # (no prior set to compare against) and for any row logged before this
+        # migration existed.
+        cursor.execute("PRAGMA table_info(workout_sets)")
+        ws_cols = [info[1] for info in cursor.fetchall()]
+        if "rest_seconds" not in ws_cols:
+            cursor.execute("ALTER TABLE workout_sets ADD COLUMN rest_seconds INTEGER")
+            conn.commit()
+
         # --- ONE-TIME SAFE BODYWEIGHT FIX MIGRATION ---
         cursor.execute("INSERT OR IGNORE INTO user_settings (setting_key, setting_value) VALUES ('migration_bw_v1', '0')")
         cursor.execute("SELECT setting_value FROM user_settings WHERE setting_key = 'migration_bw_v1'")
@@ -520,6 +532,24 @@ def calculate_e1rm(weight, reps, bodyweight=0.0):
         elif 1 < r < 37: return round(w * (36 / (37 - r)), 1)
         return 0.0
     except: return 0.0
+
+def format_duration_seconds(secs):
+    """Formats a duration in seconds as a short human string (e.g. '4m 12s',
+    '1h 2m'). Shared by the per-set rest caption and the day/week/meso
+    average-rest stats so all four always agree on formatting. Returns None
+    if secs is None or negative, so callers can decide how to render 'no data'."""
+    if secs is None or secs < 0:
+        return None
+    secs = int(round(secs))
+    if secs < 60:
+        return f"{secs}s"
+    elif secs < 3600:
+        mins, s = divmod(secs, 60)
+        return f"{mins}m {s:02d}s" if s else f"{mins}m"
+    else:
+        hours, rem = divmod(secs, 3600)
+        mins, _ = divmod(rem, 60)
+        return f"{hours}h {mins}m"
 
 def get_strength_classification(weight, reps, bodyweight, age, sex, exercise_name):
     """Compares a lift against bodyweight-ratio strength standards, age-adjusted
