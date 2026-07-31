@@ -478,11 +478,168 @@ def calculate_progression(first_set_w, first_set_reps, first_set_rpe, tgt_r, mov
             return first_set_w, tgt_r + 1
 
 
+
+def _progression_weight_step(weight, movement_type, equipment_type, direction=1):
+    """Return one practical equipment-specific weight step."""
+    weight = float(weight or 0.0)
+    if equipment_type == "Dumbbell":
+        return get_next_dumbbell(weight) if direction > 0 else get_prev_dumbbell(weight)
+    step = COMPOUND_JUMP_STANDARD if movement_type == "Compound" else ISOLATION_JUMP_STANDARD
+    return max(0.0, weight + (step * direction))
+
+
+def evaluate_straight_set_session(completed_sets, target_weight, target_reps, is_bodyweight=False, bodyweight=0.0):
+    """Evaluate the complete straight-set prescription instead of only Set 1.
+
+    Returns prescription-completion metrics and a progress/hold/reduce decision.
+    Weight-adjusted rep ratios prevent lighter back-off sets from counting as full
+    straight-set completions, while still giving those sets partial credit.
+    """
+    valid_sets = []
+    for row in completed_sets or []:
+        try:
+            weight = float(row[0]) if row[0] is not None else 0.0
+            reps = int(row[1]) if row[1] is not None else 0
+            rpe = float(row[2]) if len(row) > 2 and row[2] is not None else 8.0
+        except (TypeError, ValueError):
+            continue
+        if reps > 0:
+            valid_sets.append((weight, reps, rpe))
+
+    try:
+        target_reps = max(1, int(target_reps))
+    except (TypeError, ValueError):
+        target_reps = 10
+
+    if not valid_sets:
+        return {
+            "decision": "hold", "set_count": 0, "sets_at_target": 0,
+            "set_completion_ratio": 0.0, "total_actual_reps": 0,
+            "total_target_reps": 0, "rep_completion_ratio": 0.0,
+            "lowest_set_ratio": 0.0, "average_rpe": 8.0, "peak_rpe": 8.0,
+            "working_weight": float(target_weight or 0.0), "average_reps": 0.0,
+            "reason": "No valid completed sets were available."
+        }
+
+    # Straight sets normally share one load. Use the most frequently logged load;
+    # ties resolve to the earliest logged load, which is usually the intended work weight.
+    weight_counts = {}
+    first_index = {}
+    for idx, (weight, _reps, _rpe) in enumerate(valid_sets):
+        key = round(weight, 3)
+        weight_counts[key] = weight_counts.get(key, 0) + 1
+        first_index.setdefault(key, idx)
+    working_weight = max(weight_counts, key=lambda key: (weight_counts[key], -first_index[key]))
+
+    effective_reference = working_weight + (float(bodyweight or 0.0) if is_bodyweight else 0.0)
+    if effective_reference <= 0:
+        effective_reference = 1.0
+
+    weighted_ratios = []
+    sets_at_target = 0
+    total_actual_reps = 0
+    rpes = []
+    tolerance = STRAIGHT_SET_WEIGHT_TOLERANCE
+
+    for weight, reps, rpe in valid_sets:
+        effective_weight = weight + (float(bodyweight or 0.0) if is_bodyweight else 0.0)
+        load_ratio = max(0.0, effective_weight / effective_reference)
+        # Cap the per-set contribution so one unusually heavy/high-rep set cannot
+        # erase a major collapse across the remaining straight sets.
+        set_ratio = min(1.20, load_ratio * (reps / target_reps))
+        weighted_ratios.append(set_ratio)
+        total_actual_reps += reps
+        rpes.append(rpe)
+        if load_ratio >= (1.0 - tolerance) and reps >= target_reps:
+            sets_at_target += 1
+
+    set_count = len(valid_sets)
+    rep_completion = sum(weighted_ratios) / set_count
+    set_completion = sets_at_target / set_count
+    lowest_ratio = min(weighted_ratios)
+    average_rpe = sum(rpes) / len(rpes)
+    peak_rpe = max(rpes)
+    average_reps = total_actual_reps / set_count
+
+    progress_ok = (
+        rep_completion >= STRAIGHT_SET_PROGRESS_REP_COMPLETION
+        and set_completion >= STRAIGHT_SET_PROGRESS_SET_COMPLETION
+        and lowest_ratio >= STRAIGHT_SET_PROGRESS_MIN_SET_RATIO
+        and peak_rpe <= STRAIGHT_SET_MAX_PROGRESS_RPE
+    )
+    reduce_needed = (
+        rep_completion < STRAIGHT_SET_REDUCE_REP_COMPLETION
+        or lowest_ratio < STRAIGHT_SET_REDUCE_MIN_SET_RATIO
+    )
+
+    if progress_ok:
+        decision = "progress"
+        reason = "The full straight-set prescription met the progression thresholds."
+    elif reduce_needed:
+        decision = "reduce"
+        reason = "The complete exercise performance was substantially below the prescription."
+    else:
+        decision = "hold"
+        reason = "The first set may have succeeded, but the full straight-set prescription was not mastered."
+
+    return {
+        "decision": decision,
+        "set_count": set_count,
+        "sets_at_target": sets_at_target,
+        "set_completion_ratio": round(set_completion, 4),
+        "total_actual_reps": total_actual_reps,
+        "total_target_reps": target_reps * set_count,
+        "rep_completion_ratio": round(rep_completion, 4),
+        "lowest_set_ratio": round(lowest_ratio, 4),
+        "average_rpe": round(average_rpe, 2),
+        "peak_rpe": round(peak_rpe, 2),
+        "working_weight": float(working_weight),
+        "average_reps": round(average_reps, 2),
+        "reason": reason,
+    }
+
+
+def calculate_session_progression(completed_sets, target_weight, target_reps, movement_type,
+                                  readiness_score=15, joint_score=5, equipment_type="Barbell",
+                                  is_bodyweight=False, bodyweight=0.0, age=43, profile=0):
+    """Gate the existing progression engine with whole-session performance."""
+    metrics = evaluate_straight_set_session(
+        completed_sets, target_weight, target_reps,
+        is_bodyweight=is_bodyweight, bodyweight=bodyweight
+    )
+    working_weight = metrics["working_weight"]
+
+    # Readiness and joint protection remain authoritative regardless of performance.
+    if joint_score <= 2:
+        next_weight = working_weight if is_bodyweight else _progression_weight_step(
+            working_weight, movement_type, equipment_type, direction=-1
+        )
+        return next_weight, int(target_reps or 10), metrics
+
+    if metrics["decision"] == "hold":
+        return working_weight, int(target_reps or 10), metrics
+
+    if metrics["decision"] == "reduce":
+        next_weight = working_weight if is_bodyweight else _progression_weight_step(
+            working_weight, movement_type, equipment_type, direction=-1
+        )
+        return next_weight, int(target_reps or 10), metrics
+
+    # Only a successful whole session reaches the existing profile/equipment engine.
+    representative_reps = max(int(target_reps or 10), int(round(metrics["average_reps"])))
+    next_weight, next_reps = calculate_progression(
+        working_weight, representative_reps, metrics["peak_rpe"], target_reps,
+        movement_type, readiness_score, joint_score,
+        equipment_type=equipment_type, is_bodyweight=is_bodyweight,
+        age=age, profile=profile
+    )
+    return next_weight, next_reps, metrics
+
 def get_exercise_smart_defaults(exercise_name, meso_number):
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT id, target_weight, target_reps, movement_type
+            SELECT id, target_weight, target_reps, movement_type, bodyweight_snapshot
             FROM workout_sessions
             WHERE exercise = ? AND meso_number = ?
             ORDER BY id DESC LIMIT 1
@@ -492,29 +649,35 @@ def get_exercise_smart_defaults(exercise_name, meso_number):
         meta = EXERCISE_METADATA.get(exercise_name, {})
         mov_type = meta.get("movement_type", "Compound")
         is_bw = meta.get("equipment") == "Bodyweight"
-        eq_type = meta.get("equipment", "Barbell") # Evaluates dictionary label
+        eq_type = meta.get("equipment", "Barbell")
 
         if session_row:
-            session_id, tgt_w, tgt_r, db_mov_type = session_row
-            cursor.execute("SELECT weight, reps, rpe FROM workout_sets WHERE session_id = ? ORDER BY set_number ASC LIMIT 1", (session_id,))
-            first_set_row = cursor.fetchone()
+            session_id, tgt_w, tgt_r, db_mov_type, bodyweight_snapshot = session_row
+            cursor.execute("""
+                SELECT weight, reps, rpe
+                FROM workout_sets
+                WHERE session_id = ?
+                ORDER BY set_number ASC
+            """, (session_id,))
+            set_rows = cursor.fetchall()
 
-            if first_set_row:
-                last_w, last_r, last_rpe = first_set_row
-                # Guard: None RPE (user skipped the field) must not reach calculate_progression
-                # as a raw None — it gets coerced there too, but this makes the intent clear.
-                if last_rpe is None:
-                    last_rpe = 8.0
-                new_w, new_r = calculate_progression(last_w, last_r, last_rpe, tgt_r, db_mov_type, equipment_type=eq_type, is_bodyweight=is_bw, age=get_user_age(), profile=get_user_progression_profile())
-                return new_w, new_r, db_mov_type
-            else:
-                # Exercise had no logged sets this week (e.g. it was skipped) --
-                # fall back to its own stored target, but never hand back a raw
-                # None to the caller. This is the second guard layer; the first
-                # is inside calculate_progression for the path above.
-                safe_w = tgt_w if tgt_w is not None else (0.0 if is_bw else 45.0)
-                safe_r = tgt_r if tgt_r is not None else 10
-                return safe_w, safe_r, db_mov_type
+            if set_rows:
+                new_w, new_r, _metrics = calculate_session_progression(
+                    set_rows,
+                    tgt_w if tgt_w is not None else (0.0 if is_bw else 45.0),
+                    tgt_r if tgt_r is not None else 10,
+                    db_mov_type or mov_type,
+                    equipment_type=eq_type,
+                    is_bodyweight=is_bw,
+                    bodyweight=bodyweight_snapshot if bodyweight_snapshot is not None else get_user_bodyweight(),
+                    age=get_user_age(),
+                    profile=get_user_progression_profile()
+                )
+                return new_w, new_r, db_mov_type or mov_type
+
+            safe_w = tgt_w if tgt_w is not None else (0.0 if is_bw else 45.0)
+            safe_r = tgt_r if tgt_r is not None else 10
+            return safe_w, safe_r, db_mov_type or mov_type
 
         return 0.0 if is_bw else 45.0, 10, mov_type
 
