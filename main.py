@@ -225,11 +225,11 @@ class ExerciseCard(ft.Card):
                 r_score = sum(readiness_row[:3]) if readiness_row else 9
 
                 cursor.execute("""
-                    SELECT s.weight, s.reps, s.rpe
+                    SELECT ws.id, s.set_number, s.weight, s.reps, s.rpe
                     FROM workout_sets s 
                     JOIN workout_sessions ws ON s.session_id = ws.id 
                     WHERE ws.exercise = ? AND ws.meso_number = ? AND ws.status = 'Completed'
-                    ORDER BY ws.date DESC, ws.id DESC
+                    ORDER BY ws.date DESC, ws.id DESC, s.set_number ASC
                 """, (self.exercise, self.app.current_meso))
                 past_records = cursor.fetchall()
                 
@@ -240,10 +240,22 @@ class ExerciseCard(ft.Card):
                 notes_row = cursor.fetchone()
                 saved_note = notes_row[0] if notes_row and notes_row[0] else ""
         
-        # --- BUILD LISTS FOR UI (OUTSIDE THE IF/ELSE) ---
-        past_w_list = [str(r[0]) for r in past_records]
-        past_r_list = [str(r[1]) for r in past_records]
-        past_rpe_list = [str(r[2]) for r in past_records]
+        # Isolate the most recent completed session and preserve straight-set order.
+        recent_session_sets = []
+        if past_records:
+            latest_session_id = past_records[0][0]
+            for row in past_records:
+                if row[0] != latest_session_id:
+                    break
+                try:
+                    recent_session_sets.append((row[2], row[3], row[4]))
+                except (IndexError, TypeError):
+                    pass
+
+        # UI hints now come from the latest session only, not a flattened history.
+        past_w_list = [str(r[0]) for r in recent_session_sets]
+        past_r_list = [str(r[1]) for r in recent_session_sets]
+        past_rpe_list = [str(r[2]) for r in recent_session_sets]
 
         # --- EQUIPMENT & PROG MATH ---
         is_bw = EXERCISE_METADATA.get(self.exercise, {}).get("equipment") == "Bodyweight"
@@ -274,29 +286,41 @@ class ExerciseCard(ft.Card):
         base_target_w = adj_w
         base_target_r = adj_r
         
-        if past_w_list and len(past_w_list) > 0:
+        if recent_session_sets:
             try:
-                pw = float(past_w_list[0])
-                pr = int(past_r_list[0]) if past_r_list[0] else adj_r
-                prpe = float(past_rpe_list[0]) if past_rpe_list[0] else 10.0
-                
                 if self.app.current_week == "Deload":
+                    # Deload is based on the session's modal working load.
+                    metrics = evaluate_straight_set_session(
+                        recent_session_sets, self.tgt_w, self.tgt_r,
+                        is_bodyweight=is_bw, bodyweight=get_user_bodyweight()
+                    )
+                    pw = metrics["working_weight"]
                     base_target_w = snap_weight(pw * DELOAD_PERCENTAGE, eq_type) if not is_bw else pw
-                    base_target_r = pr // 2
-                elif j_score <= 2 and self.mov_type == "Compound":
-                    base_target_w = snap_weight(pw * 0.85, eq_type) if not is_bw else pw
-                    base_target_r = pr + 2
-                elif r_score <= 7:
-                    base_target_w = snap_weight(pw * 0.90, eq_type) if not is_bw else pw
-                    base_target_r = pr
+                    base_target_r = max(1, int(self.tgt_r or 10) // 2)
                 else:
-                    raw_target_w, base_target_r = calculate_progression(
-                        pw, pr, prpe, self.tgt_r, self.mov_type, 
-                        r_score, j_score, equipment_type=eq_type, 
-                        is_bodyweight=is_bw, age=get_user_age(), profile=get_user_progression_profile()
+                    raw_target_w, base_target_r, self.progression_metrics = calculate_session_progression(
+                        recent_session_sets,
+                        self.tgt_w,
+                        self.tgt_r,
+                        self.mov_type,
+                        readiness_score=r_score,
+                        joint_score=j_score,
+                        equipment_type=eq_type,
+                        is_bodyweight=is_bw,
+                        bodyweight=get_user_bodyweight(),
+                        age=get_user_age(),
+                        profile=get_user_progression_profile()
                     )
                     base_target_w = snap_weight(raw_target_w, eq_type)
-            except Exception: pass
+                    if self.progression_metrics["decision"] == "hold":
+                        regulation_msg = (
+                            f"Hold: {self.progression_metrics['total_actual_reps']}/"
+                            f"{self.progression_metrics['total_target_reps']} prescribed reps"
+                        )
+                    elif self.progression_metrics["decision"] == "reduce":
+                        regulation_msg = "Recovery adjustment: full-session target missed"
+            except Exception as ex:
+                print(f"Session progression fallback for {self.exercise}: {ex}")
 
         self.set_targets = [{"w": base_target_w, "r": base_target_r} for _ in range(20)]
         default_sets = 1 if r_score <= 7 else 2
@@ -4924,17 +4948,17 @@ class WorkoutTrackerApp:
                             
                         # ONE single optimized query for all past exercise records
                         cursor.execute(f"""
-                            SELECT ws.exercise, s.weight, s.reps, s.rpe 
+                            SELECT ws.exercise, ws.id, s.set_number, s.weight, s.reps, s.rpe 
                             FROM workout_sets s 
                             JOIN workout_sessions ws ON s.session_id = ws.id 
                             WHERE ws.exercise IN ({placeholders}) 
                               AND ws.meso_number = ? 
                               AND ws.status = 'Completed'
-                            ORDER BY ws.date DESC, ws.id DESC
+                            ORDER BY ws.date DESC, ws.id DESC, s.set_number ASC
                         """, (*exercises, self.current_meso))
                         
-                        for ex_name, hw, hr, hrpe in cursor.fetchall():
-                            pre_past_records[ex_name].append((hw, hr, hrpe))
+                        for ex_name, sid, set_number, hw, hr, hrpe in cursor.fetchall():
+                            pre_past_records[ex_name].append((sid, set_number, hw, hr, hrpe))
             # --- END DATA BATCHING ENGINE ---
 
             if not current_rows and pending_week_count > 0:
