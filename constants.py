@@ -20,6 +20,18 @@ DELOAD_PERCENTAGE = 0.65
 WARMUP_PERCENT_1 = 0.50
 WARMUP_PERCENT_2 = 0.75
 
+# Whole-session straight-set progression thresholds.
+# A load increase requires the prescribed exercise as a whole to be nearly complete.
+STRAIGHT_SET_PROGRESS_REP_COMPLETION = 0.95
+STRAIGHT_SET_PROGRESS_SET_COMPLETION = 0.75
+STRAIGHT_SET_PROGRESS_MIN_SET_RATIO = 0.85
+STRAIGHT_SET_MAX_PROGRESS_RPE = 9.5
+
+# A normal miss holds the same prescription. Only a severe session miss reduces load.
+STRAIGHT_SET_REDUCE_REP_COMPLETION = 0.70
+STRAIGHT_SET_REDUCE_MIN_SET_RATIO = 0.50
+STRAIGHT_SET_WEIGHT_TOLERANCE = 0.025
+
 STATUS_PENDING = "Pending"
 STATUS_COMPLETED = "Completed"
 STATUS_SKIPPED = "Skipped"
