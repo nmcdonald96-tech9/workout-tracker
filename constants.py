@@ -20,18 +20,6 @@ DELOAD_PERCENTAGE = 0.65
 WARMUP_PERCENT_1 = 0.50
 WARMUP_PERCENT_2 = 0.75
 
-# Whole-session straight-set progression thresholds.
-# A load increase requires the prescribed exercise as a whole to be nearly complete.
-STRAIGHT_SET_PROGRESS_REP_COMPLETION = 0.95
-STRAIGHT_SET_PROGRESS_SET_COMPLETION = 0.75
-STRAIGHT_SET_PROGRESS_MIN_SET_RATIO = 0.85
-STRAIGHT_SET_MAX_PROGRESS_RPE = 9.5
-
-# A normal miss holds the same prescription. Only a severe session miss reduces load.
-STRAIGHT_SET_REDUCE_REP_COMPLETION = 0.70
-STRAIGHT_SET_REDUCE_MIN_SET_RATIO = 0.50
-STRAIGHT_SET_WEIGHT_TOLERANCE = 0.025
-
 STATUS_PENDING = "Pending"
 STATUS_COMPLETED = "Completed"
 STATUS_SKIPPED = "Skipped"
@@ -138,3 +126,39 @@ MCCULLOCH_AGE_COEFFICIENTS = {
     58: 1.290, 59: 1.313, 60: 1.336, 61: 1.360, 62: 1.385,
     63: 1.410, 64: 1.436, 65: 1.463,
 }
+
+# =======================================
+# --- SESSION-LEVEL PROGRESSION THRESHOLDS ---
+# =======================================
+# Used by evaluate_straight_set_session() / calculate_session_progression()
+# in database.py to gate progression on the WHOLE session's performance
+# (all logged sets) rather than only the first set. Tune to taste -- these
+# are reasoned starting values, not empirically fixed.
+
+# How close a set's weight must be to the session's detected "working weight"
+# to count as a same-weight set (5% tolerance for plate-rounding, etc).
+STRAIGHT_SET_WEIGHT_TOLERANCE = 0.05
+
+# Average weighted rep-completion ratio required across all sets to progress.
+STRAIGHT_SET_PROGRESS_REP_COMPLETION = 0.95
+
+# Fraction of sets that must individually hit the rep target (at working
+# weight) to progress. 1.0 = every prescribed set must hit target, matching
+# classic double-progression doctrine.
+STRAIGHT_SET_PROGRESS_SET_COMPLETION = 1.0
+
+# The single WORST set's ratio can't fall below this or progression is
+# blocked, even if the average looks fine.
+STRAIGHT_SET_PROGRESS_MIN_SET_RATIO = 0.85
+
+# A peak (hardest-felt) RPE at or above this blocks progression even if
+# every rep target was technically hit -- no room left to add more.
+STRAIGHT_SET_MAX_PROGRESS_RPE = 9.5
+
+# Below this average rep-completion, force a weight step DOWN rather than
+# just holding at the same weight.
+STRAIGHT_SET_REDUCE_REP_COMPLETION = 0.70
+
+# If the worst single set's ratio falls below this, force a reduce
+# regardless of how the other sets went (a genuinely collapsed set).
+STRAIGHT_SET_REDUCE_MIN_SET_RATIO = 0.60
