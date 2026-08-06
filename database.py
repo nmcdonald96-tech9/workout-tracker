@@ -63,6 +63,8 @@ def init_and_seed_db():
             "CREATE TABLE IF NOT EXISTS workout_sets ("
             "id INTEGER PRIMARY KEY AUTOINCREMENT, "
             "session_id INTEGER, set_number INTEGER, weight REAL, reps INTEGER, rpe REAL, "
+            "rest_seconds INTEGER, target_weight REAL, target_reps INTEGER, "
+            "completed_at TEXT, is_complete INTEGER DEFAULT 0, "
             "FOREIGN KEY(session_id) REFERENCES workout_sessions(id) ON DELETE CASCADE)"
         )
         cursor.execute("CREATE TABLE IF NOT EXISTS meso_names (meso_number INTEGER PRIMARY KEY, meso_label TEXT)")
@@ -109,6 +111,18 @@ def init_and_seed_db():
         ws_cols = [info[1] for info in cursor.fetchall()]
         if "rest_seconds" not in ws_cols:
             cursor.execute("ALTER TABLE workout_sets ADD COLUMN rest_seconds INTEGER")
+            conn.commit()
+        if "target_weight" not in ws_cols:
+            cursor.execute("ALTER TABLE workout_sets ADD COLUMN target_weight REAL")
+            conn.commit()
+        if "target_reps" not in ws_cols:
+            cursor.execute("ALTER TABLE workout_sets ADD COLUMN target_reps INTEGER")
+            conn.commit()
+        if "completed_at" not in ws_cols:
+            cursor.execute("ALTER TABLE workout_sets ADD COLUMN completed_at TEXT")
+            conn.commit()
+        if "is_complete" not in ws_cols:
+            cursor.execute("ALTER TABLE workout_sets ADD COLUMN is_complete INTEGER DEFAULT 0")
             conn.commit()
 
         # --- ONE-TIME SAFE BODYWEIGHT FIX MIGRATION ---
@@ -635,6 +649,73 @@ def calculate_session_progression(completed_sets, target_weight, target_reps, mo
     )
     return next_weight, next_reps, metrics
 
+
+def calculate_set_specific_progression(completed_sets, default_target_weight, default_target_reps,
+                                       movement_type, readiness_score=15, joint_score=5,
+                                       equipment_type="Barbell", is_bodyweight=False,
+                                       bodyweight=0.0, age=43, profile=0):
+    """Return an independent next target for each completed set position.
+
+    Expected row shape:
+      (weight, reps, rpe[, target_weight, target_reps])
+    Legacy rows without per-set targets fall back to the session target.
+    """
+    next_targets = []
+    diagnostics = []
+
+    try:
+        fallback_w = float(default_target_weight or 0.0)
+    except (TypeError, ValueError):
+        fallback_w = 0.0 if is_bodyweight else 45.0
+    try:
+        fallback_r = max(1, int(default_target_reps or 10))
+    except (TypeError, ValueError):
+        fallback_r = 10
+
+    for set_index, row in enumerate(completed_sets or []):
+        try:
+            actual_w = float(row[0]) if row[0] is not None else fallback_w
+            actual_r = int(row[1]) if row[1] is not None else 0
+            actual_rpe = float(row[2]) if len(row) > 2 and row[2] is not None else 8.0
+            prior_target_w = float(row[3]) if len(row) > 3 and row[3] is not None else fallback_w
+            prior_target_r = int(row[4]) if len(row) > 4 and row[4] is not None else fallback_r
+        except (TypeError, ValueError):
+            continue
+        if actual_r <= 0:
+            continue
+
+        next_w, next_r = calculate_progression(
+            actual_w, actual_r, actual_rpe, prior_target_r, movement_type,
+            readiness_score, joint_score, equipment_type=equipment_type,
+            is_bodyweight=is_bodyweight, age=age, profile=profile
+        )
+
+        # Preserve bodyweight external-load semantics and practical numeric types.
+        next_w = float(next_w)
+        next_r = max(1, int(next_r))
+        miss = prior_target_r - actual_r
+        if actual_r >= prior_target_r:
+            decision = "progress"
+        elif miss >= 5:
+            decision = "reduce"
+        else:
+            decision = "hold"
+
+        next_targets.append({"w": next_w, "r": next_r})
+        diagnostics.append({
+            "set_number": set_index + 1,
+            "decision": decision,
+            "actual_weight": actual_w,
+            "actual_reps": actual_r,
+            "actual_rpe": actual_rpe,
+            "prior_target_weight": prior_target_w,
+            "prior_target_reps": prior_target_r,
+            "next_weight": next_w,
+            "next_reps": next_r,
+        })
+
+    return next_targets, diagnostics
+
 def get_exercise_smart_defaults(exercise_name, meso_number):
     with get_db() as conn:
         cursor = conn.cursor()
@@ -654,26 +735,23 @@ def get_exercise_smart_defaults(exercise_name, meso_number):
         if session_row:
             session_id, tgt_w, tgt_r, db_mov_type, bodyweight_snapshot = session_row
             cursor.execute("""
-                SELECT weight, reps, rpe
+                SELECT weight, reps, rpe, target_weight, target_reps
                 FROM workout_sets
                 WHERE session_id = ?
                 ORDER BY set_number ASC
             """, (session_id,))
             set_rows = cursor.fetchall()
-
             if set_rows:
-                new_w, new_r, _metrics = calculate_session_progression(
-                    set_rows,
-                    tgt_w if tgt_w is not None else (0.0 if is_bw else 45.0),
-                    tgt_r if tgt_r is not None else 10,
-                    db_mov_type or mov_type,
-                    equipment_type=eq_type,
-                    is_bodyweight=is_bw,
+                targets, _ = calculate_set_specific_progression(
+                    set_rows, tgt_w, tgt_r, db_mov_type or mov_type,
+                    equipment_type=eq_type, is_bodyweight=is_bw,
                     bodyweight=bodyweight_snapshot if bodyweight_snapshot is not None else get_user_bodyweight(),
-                    age=get_user_age(),
-                    profile=get_user_progression_profile()
+                    age=get_user_age(), profile=get_user_progression_profile()
                 )
-                return new_w, new_r, db_mov_type or mov_type
+                if targets:
+                    # Session-level fields remain a compatibility seed. The card builds
+                    # the real next prescription independently for every set position.
+                    return targets[0]["w"], targets[0]["r"], db_mov_type or mov_type
 
             safe_w = tgt_w if tgt_w is not None else (0.0 if is_bw else 45.0)
             safe_r = tgt_r if tgt_r is not None else 10
