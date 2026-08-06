@@ -1,5 +1,5 @@
 # Privacy Policy for IronCycle
-**Effective Date:** June 23, 2026
+**Effective Date:** June 22, 2026
 
 This privacy policy applies to the **IronCycle** application for mobile devices. 
 
