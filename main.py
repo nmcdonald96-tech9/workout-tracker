@@ -105,12 +105,8 @@ class ExerciseCard(ft.Card):
 
     def make_rpe_updater(self, set_idx):
         def rpe_handler(ev):
-            # Same first-touch capture as the weight/reps handler -- RPE is
-            # sometimes the first field a user fills in for a set.
-            self.app.set_touch_times.setdefault(self.db_id, {})
-            if set_idx not in self.app.set_touch_times[self.db_id]:
-                self.app.set_touch_times[self.db_id][set_idx] = datetime.now()
-
+            # Editing RPE only updates the draft. Rest timing begins exclusively
+            # when the user explicitly marks the set Done.
             try:
                 val = float(ev.control.value)
                 self.rpe_warning.visible = val >= 9.5
@@ -225,7 +221,7 @@ class ExerciseCard(ft.Card):
                 r_score = sum(readiness_row[:3]) if readiness_row else 9
 
                 cursor.execute("""
-                    SELECT ws.id, s.set_number, s.weight, s.reps, s.rpe
+                    SELECT ws.id, s.set_number, s.weight, s.reps, s.rpe, s.target_weight, s.target_reps
                     FROM workout_sets s 
                     JOIN workout_sessions ws ON s.session_id = ws.id 
                     WHERE ws.exercise = ? AND ws.meso_number = ? AND ws.status = 'Completed'
@@ -233,7 +229,7 @@ class ExerciseCard(ft.Card):
                 """, (self.exercise, self.app.current_meso))
                 past_records = cursor.fetchall()
                 
-                cursor.execute("SELECT weight, reps, rpe, rest_seconds FROM workout_sets WHERE session_id = ? ORDER BY set_number ASC", (self.db_id,))
+                cursor.execute("SELECT weight, reps, rpe, rest_seconds, target_weight, target_reps, completed_at, is_complete FROM workout_sets WHERE session_id = ? ORDER BY set_number ASC", (self.db_id,))
                 saved_sets = cursor.fetchall()
                 
                 cursor.execute("SELECT setup_notes FROM exercise_dict WHERE name = ?", (self.exercise,))
@@ -248,7 +244,7 @@ class ExerciseCard(ft.Card):
                 if row[0] != latest_session_id:
                     break
                 try:
-                    recent_session_sets.append((row[2], row[3], row[4]))
+                    recent_session_sets.append((row[2], row[3], row[4], row[5], row[6]))
                 except (IndexError, TypeError):
                     pass
 
@@ -285,20 +281,19 @@ class ExerciseCard(ft.Card):
                 
         base_target_w = adj_w
         base_target_r = adj_r
-        
+        self.set_progression_diagnostics = []
+
         if recent_session_sets:
             try:
                 if self.app.current_week == "Deload":
-                    # Deload is based on the session's modal working load.
-                    metrics = evaluate_straight_set_session(
-                        recent_session_sets, self.tgt_w, self.tgt_r,
-                        is_bodyweight=is_bw, bodyweight=get_user_bodyweight()
-                    )
-                    pw = metrics["working_weight"]
-                    base_target_w = snap_weight(pw * DELOAD_PERCENTAGE, eq_type) if not is_bw else pw
-                    base_target_r = max(1, int(self.tgt_r or 10) // 2)
+                    self.set_targets = []
+                    for row in recent_session_sets:
+                        prior_w = float(row[0])
+                        prior_r = max(1, int(row[1]) // 2)
+                        deload_w = prior_w if is_bw else snap_weight(prior_w * DELOAD_PERCENTAGE, eq_type)
+                        self.set_targets.append({"w": deload_w, "r": prior_r})
                 else:
-                    raw_target_w, base_target_r, self.progression_metrics = calculate_session_progression(
+                    raw_targets, self.set_progression_diagnostics = calculate_set_specific_progression(
                         recent_session_sets,
                         self.tgt_w,
                         self.tgt_r,
@@ -311,18 +306,22 @@ class ExerciseCard(ft.Card):
                         age=get_user_age(),
                         profile=get_user_progression_profile()
                     )
-                    base_target_w = snap_weight(raw_target_w, eq_type)
-                    if self.progression_metrics["decision"] == "hold":
-                        regulation_msg = (
-                            f"Hold: {self.progression_metrics['total_actual_reps']}/"
-                            f"{self.progression_metrics['total_target_reps']} prescribed reps"
-                        )
-                    elif self.progression_metrics["decision"] == "reduce":
-                        regulation_msg = "Recovery adjustment: full-session target missed"
+                    self.set_targets = [
+                        {"w": snap_weight(t["w"], eq_type), "r": int(t["r"])}
+                        for t in raw_targets
+                    ]
+                if self.set_targets:
+                    base_target_w = self.set_targets[0]["w"]
+                    base_target_r = self.set_targets[0]["r"]
             except Exception as ex:
-                print(f"Session progression fallback for {self.exercise}: {ex}")
+                print(f"Set-specific progression fallback for {self.exercise}: {ex}")
+                self.set_targets = []
+        else:
+            self.set_targets = []
 
-        self.set_targets = [{"w": base_target_w, "r": base_target_r} for _ in range(20)]
+        # New exercises and any extra manually-added sets use the session seed.
+        while len(self.set_targets) < 20:
+            self.set_targets.append({"w": base_target_w, "r": base_target_r})
         default_sets = 1 if r_score <= 7 else 2
 
         # --- AUTOSAVE NOTE ---
@@ -357,15 +356,25 @@ class ExerciseCard(ft.Card):
         if self.db_id not in self.app.sets:
             self.app.sets[self.db_id] = []
             if saved_sets:
-                for sw, sr, srpe, s_rest in saved_sets:
+                for idx, (sw, sr, srpe, s_rest, stw, strp, completed_at, is_complete) in enumerate(saved_sets):
                     w_str = str(sw) if sw is not None and str(sw) != "None" else ""
                     r_str = str(sr) if sr is not None and str(sr) != "None" else ""
                     rpe_str = str(srpe) if srpe is not None and str(srpe) != "None" else ""
-                    self.app.sets[self.db_id].append({"w": w_str, "r": r_str, "rpe": rpe_str, "rest": s_rest})
+                    if stw is not None and strp is not None and idx < len(self.set_targets):
+                        self.set_targets[idx] = {"w": float(stw), "r": int(strp)}
+                    self.app.sets[self.db_id].append({
+                        "w": w_str, "r": r_str, "rpe": rpe_str, "rest": s_rest,
+                        "completed_at": completed_at, "done": bool(is_complete)
+                    })
             else:
-                num_sets = 4 if len(past_w_list) >= 4 else default_sets
-                for _ in range(num_sets):
-                    self.app.sets[self.db_id].append({"w": str(base_target_w), "r": "", "rpe": "", "rest": None})
+                num_sets = len(recent_session_sets) if recent_session_sets else default_sets
+                num_sets = max(1, num_sets)
+                for idx in range(num_sets):
+                    target = self.set_targets[idx]
+                    self.app.sets[self.db_id].append({
+                        "w": str(target["w"]), "r": "", "rpe": "", "rest": None,
+                        "completed_at": None, "done": False
+                    })
 
         # --- UI CONSTRUCTION ---
         sets_column = ft.Column(spacing=4)
@@ -388,7 +397,7 @@ class ExerciseCard(ft.Card):
 
         for idx, set_data in enumerate(self.app.sets[self.db_id]):
             set_num = idx + 1
-            w_hint = past_w_list[idx].strip() if idx < len(past_w_list) else str(adj_w)
+            w_hint = str(self.set_targets[idx]["w"]) if idx < len(self.set_targets) else str(adj_w)
             r_hint = str(self.set_targets[idx]["r"]) if hasattr(self, 'set_targets') and idx < len(self.set_targets) else str(adj_r)
             rpe_hint = past_rpe_list[idx].strip() if idx < len(past_rpe_list) else "8"
 
@@ -444,9 +453,17 @@ class ExerciseCard(ft.Card):
             self.weight_fields.append(w_f)
             self.reps_fields.append(r_f)
             self.rpe_fields.append(rpe_f)
+
+            done_checkbox = ft.Checkbox(
+                label="Done",
+                value=bool(set_data.get("done")),
+                disabled=(self.status == STATUS_COMPLETED),
+                on_change=self.make_set_done_handler(idx),
+                width=78,
+            )
             
-            # --- KINETIC WRAPPER ---
-            set_row = ft.Row([set_indicator, w_f, r_f, rpe_f], alignment="start", vertical_alignment="center", spacing=8)
+            # Explicit completion controls rest timing. Editing planned values never starts a timer.
+            set_row = ft.Row([set_indicator, w_f, r_f, rpe_f, done_checkbox], alignment="start", vertical_alignment="center", spacing=6)
 
             # Rest-time caption: only for already-completed sets that have a
             # computed gap (set 1 of an exercise never has one -- no prior
@@ -612,18 +629,34 @@ class ExerciseCard(ft.Card):
         # --- FORCE INITIAL KINETIC UI STATE ---
         self.update_kinetic_ui()
 
+    def make_set_done_handler(self, set_idx):
+        def set_done_changed(ev):
+            if self.db_id not in self.app.sets or set_idx >= len(self.app.sets[self.db_id]):
+                return
+            set_data = self.app.sets[self.db_id][set_idx]
+            if ev.control.value:
+                w_raw = str(set_data.get("w", "")).strip()
+                r_raw = str(set_data.get("r", "")).strip()
+                rpe_raw = str(set_data.get("rpe", "")).strip()
+                if not w_raw or not r_raw or not rpe_raw:
+                    ev.control.value = False
+                    try: ev.control.update()
+                    except: pass
+                    self.app.show_snackbar(f"Enter weight, reps, and RPE before completing Set {set_idx + 1}.", "red300")
+                    return
+                set_data["done"] = True
+                set_data["completed_at"] = datetime.now().isoformat(timespec="seconds")
+            else:
+                set_data["done"] = False
+                set_data["completed_at"] = None
+            self.autosave_pending_sets()
+            self.update_kinetic_ui()
+        return set_done_changed
+
     def make_live_updater(self, set_idx, key_type):
         def live_update_event(ev):
             raw_val = ev.control.value
 
-            # Rest-time tracking: record the FIRST time this set row is
-            # touched (either field), regardless of key_type. This is the
-            # proxy for "just finished this set" since there's no explicit
-            # start/stop action -- guarded so later edits to the same row
-            # never overwrite the original touch moment.
-            self.app.set_touch_times.setdefault(self.db_id, {})
-            if set_idx not in self.app.set_touch_times[self.db_id]:
-                self.app.set_touch_times[self.db_id][set_idx] = datetime.now()
 
             if self.db_id in self.app.sets and set_idx < len(self.app.sets[self.db_id]):
                 self.app.sets[self.db_id][set_idx][key_type] = raw_val
@@ -706,8 +739,23 @@ class ExerciseCard(ft.Card):
                     r_val = int(s_data["r"]) if str(s_data.get("r", "")).strip() else None
                     rpe_val = float(s_data["rpe"]) if str(s_data.get("rpe", "")).strip() else None
                     
-                    cursor.execute("INSERT INTO workout_sets (session_id, set_number, weight, reps, rpe) VALUES (?, ?, ?, ?, ?)", 
-                                   (self.db_id, i, w_val, r_val, rpe_val))
+                    target = self.set_targets[i - 1] if i - 1 < len(self.set_targets) else {"w": self.tgt_w, "r": self.tgt_r}
+                    completed_at = s_data.get("completed_at")
+                    done = 1 if s_data.get("done") else 0
+                    rest_secs = None
+                    if done and completed_at and i > 1:
+                        prev_completed = self.app.sets[self.db_id][i - 2].get("completed_at")
+                        if prev_completed:
+                            try:
+                                rest_secs = max(0, int(round((datetime.fromisoformat(completed_at) - datetime.fromisoformat(prev_completed)).total_seconds())))
+                            except Exception:
+                                rest_secs = None
+                    cursor.execute("""
+                        INSERT INTO workout_sets
+                            (session_id, set_number, weight, reps, rpe, rest_seconds, target_weight, target_reps, completed_at, is_complete)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (self.db_id, i, w_val, r_val, rpe_val, rest_secs,
+                          float(target["w"]), int(target["r"]), completed_at, done))
                 conn.commit()
         except Exception as e:
             print(f"Error autosaving pending sets: {e}")
@@ -715,7 +763,7 @@ class ExerciseCard(ft.Card):
     def on_add_set(self, ev):
         if self.db_id not in self.app.sets: return
         last_w = self.app.sets[self.db_id][-1].get("w", "") if self.app.sets[self.db_id] else str(self.tgt_w)
-        self.app.sets[self.db_id].append({"w": last_w, "r": "", "rpe": "", "rest": None})
+        self.app.sets[self.db_id].append({"w": last_w, "r": "", "rpe": "", "rest": None, "completed_at": None, "done": False})
         self.autosave_pending_sets() # Force save draft
         self.app.rebuild_entire_display()
 
@@ -745,8 +793,6 @@ class ExerciseCard(ft.Card):
             conn.commit()
         if self.db_id in self.app.sets:
             del self.app.sets[self.db_id]
-        if self.db_id in self.app.set_touch_times:
-            del self.app.set_touch_times[self.db_id]
 
         try:
             self.app.check_and_route_day()
@@ -812,7 +858,11 @@ class ExerciseCard(ft.Card):
             else:
                 rpe_val = 10.0
 
-            rows_to_save.append((w_val, r_val, rpe_val, idx - 1))  # idx-1 = original 0-based set position, needed to look up its touch time
+            if not set_data.get("done") or not set_data.get("completed_at"):
+                self.app.show_snackbar(f"Mark Set {idx} Done before logging the exercise.", "red300")
+                return
+            target = self.set_targets[idx - 1] if idx - 1 < len(self.set_targets) else {"w": self.tgt_w, "r": self.tgt_r}
+            rows_to_save.append((w_val, r_val, rpe_val, idx - 1, target, set_data.get("completed_at")))
 
         if not rows_to_save:
             return
@@ -836,7 +886,7 @@ class ExerciseCard(ft.Card):
                     
             current_max_e1rm = 0.0
             best_raw_w, best_raw_r = 0.0, 0
-            for w_val, r_val, _, _ in rows_to_save:
+            for w_val, r_val, _, _, _, _ in rows_to_save:
                 c_e1rm = calculate_e1rm(float(w_val), int(r_val), current_bw if is_bw else 0.0)
                 if c_e1rm > current_max_e1rm:
                     current_max_e1rm = c_e1rm
@@ -851,21 +901,21 @@ class ExerciseCard(ft.Card):
 
             cursor.execute("DELETE FROM workout_sets WHERE session_id = ?", (self.db_id,))
 
-            touch_times = self.app.set_touch_times.get(self.db_id, {})
-            prev_touch = None
-            for i, (w_val, r_val, rpe_val, orig_idx) in enumerate(rows_to_save, start=1):
-                this_touch = touch_times.get(orig_idx)
+            prev_completed_at = None
+            for i, (w_val, r_val, rpe_val, orig_idx, target, completed_at) in enumerate(rows_to_save, start=1):
                 rest_secs = None
-                if prev_touch is not None and this_touch is not None:
-                    delta = (this_touch - prev_touch).total_seconds()
-                    if delta >= 0:
-                        rest_secs = int(round(delta))
-                if this_touch is not None:
-                    prev_touch = this_touch  # only advance when we actually have a timestamp; otherwise keep the last known one
-                cursor.execute(
-                    "INSERT INTO workout_sets (session_id, set_number, weight, reps, rpe, rest_seconds) VALUES (?, ?, ?, ?, ?, ?)",
-                    (self.db_id, i, float(w_val), int(r_val), float(rpe_val), rest_secs)
-                )
+                if prev_completed_at and completed_at:
+                    try:
+                        rest_secs = max(0, int(round((datetime.fromisoformat(completed_at) - datetime.fromisoformat(prev_completed_at)).total_seconds())))
+                    except Exception:
+                        rest_secs = None
+                prev_completed_at = completed_at or prev_completed_at
+                cursor.execute("""
+                    INSERT INTO workout_sets
+                        (session_id, set_number, weight, reps, rpe, rest_seconds, target_weight, target_reps, completed_at, is_complete)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                """, (self.db_id, i, float(w_val), int(r_val), float(rpe_val), rest_secs,
+                      float(target["w"]), int(target["r"]), completed_at))
             
             true_completion_date = datetime.now().strftime("%Y-%m-%d")
             cursor.execute(f"UPDATE workout_sessions SET status = '{STATUS_COMPLETED}', date = ?, bodyweight_snapshot = ? WHERE id = ?", (true_completion_date, current_bw, self.db_id))
@@ -873,8 +923,6 @@ class ExerciseCard(ft.Card):
 
         if self.db_id in self.app.sets:
             del self.app.sets[self.db_id]
-        if self.db_id in self.app.set_touch_times:
-            del self.app.set_touch_times[self.db_id]
 
         if is_new_pr:
             self.app.pr_celebrations[self.db_id] = True
@@ -927,12 +975,8 @@ class WorkoutTrackerApp:
         self.pr_celebrations = {}
         self.strength_badges = {}
         self.meso_just_completed = False
-        # Tracks the first-touch timestamp per (session_id, set_idx) -- the
-        # moment the user starts entering weight/reps for a set, used as a
-        # proxy for "when that set finished" so rest time between sets can be
-        # measured without an explicit start/stop timer. Lives at the app
-        # level (like self.sets) so it survives card rebuilds triggered by
-        # other exercises on the page.
+        # Retained for compatibility with older in-memory state. Rest timing now
+        # uses each set's explicit Done checkbox and workout_sets.completed_at.
         self.set_touch_times = {}
         self.view_mode = "workout" 
         self.collapsed_categories = {}
@@ -4932,9 +4976,9 @@ class WorkoutTrackerApp:
                         
                     if session_ids:
                         placeholders = ",".join("?" for _ in session_ids)
-                        cursor.execute(f"SELECT session_id, weight, reps, rpe, rest_seconds FROM workout_sets WHERE session_id IN ({placeholders}) ORDER BY set_number ASC", session_ids)
-                        for sid, w, r, rpe, rest_secs in cursor.fetchall():
-                            pre_saved_sets[sid].append((w, r, rpe, rest_secs))
+                        cursor.execute(f"SELECT session_id, weight, reps, rpe, rest_seconds, target_weight, target_reps, completed_at, is_complete FROM workout_sets WHERE session_id IN ({placeholders}) ORDER BY set_number ASC", session_ids)
+                        for sid, w, r, rpe, rest_secs, target_w, target_r, completed_at, is_complete in cursor.fetchall():
+                            pre_saved_sets[sid].append((w, r, rpe, rest_secs, target_w, target_r, completed_at, is_complete))
                             
                         cursor.execute(f"SELECT id, bodyweight_snapshot FROM workout_sessions WHERE id IN ({placeholders})", session_ids)
                         for sid, snap in cursor.fetchall():
@@ -4948,7 +4992,7 @@ class WorkoutTrackerApp:
                             
                         # ONE single optimized query for all past exercise records
                         cursor.execute(f"""
-                            SELECT ws.exercise, ws.id, s.set_number, s.weight, s.reps, s.rpe 
+                            SELECT ws.exercise, ws.id, s.set_number, s.weight, s.reps, s.rpe, s.target_weight, s.target_reps 
                             FROM workout_sets s 
                             JOIN workout_sessions ws ON s.session_id = ws.id 
                             WHERE ws.exercise IN ({placeholders}) 
@@ -4957,8 +5001,8 @@ class WorkoutTrackerApp:
                             ORDER BY ws.date DESC, ws.id DESC, s.set_number ASC
                         """, (*exercises, self.current_meso))
                         
-                        for ex_name, sid, set_number, hw, hr, hrpe in cursor.fetchall():
-                            pre_past_records[ex_name].append((sid, set_number, hw, hr, hrpe))
+                        for ex_name, sid, set_number, hw, hr, hrpe, target_w, target_r in cursor.fetchall():
+                            pre_past_records[ex_name].append((sid, set_number, hw, hr, hrpe, target_w, target_r))
             # --- END DATA BATCHING ENGINE ---
 
             if not current_rows and pending_week_count > 0:
