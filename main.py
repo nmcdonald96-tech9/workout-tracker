@@ -644,6 +644,7 @@ class ExerciseCard(ft.Card):
             if self.db_id not in self.app.sets or set_idx >= len(self.app.sets[self.db_id]):
                 return
             set_data = self.app.sets[self.db_id][set_idx]
+            exercise_was_started = any(bool(s.get("done")) for s in self.app.sets.get(self.db_id, []))
             if ev.control.value:
                 w_raw = str(set_data.get("w", "")).strip()
                 r_raw = str(set_data.get("r", "")).strip()
@@ -661,6 +662,9 @@ class ExerciseCard(ft.Card):
                 set_data["completed_at"] = None
             self.autosave_pending_sets()
             self.update_kinetic_ui()
+            if ev.control.value and not exercise_was_started:
+                category_name = self.context.get("category") if self.context else None
+                self.app.activate_exercise(category_name, self.db_id)
         return set_done_changed
 
     def make_live_updater(self, set_idx, key_type):
@@ -990,6 +994,10 @@ class WorkoutTrackerApp:
         self.set_touch_times = {}
         self.view_mode = "workout" 
         self.collapsed_categories = {}
+        # Tracks the currently-started exercise within each day/category so it
+        # can be promoted to the top of that muscle group after its first set.
+        self.active_exercise_by_category = {}
+        self.pending_scroll_key = None
         self.delete_dialog_id = None
         self.current_meso = 1
         
@@ -1200,33 +1208,40 @@ class WorkoutTrackerApp:
         self.survey_panel = ft.Container()
         self.engine_button_container = ft.Row(alignment=ft.MainAxisAlignment.CENTER, spacing=10)
 
-        self.current_meso_title = ft.Text("", size=15, weight="bold", color="cyan300")
+        self.current_meso_title = ft.Text("", size=13, weight="bold", color="cyan300")
         self.meso_nav_row = ft.Row([
             ft.Container(
                 content=ft.Row([
-                    ft.Text("MESO", size=9, weight="bold", color="white38"),
+                    ft.Text("MESO", size=8, weight="bold", color="white38"),
                     self.current_meso_title,
-                ], spacing=7, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                ], spacing=5, vertical_alignment=ft.CrossAxisAlignment.CENTER),
                 bgcolor="white10",
-                border_radius=10,
-                padding=7,
+                border_radius=9,
+                padding=5,
             )
-        ], spacing=0)
+        ], alignment=ft.MainAxisAlignment.CENTER, spacing=0, expand=True)
         self.week_nav_row = ft.Row(spacing=6, scroll="auto", expand=True)
         self.day_nav_row = ft.Row(spacing=6, scroll="auto", expand=True)
 
         self.btn_menu = ft.ElevatedButton(
-            content=ft.Text("Menu", weight="bold"),
+            content=ft.Text("Menu", weight="bold", size=12),
             on_click=self.open_actions_menu,
-            height=36,
+            height=32,
+            width=82,
             style=ft.ButtonStyle(
                 bgcolor="white10", color="white",
-                shape=ft.RoundedRectangleBorder(radius=12),
-                padding=12
+                shape=ft.RoundedRectangleBorder(radius=10),
+                padding=6
             )
         )
 
-        self.top_header_row = ft.Row([self.meso_nav_row, self.btn_menu], alignment=ft.MainAxisAlignment.SPACE_BETWEEN, vertical_alignment=ft.CrossAxisAlignment.CENTER)
+        # Equal-width side slots keep the mesocycle indicator truly centered.
+        # The extra right inset keeps Menu clear of Android's landscape nav overlay.
+        self.top_header_row = ft.Row([
+            ft.Container(width=140),
+            self.meso_nav_row,
+            ft.Container(content=self.btn_menu, width=140, padding=4),
+        ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN, vertical_alignment=ft.CrossAxisAlignment.CENTER, spacing=0)
         self.week_header_row = ft.Row([self.week_nav_row], alignment=ft.MainAxisAlignment.START, vertical_alignment=ft.CrossAxisAlignment.CENTER)
         self.day_header_row = ft.Row([self.day_nav_row], alignment=ft.MainAxisAlignment.START, vertical_alignment=ft.CrossAxisAlignment.CENTER)
 
@@ -1234,10 +1249,10 @@ class WorkoutTrackerApp:
             self.top_header_row,
             self.week_header_row,
             self.day_header_row
-        ], spacing=6)
+        ], spacing=3)
 
         self.page.add(
-            ft.Container(height=5),
+            ft.Container(height=1),
             self.navigation_header_container,
             ft.Divider(height=1, color="white10"),
             self.main_canvas
@@ -2854,6 +2869,77 @@ class WorkoutTrackerApp:
 
     # -----------------------------------------------
 
+    def category_anchor_key(self, category_name):
+        safe = "".join(ch.lower() if ch.isalnum() else "-" for ch in str(category_name)).strip("-")
+        return f"category-{safe}"
+
+    def exercise_anchor_key(self, session_id):
+        return f"exercise-{session_id}"
+
+    def scroll_to_workout_key(self, key):
+        try:
+            self.main_canvas.scroll_to(key=key, duration=350)
+        except Exception as ex:
+            print(f"[scroll_to_workout_key] {ex}")
+
+    def jump_to_category(self, category_name):
+        self.collapsed_categories[self.category_key(category_name)] = False
+        self.pending_scroll_key = self.category_anchor_key(category_name)
+        self.rebuild_entire_display()
+
+    def activate_exercise(self, category_name, session_id):
+        if not category_name:
+            return
+        key = self.category_key(category_name)
+        if self.active_exercise_by_category.get(key) == session_id:
+            return
+        self.active_exercise_by_category[key] = session_id
+        self.collapsed_categories[key] = False
+        self.pending_scroll_key = self.exercise_anchor_key(session_id)
+        self.rebuild_entire_display()
+
+    def build_category_quick_nav(self):
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT category, COUNT(*),
+                       SUM(CASE WHEN status = 'Pending' THEN 1 ELSE 0 END)
+                FROM workout_sessions
+                WHERE meso_number = ? AND week = ? AND day_of_week = ?
+                GROUP BY category
+                ORDER BY MIN(id)
+            """, (self.current_meso, self.current_week, self.current_day))
+            rows = cursor.fetchall()
+
+        buttons = []
+        for category, total, pending in rows:
+            is_done = int(pending or 0) == 0
+            buttons.append(ft.Container(
+                content=ft.Text(
+                    f"{category} ✓" if is_done else str(category),
+                    size=10,
+                    weight="bold",
+                    color="green300" if is_done else "cyan200",
+                ),
+                bgcolor="green900" if is_done else "white10",
+                border_radius=9,
+                padding=7,
+                ink=True,
+                on_click=lambda e, cat=category: self.jump_to_category(cat),
+            ))
+
+        if not buttons:
+            return None
+        return ft.Container(
+            content=ft.Column([
+                ft.Text("JUMP TO MUSCLE GROUP", size=8, weight="bold", color="white38"),
+                ft.Row(buttons, spacing=5, scroll="auto"),
+            ], spacing=4, tight=True),
+            bgcolor="white5",
+            border_radius=8,
+            padding=6,
+        )
+
     def category_key(self, category_name):
         return (self.current_meso, self.current_week, self.current_day, category_name)
 
@@ -2892,6 +2978,7 @@ class WorkoutTrackerApp:
         status_element = ft.Text(status_text, size=11, weight="w600", color=text_color)
 
         header_container = ft.Container(
+            key=self.category_anchor_key(category_name),
             content=ft.Row([title_row, status_element], alignment="spaceBetween"),
             bgcolor=bg_color,
             border_radius=8,
@@ -4915,14 +5002,17 @@ class WorkoutTrackerApp:
                         content_col.append(ft.Text("⚠️ Penalty: " + " • ".join(banner_texts), size=10, color="amber300", italic=True))
                     
                     summary_container = ft.Container(
-                        content=ft.Column(content_col, spacing=2),
+                        content=ft.Column(content_col, spacing=1, tight=True),
                         bgcolor="white5",
-                        margin=10,
+                        padding=6,
                         border_radius=6
                     )
                     self.main_canvas.controls.append(summary_container)
-                    self.main_canvas.controls.append(ft.Container(height=4))
             # --- END OF READINESS BANNER PATCH ---
+
+            quick_nav = self.build_category_quick_nav()
+            if quick_nav is not None:
+                self.main_canvas.controls.append(quick_nav)
 
             with get_db() as conn:
                 cursor = conn.cursor()
@@ -5082,8 +5172,18 @@ class WorkoutTrackerApp:
 
             for category_name in category_order:
                 rows_in_cat = grouped[category_name]
+                active_id = self.active_exercise_by_category.get(self.category_key(category_name))
+                original_row_index = {row[0]: idx for idx, row in enumerate(rows_in_cat)}
+                rows_in_cat = sorted(
+                    rows_in_cat,
+                    key=lambda row: (
+                        1 if row[4] != STATUS_PENDING else 0,
+                        0 if row[0] == active_id and row[4] == STATUS_PENDING else 1,
+                        original_row_index.get(row[0], 999),
+                    )
+                )
                 
-                self.main_canvas.controls.append(ft.Container(height=10))
+                self.main_canvas.controls.append(ft.Container(height=4))
                 self.main_canvas.controls.append(self.make_category_header(category_name, rows_in_cat))
 
                 if self.is_category_collapsed(category_name):
@@ -5099,10 +5199,12 @@ class WorkoutTrackerApp:
                         "saved_sets": pre_saved_sets.get(db_id, []),
                         "past_records": pre_past_records.get(exercise, []),
                         "saved_note": pre_notes.get(exercise, ""),
-                        "snap_bw": pre_snap_bw.get(db_id, None)
+                        "snap_bw": pre_snap_bw.get(db_id, None),
+                        "category": db_cat,
                     }
                     
                     card = ExerciseCard(db_id, exercise, tgt_w, tgt_r, status, mov_type, self, context=ctx)
+                    card.key = self.exercise_anchor_key(db_id)
                     self.main_canvas.controls.append(card)
 
             if pending_week_count == 0 and len(self.engine_button_container.controls) > 0:
@@ -5112,6 +5214,10 @@ class WorkoutTrackerApp:
 
             self.main_canvas.update()
             self.page.update()
+            if self.pending_scroll_key:
+                focus_key = self.pending_scroll_key
+                self.pending_scroll_key = None
+                self.scroll_to_workout_key(focus_key)
 
         except Exception:
             error_log = traceback.format_exc()
