@@ -407,10 +407,13 @@ class ExerciseCard(ft.Card):
             # Borderless, filled TextFields
             w_f = ft.TextField(
                 value=set_data["w"],
-                hint_text=f"L: {w_hint}" if idx < len(past_w_list) else "Lbs",
+                label="LBS",
+                hint_text=str(w_hint),
+                hint_style=ft.TextStyle(color="white54", size=12),
+                label_style=ft.TextStyle(color="cyan200", size=10, weight="bold"),
                 expand=3,
-                text_size=16,
-                content_padding=10,
+                text_size=15,
+                content_padding=8,
                 bgcolor="white5", # Soft dark fill
                 border_color="transparent", # Removes the archaic outline
                 border_radius=6,
@@ -422,10 +425,13 @@ class ExerciseCard(ft.Card):
 
             r_f = ft.TextField(
                 value=set_data["r"],
-                hint_text=f"T: {r_hint}",
+                label="REPS",
+                hint_text=str(r_hint),
+                hint_style=ft.TextStyle(color="white54", size=12),
+                label_style=ft.TextStyle(color="cyan200", size=10, weight="bold"),
                 expand=2,
-                text_size=16,
-                content_padding=10,
+                text_size=15,
+                content_padding=8,
                 bgcolor="white5",
                 border_color="transparent",
                 border_radius=6,
@@ -437,10 +443,13 @@ class ExerciseCard(ft.Card):
 
             rpe_f = ft.TextField(
                 value=set_data["rpe"],
-                hint_text=f"RPE",
+                label="RPE",
+                hint_text=str(rpe_hint),
+                hint_style=ft.TextStyle(color="white54", size=12),
+                label_style=ft.TextStyle(color="cyan200", size=10, weight="bold"),
                 expand=2,
-                text_size=16,
-                content_padding=10,
+                text_size=15,
+                content_padding=8,
                 bgcolor="white5",
                 border_color="transparent",
                 border_radius=6,
@@ -459,7 +468,8 @@ class ExerciseCard(ft.Card):
                 value=bool(set_data.get("done")),
                 disabled=(self.status == STATUS_COMPLETED),
                 on_change=self.make_set_done_handler(idx),
-                width=78,
+                width=70,
+                label_style=ft.TextStyle(size=11, color="white70"),
             )
             
             # Explicit completion controls rest timing. Editing planned values never starts a timer.
@@ -1187,21 +1197,37 @@ class WorkoutTrackerApp:
         self.meso_report_canvas = ft.ListView(expand=True, spacing=8)
         self.strength_standards_canvas = ft.ListView(expand=True, spacing=10)
         
-        self.header_rpe_badge = ft.Container(
-            content=ft.Text(value="RPE 7-8", size=10, weight="bold", color="black"),
-            bgcolor="amber300", padding=4, border_radius=4
-        )
         self.survey_panel = ft.Container()
         self.engine_button_container = ft.Row(alignment=ft.MainAxisAlignment.CENTER, spacing=10)
 
-        self.meso_nav_row = ft.Row(spacing=6, scroll="auto", expand=True)
-        self.week_nav_row = ft.Row(spacing=4, scroll="auto", expand=True)
-        self.day_nav_row = ft.Row(spacing=4, scroll="auto", expand=True)
+        self.current_meso_title = ft.Text("", size=15, weight="bold", color="cyan300")
+        self.meso_nav_row = ft.Row([
+            ft.Container(
+                content=ft.Row([
+                    ft.Text("MESO", size=9, weight="bold", color="white38"),
+                    self.current_meso_title,
+                ], spacing=7, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                bgcolor="white10",
+                border_radius=10,
+                padding=ft.padding.symmetric(horizontal=10, vertical=7),
+            )
+        ], spacing=0)
+        self.week_nav_row = ft.Row(spacing=6, scroll="auto", expand=True)
+        self.day_nav_row = ft.Row(spacing=6, scroll="auto", expand=True)
 
-        self.btn_menu = ft.ElevatedButton(content=ft.Text("Menu", weight="bold"), on_click=self.open_actions_menu, height=30, style=ft.ButtonStyle(bgcolor="white10", color="white"))
+        self.btn_menu = ft.ElevatedButton(
+            content=ft.Text("Menu", weight="bold"),
+            on_click=self.open_actions_menu,
+            height=36,
+            style=ft.ButtonStyle(
+                bgcolor="white10", color="white",
+                shape=ft.RoundedRectangleBorder(radius=12),
+                padding=ft.padding.symmetric(horizontal=18)
+            )
+        )
 
         self.top_header_row = ft.Row([self.meso_nav_row, self.btn_menu], alignment=ft.MainAxisAlignment.SPACE_BETWEEN, vertical_alignment=ft.CrossAxisAlignment.CENTER)
-        self.week_header_row = ft.Row([self.week_nav_row, self.header_rpe_badge], alignment=ft.MainAxisAlignment.SPACE_BETWEEN, vertical_alignment=ft.CrossAxisAlignment.CENTER)
+        self.week_header_row = ft.Row([self.week_nav_row], alignment=ft.MainAxisAlignment.START, vertical_alignment=ft.CrossAxisAlignment.CENTER)
         self.day_header_row = ft.Row([self.day_nav_row], alignment=ft.MainAxisAlignment.START, vertical_alignment=ft.CrossAxisAlignment.CENTER)
 
         self.navigation_header_container = ft.Column([
@@ -1227,6 +1253,14 @@ class WorkoutTrackerApp:
                 width=320,
                 content=ft.Column([
                     ft.Text("NAVIGATION", size=10, weight="bold", color="cyan300"),
+                    ft.Dropdown(
+                        label="Mesocycle",
+                        value=str(self.current_meso),
+                        options=[ft.dropdown.Option(key=str(m_id), text=m_label) for m_id, m_label in self.get_existing_mesos()],
+                        on_select=self.menu_change_meso,
+                        text_size=12,
+                        dense=True,
+                    ),
                     ft.Row([
                         ft.ElevatedButton(history_lbl, on_click=self.menu_toggle_history, expand=True, style=btn_style),
                         ft.ElevatedButton("➕ Add Exercise", on_click=self.menu_add_exercise, expand=True, style=btn_style),
@@ -1288,6 +1322,14 @@ class WorkoutTrackerApp:
             content_padding=20
         )
         self.safe_open(self.actions_menu_dialog)
+
+    def menu_change_meso(self, e):
+        try:
+            meso_num = int(e.control.value)
+        except (TypeError, ValueError):
+            return
+        self.close_actions_menu()
+        self.change_active_meso(meso_num)
 
     def close_actions_menu(self, e=None):
         if hasattr(self, "actions_menu_dialog") and self.actions_menu_dialog:
@@ -4478,19 +4520,9 @@ class WorkoutTrackerApp:
         self.rebuild_entire_display()
 
     def rebuild_navigation_headers(self):
-        # 1. Sleek Meso Tabs
-        self.meso_nav_row.controls.clear()
-        for m_id, m_label in self.get_existing_mesos():
-            is_active = (m_id == self.current_meso)
-            btn = ft.Container(
-                content=ft.Text(m_label, size=15, weight="w800" if is_active else "w500", color="cyan300" if is_active else "white54"),
-                padding=6,
-                bgcolor="white10" if is_active else "transparent",
-                border_radius=6,
-                on_click=lambda e, m=m_id: self.change_active_meso(m),
-                ink=True
-            )
-            self.meso_nav_row.controls.append(btn)
+        # Completed and inactive mesocycles now live in Menu > Mesocycle.
+        # The workout header shows only the active mesocycle title.
+        self.current_meso_title.value = self.current_meso_label()
 
         week_completions = {}
         day_completions = {}
@@ -4511,14 +4543,16 @@ class WorkoutTrackerApp:
             is_active = (str(w) == str(self.current_week))
             check_str = " ✓" if is_done else ""
             
-            txt_color = "amber300" if is_active else ("green300" if is_done else "white54")
-            bg_color = "white10" if is_active else "transparent"
+            txt_color = "grey900" if is_active else ("green300" if is_done else "white70")
+            bg_color = "amber300" if is_active else ("green900" if is_done else "white5")
+            border_color = "amber200" if is_active else ("green700" if is_done else "white10")
 
             btn = ft.Container(
-                content=ft.Text(f"W{w}{check_str}", size=13, weight="bold" if is_active else "w500", color=txt_color),
-                padding=6,
+                content=ft.Text(f"W{w}{check_str}", size=13, weight="bold", color=txt_color),
+                padding=ft.padding.symmetric(horizontal=11, vertical=7),
                 bgcolor=bg_color,
-                border_radius=6,
+                border=ft.border.all(1, border_color),
+                border_radius=12,
                 on_click=lambda e, wk=w: self.change_active_week(wk),
                 ink=True
             )
@@ -4531,15 +4565,17 @@ class WorkoutTrackerApp:
             is_active = (d == self.current_day)
             check_str = "✓" if is_done else ""
             
-            txt_color = "amber300" if is_active else ("green300" if is_done else "white54")
-            weight = "bold" if (is_active or is_done) else "normal"
-            bg_color = "white10" if is_active else "transparent"
+            txt_color = "grey900" if is_active else ("green300" if is_done else "white54")
+            weight = "bold" if (is_active or is_done) else "w500"
+            bg_color = "amber300" if is_active else ("green900" if is_done else "transparent")
+            border_color = "amber200" if is_active else ("green700" if is_done else "transparent")
 
             btn = ft.Container(
                 content=ft.Text(f"{d[:3]} {check_str}".strip(), size=12, weight=weight, color=txt_color),
-                padding=6,
+                padding=ft.padding.symmetric(horizontal=10, vertical=7),
                 bgcolor=bg_color,
-                border_radius=6,
+                border=ft.border.all(1, border_color),
+                border_radius=12,
                 on_click=lambda e, day_str=d: self.change_active_day(day_str),
                 ink=True
             )
@@ -4805,7 +4841,6 @@ class WorkoutTrackerApp:
                 current_day_is_planned = self.current_day in planned_days
                 current_day_is_rest = self.is_planned_rest_day(self.current_day)
 
-            self.header_rpe_badge.content.value = get_compact_rpe_badge(self.current_week)
             self.rebuild_readiness_survey_layer()
 
             if self.survey_panel.content:
