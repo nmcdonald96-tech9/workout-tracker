@@ -693,10 +693,15 @@ def calculate_set_specific_progression(completed_sets, default_target_weight, de
         # Preserve bodyweight external-load semantics and practical numeric types.
         next_w = float(next_w)
         next_r = max(1, int(next_r))
-        miss = prior_target_r - actual_r
+        # Ratio-based, not absolute -- a miss of N reps means something very
+        # different on a 5-rep set than a 20-rep set. STRAIGHT_SET_REDUCE_REP_COMPLETION
+        # (currently 0.70) is the same constant the session-level evaluator uses,
+        # so "reduce" means the same thing everywhere in the app, not two
+        # different standards depending on which code path got there.
+        completion_ratio = (actual_r / prior_target_r) if prior_target_r > 0 else 1.0
         if actual_r >= prior_target_r:
             decision = "progress"
-        elif miss >= 5:
+        elif completion_ratio < STRAIGHT_SET_REDUCE_REP_COMPLETION:
             decision = "reduce"
         else:
             decision = "hold"
