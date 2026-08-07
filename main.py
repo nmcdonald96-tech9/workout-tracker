@@ -105,18 +105,11 @@ class ExerciseCard(ft.Card):
 
     def make_rpe_updater(self, set_idx):
         def rpe_handler(ev):
-            # Editing RPE only updates the draft. Rest timing begins exclusively
-            # when the user explicitly marks the set Done.
-            try:
-                val = float(ev.control.value)
-                self.rpe_warning.visible = val >= 9.5
-            except:
-                self.rpe_warning.visible = False
-            self.rpe_warning.update()
-            
+            # Some packaged Flet runtimes freeze mounted controls. Keep input
+            # events state-driven and avoid mutating sibling controls in-place.
             if self.db_id in self.app.sets and set_idx < len(self.app.sets[self.db_id]):
                 self.app.sets[self.db_id][set_idx]["rpe"] = ev.control.value
-                self.autosave_pending_sets() # <-- NEW: Bulletproof keystroke saving
+                self.autosave_pending_sets()
         return rpe_handler
 
     def open_swap_dialog(self, e):
@@ -669,76 +662,13 @@ class ExerciseCard(ft.Card):
 
     def make_live_updater(self, set_idx, key_type):
         def live_update_event(ev):
+            # Persist the edited value without directly mutating other mounted
+            # controls. Direct sibling mutation can raise "Frozen controls cannot
+            # be updated" in the Android packaged Flet runtime.
             raw_val = ev.control.value
-
-
             if self.db_id in self.app.sets and set_idx < len(self.app.sets[self.db_id]):
                 self.app.sets[self.db_id][set_idx][key_type] = raw_val
-                self.autosave_pending_sets() # <-- NEW: Bulletproof keystroke saving
-
-            if key_type == "w":
-                plate_txt = calculate_plates_per_side(self.exercise, raw_val)
-                self.plate_feedback_label.value = plate_txt
-                if hasattr(self, 'plate_container'):
-                    self.plate_container.visible = bool(plate_txt)
-                    try:
-                        self.plate_feedback_label.update()
-                        self.plate_container.update()
-                    except: pass
-                
-                if not hasattr(self, "set_targets") or set_idx >= len(self.set_targets):
-                    return
-
-                try:
-                    orig_w = float(self.set_targets[set_idx]["w"])
-                    orig_r = int(self.set_targets[set_idx]["r"])
-                except Exception:
-                    return
-
-                is_bw = EXERCISE_METADATA.get(self.exercise, {}).get("equipment") == "Bodyweight"
-                bw = get_user_bodyweight() if is_bw else 0.0
-
-                trimmed = raw_val.strip()
-                if trimmed in ("", ".", "-", "-."):
-                    self.reset_target_preview(set_idx, orig_w, orig_r, is_bw)
-                    return
-                
-                try:
-                    new_w = float(trimmed)
-                except ValueError:
-                    return
-
-                if new_w == orig_w:
-                    self.reset_target_preview(set_idx, orig_w, orig_r, is_bw)
-                    return
-
-                orig_e1rm = calculate_e1rm(orig_w, orig_r, bw)
-                if orig_e1rm <= 0:
-                    self.reset_target_preview(set_idx, orig_w, orig_r, is_bw)
-                    return
-
-                new_total_w = new_w + bw
-                if new_total_w < orig_e1rm:
-                    new_target_r = int(round(37 - (36 * new_total_w / orig_e1rm)))
-                else:
-                    new_target_r = 1
-
-                if new_target_r < 1: new_target_r = 1
-
-                self.reps_fields[set_idx].label = f"Tgt: {new_target_r}"
-                self.reps_fields[set_idx].hint_text = "Reps"
-                self.reps_fields[set_idx].value = str(new_target_r)
-                if self.db_id in self.app.sets and set_idx < len(self.app.sets[self.db_id]):
-                    self.app.sets[self.db_id][set_idx]["r"] = str(new_target_r)
-                self.reps_fields[set_idx].update()
                 self.autosave_pending_sets()
-
-                if set_idx == 0:
-                    banner_w = self.format_target_weight(is_bw, new_w)
-                    self.target_banner_text.value = f"🎯 Auto-Adjusted Target: {banner_w} x {new_target_r}"
-                    self.target_banner_text.color = "orange300"
-                    self.target_banner_text.update()
-
         return live_update_event
 
     def autosave_pending_sets(self):
@@ -2883,7 +2813,21 @@ class WorkoutTrackerApp:
             print(f"[scroll_to_workout_key] {ex}")
 
     def jump_to_category(self, category_name):
-        self.collapsed_categories[self.category_key(category_name)] = False
+        # Quick-nav behaves like an accordion: open the selected muscle group
+        # and collapse every other group programmed for the current day.
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT DISTINCT category
+                FROM workout_sessions
+                WHERE meso_number = ? AND week = ? AND day_of_week = ?
+                ORDER BY category
+            """, (self.current_meso, self.current_week, self.current_day))
+            day_categories = [row[0] for row in cursor.fetchall() if row[0]]
+
+        for day_category in day_categories:
+            self.collapsed_categories[self.category_key(day_category)] = (day_category != category_name)
+
         self.pending_scroll_key = self.category_anchor_key(category_name)
         self.rebuild_entire_display()
 
