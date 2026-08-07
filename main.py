@@ -1209,7 +1209,7 @@ class WorkoutTrackerApp:
                 ], spacing=7, vertical_alignment=ft.CrossAxisAlignment.CENTER),
                 bgcolor="white10",
                 border_radius=10,
-                padding=ft.padding.symmetric(horizontal=10, vertical=7),
+                padding=7,
             )
         ], spacing=0)
         self.week_nav_row = ft.Row(spacing=6, scroll="auto", expand=True)
@@ -1222,7 +1222,7 @@ class WorkoutTrackerApp:
             style=ft.ButtonStyle(
                 bgcolor="white10", color="white",
                 shape=ft.RoundedRectangleBorder(radius=12),
-                padding=ft.padding.symmetric(horizontal=18)
+                padding=12
             )
         )
 
@@ -4549,7 +4549,7 @@ class WorkoutTrackerApp:
 
             btn = ft.Container(
                 content=ft.Text(f"W{w}{check_str}", size=13, weight="bold", color=txt_color),
-                padding=ft.padding.symmetric(horizontal=11, vertical=7),
+                padding=8,
                 bgcolor=bg_color,
                 border=ft.border.all(1, border_color),
                 border_radius=12,
@@ -4572,7 +4572,7 @@ class WorkoutTrackerApp:
 
             btn = ft.Container(
                 content=ft.Text(f"{d[:3]} {check_str}".strip(), size=12, weight=weight, color=txt_color),
-                padding=ft.padding.symmetric(horizontal=10, vertical=7),
+                padding=7,
                 bgcolor=bg_color,
                 border=ft.border.all(1, border_color),
                 border_radius=12,
