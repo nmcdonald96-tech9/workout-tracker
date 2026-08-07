@@ -637,7 +637,6 @@ class ExerciseCard(ft.Card):
             if self.db_id not in self.app.sets or set_idx >= len(self.app.sets[self.db_id]):
                 return
             set_data = self.app.sets[self.db_id][set_idx]
-            exercise_was_started = any(bool(s.get("done")) for s in self.app.sets.get(self.db_id, []))
             if ev.control.value:
                 w_raw = str(set_data.get("w", "")).strip()
                 r_raw = str(set_data.get("r", "")).strip()
@@ -655,20 +654,79 @@ class ExerciseCard(ft.Card):
                 set_data["completed_at"] = None
             self.autosave_pending_sets()
             self.update_kinetic_ui()
-            if ev.control.value and not exercise_was_started:
-                category_name = self.context.get("category") if self.context else None
-                self.app.activate_exercise(category_name, self.db_id)
         return set_done_changed
 
     def make_live_updater(self, set_idx, key_type):
         def live_update_event(ev):
-            # Persist the edited value without directly mutating other mounted
-            # controls. Direct sibling mutation can raise "Frozen controls cannot
-            # be updated" in the Android packaged Flet runtime.
             raw_val = ev.control.value
+
             if self.db_id in self.app.sets and set_idx < len(self.app.sets[self.db_id]):
                 self.app.sets[self.db_id][set_idx][key_type] = raw_val
                 self.autosave_pending_sets()
+
+            if key_type == "w":
+                plate_txt = calculate_plates_per_side(self.exercise, raw_val)
+                self.plate_feedback_label.value = plate_txt
+                if hasattr(self, 'plate_container'):
+                    self.plate_container.visible = bool(plate_txt)
+                    try:
+                        self.plate_feedback_label.update()
+                        self.plate_container.update()
+                    except: pass
+                
+                if not hasattr(self, "set_targets") or set_idx >= len(self.set_targets):
+                    return
+
+                try:
+                    orig_w = float(self.set_targets[set_idx]["w"])
+                    orig_r = int(self.set_targets[set_idx]["r"])
+                except Exception:
+                    return
+
+                is_bw = EXERCISE_METADATA.get(self.exercise, {}).get("equipment") == "Bodyweight"
+                bw = get_user_bodyweight() if is_bw else 0.0
+
+                trimmed = raw_val.strip()
+                if trimmed in ("", ".", "-", "-."):
+                    self.reset_target_preview(set_idx, orig_w, orig_r, is_bw)
+                    return
+                
+                try:
+                    new_w = float(trimmed)
+                except ValueError:
+                    return
+
+                if new_w == orig_w:
+                    self.reset_target_preview(set_idx, orig_w, orig_r, is_bw)
+                    return
+
+                orig_e1rm = calculate_e1rm(orig_w, orig_r, bw)
+                if orig_e1rm <= 0:
+                    self.reset_target_preview(set_idx, orig_w, orig_r, is_bw)
+                    return
+
+                new_total_w = new_w + bw
+                if new_total_w < orig_e1rm:
+                    new_target_r = int(round(37 - (36 * new_total_w / orig_e1rm)))
+                else:
+                    new_target_r = 1
+
+                if new_target_r < 1: new_target_r = 1
+
+                self.reps_fields[set_idx].label = f"Tgt: {new_target_r}"
+                self.reps_fields[set_idx].hint_text = "Reps"
+                self.reps_fields[set_idx].value = str(new_target_r)
+                if self.db_id in self.app.sets and set_idx < len(self.app.sets[self.db_id]):
+                    self.app.sets[self.db_id][set_idx]["r"] = str(new_target_r)
+                self.reps_fields[set_idx].update()
+                self.autosave_pending_sets()
+
+                if set_idx == 0:
+                    banner_w = self.format_target_weight(is_bw, new_w)
+                    self.target_banner_text.value = f"🎯 Auto-Adjusted Target: {banner_w} x {new_target_r}"
+                    self.target_banner_text.color = "orange300"
+                    self.target_banner_text.update()
+
         return live_update_event
 
     def autosave_pending_sets(self):
@@ -924,9 +982,7 @@ class WorkoutTrackerApp:
         self.set_touch_times = {}
         self.view_mode = "workout" 
         self.collapsed_categories = {}
-        # Tracks the currently-started exercise within each day/category so it
-        # can be promoted to the top of that muscle group after its first set.
-        self.active_exercise_by_category = {}
+        # Used by the quick-nav bar to scroll to a tapped category.
         self.pending_scroll_key = None
         self.delete_dialog_id = None
         self.current_meso = 1
@@ -2803,9 +2859,6 @@ class WorkoutTrackerApp:
         safe = "".join(ch.lower() if ch.isalnum() else "-" for ch in str(category_name)).strip("-")
         return f"category-{safe}"
 
-    def exercise_anchor_key(self, session_id):
-        return f"exercise-{session_id}"
-
     def scroll_to_workout_key(self, key):
         try:
             self.main_canvas.scroll_to(key=key, duration=350)
@@ -2829,17 +2882,6 @@ class WorkoutTrackerApp:
             self.collapsed_categories[self.category_key(day_category)] = (day_category != category_name)
 
         self.pending_scroll_key = self.category_anchor_key(category_name)
-        self.rebuild_entire_display()
-
-    def activate_exercise(self, category_name, session_id):
-        if not category_name:
-            return
-        key = self.category_key(category_name)
-        if self.active_exercise_by_category.get(key) == session_id:
-            return
-        self.active_exercise_by_category[key] = session_id
-        self.collapsed_categories[key] = False
-        self.pending_scroll_key = self.exercise_anchor_key(session_id)
         self.rebuild_entire_display()
 
     def build_category_quick_nav(self):
@@ -5116,16 +5158,6 @@ class WorkoutTrackerApp:
 
             for category_name in category_order:
                 rows_in_cat = grouped[category_name]
-                active_id = self.active_exercise_by_category.get(self.category_key(category_name))
-                original_row_index = {row[0]: idx for idx, row in enumerate(rows_in_cat)}
-                rows_in_cat = sorted(
-                    rows_in_cat,
-                    key=lambda row: (
-                        1 if row[4] != STATUS_PENDING else 0,
-                        0 if row[0] == active_id and row[4] == STATUS_PENDING else 1,
-                        original_row_index.get(row[0], 999),
-                    )
-                )
                 
                 self.main_canvas.controls.append(ft.Container(height=4))
                 self.main_canvas.controls.append(self.make_category_header(category_name, rows_in_cat))
@@ -5148,7 +5180,6 @@ class WorkoutTrackerApp:
                     }
                     
                     card = ExerciseCard(db_id, exercise, tgt_w, tgt_r, status, mov_type, self, context=ctx)
-                    card.key = self.exercise_anchor_key(db_id)
                     self.main_canvas.controls.append(card)
 
             if pending_week_count == 0 and len(self.engine_button_container.controls) > 0:
