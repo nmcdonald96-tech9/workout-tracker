@@ -4551,7 +4551,7 @@ class WorkoutTrackerApp:
                 content=ft.Text(f"W{w}{check_str}", size=13, weight="bold", color=txt_color),
                 padding=8,
                 bgcolor=bg_color,
-                border=ft.border.all(1, border_color),
+                border=ft.Border(top=ft.BorderSide(1, border_color), right=ft.BorderSide(1, border_color), bottom=ft.BorderSide(1, border_color), left=ft.BorderSide(1, border_color)),
                 border_radius=12,
                 on_click=lambda e, wk=w: self.change_active_week(wk),
                 ink=True
@@ -4574,7 +4574,7 @@ class WorkoutTrackerApp:
                 content=ft.Text(f"{d[:3]} {check_str}".strip(), size=12, weight=weight, color=txt_color),
                 padding=7,
                 bgcolor=bg_color,
-                border=ft.border.all(1, border_color),
+                border=ft.Border(top=ft.BorderSide(1, border_color), right=ft.BorderSide(1, border_color), bottom=ft.BorderSide(1, border_color), left=ft.BorderSide(1, border_color)),
                 border_radius=12,
                 on_click=lambda e, day_str=d: self.change_active_day(day_str),
                 ink=True
