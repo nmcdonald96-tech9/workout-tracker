@@ -89,20 +89,6 @@ class ExerciseCard(ft.Card):
         except:
             return "BW" if is_bw else f"{weight_value} lbs"
 
-    def reset_target_preview(self, set_idx, orig_w, orig_r, is_bw):
-        self.reps_fields[set_idx].label = f"Tgt: {orig_r}"
-        self.reps_fields[set_idx].hint_text = "Reps"
-        self.reps_fields[set_idx].value = str(orig_r)
-        if self.db_id in self.app.sets and set_idx < len(self.app.sets[self.db_id]):
-            self.app.sets[self.db_id][set_idx]["r"] = str(orig_r)
-        self.reps_fields[set_idx].update()
-
-        if set_idx == 0:
-            banner_w = self.format_target_weight(is_bw, orig_w)
-            self.target_banner_text.value = f"🎯 Target: {banner_w} x {orig_r}  |  RPE Goal: 8-9"
-            self.target_banner_text.color = "blue200"
-            self.target_banner_text.update()
-
     def make_rpe_updater(self, set_idx):
         def rpe_handler(ev):
             if self.db_id in self.app.sets and set_idx < len(self.app.sets[self.db_id]):
@@ -157,12 +143,74 @@ class ExerciseCard(ft.Card):
         )
         self.app.safe_open(swap_dialog)
 
-    def update_kinetic_ui(self):
-        # Compatibility no-op: mounted Android Flet controls may be frozen.
-        return
+    def make_blur_handler(self, set_idx, key_type):
+        # Runs once when a field loses focus -- never on every keystroke.
+        # Only ever mutates self.app.sets (a plain dict, always safe) and,
+        # when a visual refresh is actually needed, triggers a full
+        # rebuild_entire_display(). It NEVER sets a property directly on an
+        # already-mounted control -- that pattern is what threw "Frozen
+        # controls cannot be updated" on the packaged Android runtime.
+        def blur_handler(e):
+            self.autosave_pending_sets()
 
-    def handle_blur(self, e):
-        self.autosave_pending_sets()
+            if key_type != "w":
+                return  # reps/RPE blur: nothing downstream needs recomputing
+
+            if not hasattr(self, "set_targets") or set_idx >= len(self.set_targets):
+                return
+            if self.db_id not in self.app.sets or set_idx >= len(self.app.sets[self.db_id]):
+                return
+
+            try:
+                orig_w = float(self.set_targets[set_idx]["w"])
+                orig_r = int(self.set_targets[set_idx]["r"])
+            except Exception:
+                return
+
+            is_bw = EXERCISE_METADATA.get(self.exercise, {}).get("equipment") == "Bodyweight"
+            bw = get_user_bodyweight() if is_bw else 0.0
+
+            raw_val = str(self.app.sets[self.db_id][set_idx].get("w", "")).strip()
+            current_r = str(self.app.sets[self.db_id][set_idx].get("r", "")).strip()
+            reps_already_entered = bool(current_r)
+
+            if raw_val in ("", ".", "-", "-."):
+                # Weight cleared. Never touch a reps value the user already
+                # typed -- that's a real result, not a target suggestion.
+                if not reps_already_entered:
+                    self.app.sets[self.db_id][set_idx]["r"] = str(orig_r)
+                    self.set_targets[set_idx]["r"] = orig_r
+                self.app.rebuild_entire_display()
+                return
+
+            try:
+                new_w = float(raw_val)
+            except ValueError:
+                return  # let on_save's validation catch genuinely invalid text
+
+            if new_w == orig_w:
+                return  # unchanged, nothing to recompute
+
+            orig_e1rm = calculate_e1rm(orig_w, orig_r, bw)
+            if orig_e1rm > 0 and not reps_already_entered:
+                # Only auto-suggest a reps target while reps is still blank.
+                # Once the user has recorded an actual result, a later weight
+                # correction must never silently overwrite it.
+                new_total_w = new_w + bw
+                if new_total_w < orig_e1rm:
+                    new_target_r = int(round(37 - (36 * new_total_w / orig_e1rm)))
+                else:
+                    new_target_r = 1
+                new_target_r = max(1, new_target_r)
+                self.app.sets[self.db_id][set_idx]["r"] = str(new_target_r)
+                self.set_targets[set_idx]["r"] = new_target_r
+
+            # Rebuild regardless of whether the reps branch above fired --
+            # this is also what refreshes plate feedback, which is
+            # recomputed fresh from state on every build_card() call.
+            self.autosave_pending_sets()
+            self.app.rebuild_entire_display()
+        return blur_handler
 
     def build_card(self):
         # --- DATA FETCHING PHASE ---
@@ -340,9 +388,39 @@ class ExerciseCard(ft.Card):
         # --- UI CONSTRUCTION ---
         sets_column = ft.Column(spacing=4)
         self.set_ui_rows = [] # <-- KINETIC INIT
-        
-        plate_text = calculate_plates_per_side(self.exercise, self.app.sets[self.db_id][0]["w"] if self.app.sets[self.db_id] else 0)
-        self.plate_feedback_label = ft.Text(value=plate_text, size=10, font_family="monospace", color="cyan100")
+
+        # Kinetic dimming state -- computed here (before plate feedback and
+        # the row loop below) so both can share it instead of scanning
+        # self.app.sets twice. Never mutated on an already-mounted control
+        # afterward; baked into initial construction only. That
+        # mutate-after-mount pattern is what threw "Frozen controls cannot
+        # be updated" on the packaged Android runtime.
+        #
+        # Uses the explicit "done" flag, not field-emptiness -- pre-filling
+        # all sets' weight/reps/RPE before checking any Done box must not
+        # make the row dimming think every set is already completed.
+        kinetic_active_idx = -1
+        for i, s in enumerate(self.app.sets.get(self.db_id, [])):
+            if not bool(s.get("done")):
+                kinetic_active_idx = i
+                break
+
+        # Plate feedback follows this same active set (first not-Done, or
+        # the last set once everything is Done) rather than always Set 1.
+        if kinetic_active_idx != -1:
+            plate_active_idx = kinetic_active_idx
+        elif self.app.sets.get(self.db_id):
+            plate_active_idx = len(self.app.sets[self.db_id]) - 1
+        else:
+            plate_active_idx = 0
+
+        active_weight = 0
+        if self.app.sets.get(self.db_id) and plate_active_idx < len(self.app.sets[self.db_id]):
+            active_weight = self.app.sets[self.db_id][plate_active_idx].get("w", 0)
+
+        plate_text = calculate_plates_per_side(self.exercise, active_weight)
+        plate_display_text = f"Set {plate_active_idx + 1}: {plate_text}" if plate_text else ""
+        self.plate_feedback_label = ft.Text(value=plate_display_text, size=10, font_family="monospace", color="cyan100")
         self.plate_container = ft.Container(
             content=self.plate_feedback_label, 
             bgcolor="bluegrey900", 
@@ -382,7 +460,7 @@ class ExerciseCard(ft.Card):
                 keyboard_type=ft.KeyboardType.NUMBER
             )
             w_f.on_change = self.make_live_updater(idx, "w")
-            w_f.on_blur = self.handle_blur
+            w_f.on_blur = self.make_blur_handler(idx, "w")
 
             r_f = ft.TextField(
                 value=set_data["r"],
@@ -400,7 +478,7 @@ class ExerciseCard(ft.Card):
                 keyboard_type=ft.KeyboardType.NUMBER
             )
             r_f.on_change = self.make_live_updater(idx, "r")
-            r_f.on_blur = self.handle_blur
+            r_f.on_blur = self.make_blur_handler(idx, "r")
 
             rpe_f = ft.TextField(
                 value=set_data["rpe"],
@@ -418,7 +496,7 @@ class ExerciseCard(ft.Card):
                 keyboard_type=ft.KeyboardType.NUMBER
             )
             rpe_f.on_change = self.make_rpe_updater(idx)
-            rpe_f.on_blur = self.handle_blur
+            rpe_f.on_blur = self.make_blur_handler(idx, "rpe")
 
             self.weight_fields.append(w_f)
             self.reps_fields.append(r_f)
@@ -436,6 +514,14 @@ class ExerciseCard(ft.Card):
             # Explicit completion controls rest timing. Editing planned values never starts a timer.
             set_row = ft.Row([set_indicator, w_f, r_f, rpe_f, done_checkbox], alignment="start", vertical_alignment="center", spacing=6)
 
+            # Kinetic dimming, baked in at construction (see kinetic_active_idx above).
+            if idx < kinetic_active_idx or kinetic_active_idx == -1:
+                row_opacity, row_bgcolor = 0.4, None   # completed, dimmed
+            elif idx == kinetic_active_idx:
+                row_opacity, row_bgcolor = 1.0, "white10"  # active, highlighted
+            else:
+                row_opacity, row_bgcolor = 0.8, None   # upcoming
+
             # Rest-time caption: only for already-completed sets that have a
             # computed gap (set 1 of an exercise never has one -- no prior
             # set to compare against, which is intentional, not a bug).
@@ -448,10 +534,14 @@ class ExerciseCard(ft.Card):
                 )
                 row_container = ft.Container(
                     content=ft.Column([set_row, rest_caption], spacing=2, tight=True),
-                    padding=6, border_radius=8
+                    padding=6, border_radius=8,
+                    opacity=row_opacity, bgcolor=row_bgcolor
                 )
             else:
-                row_container = ft.Container(content=set_row, padding=6, border_radius=8)
+                row_container = ft.Container(
+                    content=set_row, padding=6, border_radius=8,
+                    opacity=row_opacity, bgcolor=row_bgcolor
+                )
 
             self.set_ui_rows.append(row_container)
             sets_column.controls.append(row_container)
@@ -596,8 +686,6 @@ class ExerciseCard(ft.Card):
             bgcolor="white10"
         )
         self.margin = 4
-        
-        # Static row styling avoids frozen-control updates on Android.
 
     def make_set_done_handler(self, set_idx):
         def set_done_changed(ev):
@@ -615,6 +703,27 @@ class ExerciseCard(ft.Card):
                     self.app.show_snackbar(f"Enter weight, reps, and RPE before completing Set {set_idx + 1}.", "red300")
                     self.app.rebuild_entire_display()
                     return
+                # Same numeric check on_save already enforces -- catch it here too
+                # so "Done" can never go green on garbage data. Same rebuild-to-revert
+                # pattern as the empty-field case above; no direct control mutation.
+                try:
+                    float(w_raw)
+                except ValueError:
+                    self.app.show_snackbar(f"Set {set_idx + 1} weight must be numeric.", "red300")
+                    self.app.rebuild_entire_display()
+                    return
+                try:
+                    int(r_raw)
+                except ValueError:
+                    self.app.show_snackbar(f"Set {set_idx + 1} reps must be a whole number.", "red300")
+                    self.app.rebuild_entire_display()
+                    return
+                try:
+                    float(rpe_raw)
+                except ValueError:
+                    self.app.show_snackbar(f"Set {set_idx + 1} RPE must be numeric.", "red300")
+                    self.app.rebuild_entire_display()
+                    return
                 set_data["done"] = True
                 set_data["completed_at"] = datetime.now().isoformat(timespec="seconds")
             else:
@@ -623,10 +732,19 @@ class ExerciseCard(ft.Card):
             self.autosave_pending_sets()
             if ev.control.value and not exercise_was_started:
                 category_name = self.context.get("category") if self.context else None
-                self.app.activate_exercise(category_name, self.db_id)
+                self.app.activate_exercise(category_name, self.db_id)  # rebuilds internally
+            else:
+                # Dimming is baked into initial row construction (see build_card),
+                # so a fresh rebuild is all that's needed to reflect the new state --
+                # no direct mutation of the already-mounted rows.
+                self.app.rebuild_entire_display()
         return set_done_changed
 
     def make_live_updater(self, set_idx, key_type):
+        # on_change fires on every keystroke -- must stay completely inert
+        # from a UI-mutation standpoint. All the heavier recompute work
+        # (plate feedback, reps-target recalculation) lives in the
+        # corresponding blur handler instead, which fires once per field.
         def live_update_event(ev):
             raw_val = ev.control.value
             if self.db_id in self.app.sets and set_idx < len(self.app.sets[self.db_id]):
