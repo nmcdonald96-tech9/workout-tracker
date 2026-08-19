@@ -64,6 +64,7 @@ def init_and_seed_db():
             "id INTEGER PRIMARY KEY AUTOINCREMENT, "
             "session_id INTEGER, set_number INTEGER, weight REAL, reps INTEGER, rpe REAL, "
             "rest_seconds INTEGER, target_weight REAL, target_reps INTEGER, "
+            "normal_target_weight REAL, normal_target_reps INTEGER, "
             "completed_at TEXT, is_complete INTEGER DEFAULT 0, "
             "FOREIGN KEY(session_id) REFERENCES workout_sessions(id) ON DELETE CASCADE)"
         )
@@ -118,6 +119,17 @@ def init_and_seed_db():
         if "target_reps" not in ws_cols:
             cursor.execute("ALTER TABLE workout_sets ADD COLUMN target_reps INTEGER")
             conn.commit()
+        if "normal_target_weight" not in ws_cols:
+            cursor.execute("ALTER TABLE workout_sets ADD COLUMN normal_target_weight REAL")
+            conn.commit()
+        if "normal_target_reps" not in ws_cols:
+            cursor.execute("ALTER TABLE workout_sets ADD COLUMN normal_target_reps INTEGER")
+            conn.commit()
+        # Existing records were unregulated before this feature; backfill their
+        # normal trajectory from the target originally saved for that set.
+        cursor.execute("UPDATE workout_sets SET normal_target_weight = target_weight WHERE normal_target_weight IS NULL")
+        cursor.execute("UPDATE workout_sets SET normal_target_reps = target_reps WHERE normal_target_reps IS NULL")
+        conn.commit()
         if "completed_at" not in ws_cols:
             cursor.execute("ALTER TABLE workout_sets ADD COLUMN completed_at TEXT")
             conn.commit()
@@ -359,6 +371,42 @@ def get_prev_dumbbell(current_weight):
             return w
     return current_weight
 
+
+def get_readiness_adjustment(readiness_score=15, joint_score=5, movement_type="Compound"):
+    """Temporary difficulty reduction for the current day only.
+
+    Sleep and Drive are inferred from readiness_score - joint_score and averaged.
+    General scale: 5=0%/0 reps, 4=2.5%/0, 3=5%/0, 2=7.5%/-1, 1=10%/-2.
+    Compound joint scale: 5=0%/0, 4=2.5%/0, 3=5%/-1, 2=10%/-2, 1=15%/-3.
+    The more protective load and rep reductions win; reductions are not stacked.
+    """
+    try:
+        joint = min(5.0, max(1.0, float(joint_score)))
+        total = min(15.0, max(3.0, float(readiness_score)))
+    except (TypeError, ValueError):
+        joint, total = 5.0, 15.0
+    sleep_drive_avg = min(5.0, max(1.0, (total - joint) / 2.0))
+
+    if sleep_drive_avg >= 4.5: fatigue_pct, fatigue_rep_drop = 0.0, 0
+    elif sleep_drive_avg >= 3.5: fatigue_pct, fatigue_rep_drop = 0.025, 0
+    elif sleep_drive_avg >= 2.5: fatigue_pct, fatigue_rep_drop = 0.05, 0
+    elif sleep_drive_avg >= 1.5: fatigue_pct, fatigue_rep_drop = 0.075, 1
+    else: fatigue_pct, fatigue_rep_drop = 0.10, 2
+
+    joint_pct, joint_rep_drop = 0.0, 0
+    if movement_type == "Compound":
+        if joint >= 4.5: joint_pct, joint_rep_drop = 0.0, 0
+        elif joint >= 3.5: joint_pct, joint_rep_drop = 0.025, 0
+        elif joint >= 2.5: joint_pct, joint_rep_drop = 0.05, 1
+        elif joint >= 1.5: joint_pct, joint_rep_drop = 0.10, 2
+        else: joint_pct, joint_rep_drop = 0.15, 3
+
+    return {
+        "reduction_pct": max(fatigue_pct, joint_pct),
+        "rep_drop": max(fatigue_rep_drop, joint_rep_drop),
+        "sleep_drive_avg": sleep_drive_avg,
+        "joint_score": joint,
+    }
 
 def calculate_progression(first_set_w, first_set_reps, first_set_rpe, tgt_r, mov_type, readiness_score=15, joint_score=5, equipment_type="Barbell", is_bodyweight=False, age=43, profile=0):
     # Coerce None or non-numeric RPE to a neutral baseline value (8.0 = moderate effort)
@@ -679,16 +727,27 @@ def calculate_set_specific_progression(completed_sets, default_target_weight, de
             actual_rpe = float(row[2]) if len(row) > 2 and row[2] is not None else 8.0
             prior_target_w = float(row[3]) if len(row) > 3 and row[3] is not None else fallback_w
             prior_target_r = int(row[4]) if len(row) > 4 and row[4] is not None else fallback_r
+            normal_target_w = float(row[5]) if len(row) > 5 and row[5] is not None else prior_target_w
+            normal_target_r = int(row[6]) if len(row) > 6 and row[6] is not None else prior_target_r
         except (TypeError, ValueError):
             continue
         if actual_r <= 0:
             continue
 
-        next_w, next_r = calculate_progression(
-            actual_w, actual_r, actual_rpe, prior_target_r, movement_type,
-            readiness_score, joint_score, equipment_type=equipment_type,
-            is_bodyweight=is_bodyweight, age=age, profile=profile
+        was_readiness_regulated = (
+            abs(prior_target_w - normal_target_w) > 0.01 or
+            prior_target_r != normal_target_r
         )
+        if was_readiness_regulated:
+            # A poor-feeling day is isolated. Resume the saved normal trajectory
+            # next time instead of progressing or regressing from the easier target.
+            next_w, next_r = normal_target_w, normal_target_r
+        else:
+            next_w, next_r = calculate_progression(
+                actual_w, actual_r, actual_rpe, normal_target_r, movement_type,
+                15, 5, equipment_type=equipment_type,
+                is_bodyweight=is_bodyweight, age=age, profile=profile
+            )
 
         # Preserve bodyweight external-load semantics and practical numeric types.
         next_w = float(next_w)
@@ -715,6 +774,9 @@ def calculate_set_specific_progression(completed_sets, default_target_weight, de
             "actual_rpe": actual_rpe,
             "prior_target_weight": prior_target_w,
             "prior_target_reps": prior_target_r,
+            "normal_target_weight": normal_target_w,
+            "normal_target_reps": normal_target_r,
+            "readiness_regulated": was_readiness_regulated,
             "next_weight": next_w,
             "next_reps": next_r,
         })
@@ -848,6 +910,30 @@ def calculate_plates_per_side(exercise_name, total_weight_str):
     try:
         total_weight = float(total_weight_str)
         meta = EXERCISE_METADATA.get(exercise_name, {})
+
+        def total_plate_breakdown(load, weights):
+            remaining_load = max(0.0, float(load))
+            counts = []
+            for plate in weights:
+                count = int((remaining_load + 1e-9) // plate)
+                if count:
+                    counts.append((plate, count))
+                    remaining_load -= count * plate
+            if remaining_load > 0.01:
+                return None
+            return counts
+
+        plate_mode = meta.get("plate_mode") if meta else None
+        if plate_mode in ("held_total", "leg_press_total"):
+            weights = meta.get("plate_weights", PLATE_WEIGHTS)
+            counts = total_plate_breakdown(total_weight, weights)
+            if counts is None:
+                return "Exact plate mix unavailable"
+            if not counts:
+                return "No added plates"
+            pieces = [f"{count}x{plate:g}" for plate, count in counts]
+            prefix = "Hold" if plate_mode == "held_total" else "Total plates"
+            return f"{prefix}: " + " + ".join(pieces)
         
         if not meta:
             ex_lower = exercise_name.lower()
