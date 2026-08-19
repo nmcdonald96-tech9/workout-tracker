@@ -180,6 +180,7 @@ class ExerciseCard(ft.Card):
                 if not reps_already_entered:
                     self.app.sets[self.db_id][set_idx]["r"] = str(orig_r)
                     self.set_targets[set_idx]["r"] = orig_r
+                self.app.pending_scroll_key = self.app.exercise_anchor_key(self.db_id)
                 self.app.rebuild_entire_display()
                 return
 
@@ -209,6 +210,7 @@ class ExerciseCard(ft.Card):
             # this is also what refreshes plate feedback, which is
             # recomputed fresh from state on every build_card() call.
             self.autosave_pending_sets()
+            self.app.pending_scroll_key = self.app.exercise_anchor_key(self.db_id)
             self.app.rebuild_entire_display()
         return blur_handler
 
@@ -230,7 +232,7 @@ class ExerciseCard(ft.Card):
                 r_score = sum(readiness_row[:3]) if readiness_row else 9
 
                 cursor.execute("""
-                    SELECT ws.id, s.set_number, s.weight, s.reps, s.rpe, s.target_weight, s.target_reps
+                    SELECT ws.id, s.set_number, s.weight, s.reps, s.rpe, s.target_weight, s.target_reps, s.normal_target_weight, s.normal_target_reps
                     FROM workout_sets s 
                     JOIN workout_sessions ws ON s.session_id = ws.id 
                     WHERE ws.exercise = ? AND ws.meso_number = ? AND ws.status = 'Completed'
@@ -238,7 +240,7 @@ class ExerciseCard(ft.Card):
                 """, (self.exercise, self.app.current_meso))
                 past_records = cursor.fetchall()
                 
-                cursor.execute("SELECT weight, reps, rpe, rest_seconds, target_weight, target_reps, completed_at, is_complete FROM workout_sets WHERE session_id = ? ORDER BY set_number ASC", (self.db_id,))
+                cursor.execute("SELECT weight, reps, rpe, rest_seconds, target_weight, target_reps, normal_target_weight, normal_target_reps, completed_at, is_complete FROM workout_sets WHERE session_id = ? ORDER BY set_number ASC", (self.db_id,))
                 saved_sets = cursor.fetchall()
                 
                 cursor.execute("SELECT setup_notes FROM exercise_dict WHERE name = ?", (self.exercise,))
@@ -253,7 +255,7 @@ class ExerciseCard(ft.Card):
                 if row[0] != latest_session_id:
                     break
                 try:
-                    recent_session_sets.append((row[2], row[3], row[4], row[5], row[6]))
+                    recent_session_sets.append((row[2], row[3], row[4], row[5], row[6], row[7], row[8]))
                 except (IndexError, TypeError):
                     pass
 
@@ -275,62 +277,59 @@ class ExerciseCard(ft.Card):
                 return round(w / 5.0) * 5.0
             return round(w / 2.5) * 2.5
         
-        adj_w = self.tgt_w
-        adj_r = self.tgt_r
         regulation_msg = ""
-        
-        if self.status == STATUS_PENDING and self.app.current_week != "Deload":
-            if j_score <= 2 and self.mov_type == "Compound":
-                adj_w = snap_weight(self.tgt_w * 0.85, eq_type) if not is_bw else self.tgt_w
-                adj_r = self.tgt_r + 2
-                regulation_msg = "Joint Relief: -15% Lbs"
-            elif r_score <= 7:
-                adj_w = snap_weight(self.tgt_w * 0.90, eq_type) if not is_bw else self.tgt_w
-                regulation_msg = "Fatigue: -10% Lbs"
-                
-        base_target_w = adj_w
-        base_target_r = adj_r
+        readiness_adj = get_readiness_adjustment(r_score, j_score, self.mov_type)
+        reduction_pct = readiness_adj["reduction_pct"] if self.status == STATUS_PENDING and self.app.current_week != "Deload" else 0.0
+        rep_drop = readiness_adj["rep_drop"] if reduction_pct > 0 else 0
         self.set_progression_diagnostics = []
 
+        # Build the unregulated trajectory first.
+        self.normal_set_targets = []
         if recent_session_sets:
             try:
                 if self.app.current_week == "Deload":
-                    self.set_targets = []
                     for row in recent_session_sets:
                         prior_w = float(row[0])
                         prior_r = max(1, int(row[1]) // 2)
                         deload_w = prior_w if is_bw else snap_weight(prior_w * DELOAD_PERCENTAGE, eq_type)
-                        self.set_targets.append({"w": deload_w, "r": prior_r})
+                        self.normal_set_targets.append({"w": deload_w, "r": prior_r})
                 else:
                     raw_targets, self.set_progression_diagnostics = calculate_set_specific_progression(
-                        recent_session_sets,
-                        self.tgt_w,
-                        self.tgt_r,
-                        self.mov_type,
-                        readiness_score=r_score,
-                        joint_score=j_score,
-                        equipment_type=eq_type,
-                        is_bodyweight=is_bw,
-                        bodyweight=get_user_bodyweight(),
-                        age=get_user_age(),
-                        profile=get_user_progression_profile()
+                        recent_session_sets, self.tgt_w, self.tgt_r, self.mov_type,
+                        readiness_score=15, joint_score=5, equipment_type=eq_type,
+                        is_bodyweight=is_bw, bodyweight=get_user_bodyweight(),
+                        age=get_user_age(), profile=get_user_progression_profile()
                     )
-                    self.set_targets = [
-                        {"w": snap_weight(t["w"], eq_type), "r": int(t["r"])}
+                    self.normal_set_targets = [
+                        {"w": snap_weight(t["w"], eq_type), "r": max(1, int(t["r"]))}
                         for t in raw_targets
                     ]
-                if self.set_targets:
-                    base_target_w = self.set_targets[0]["w"]
-                    base_target_r = self.set_targets[0]["r"]
             except Exception as ex:
                 print(f"Set-specific progression fallback for {self.exercise}: {ex}")
-                self.set_targets = []
-        else:
-            self.set_targets = []
+                self.normal_set_targets = []
 
-        # New exercises and any extra manually-added sets use the session seed.
-        while len(self.set_targets) < 20:
-            self.set_targets.append({"w": base_target_w, "r": base_target_r})
+        normal_seed_w = self.normal_set_targets[0]["w"] if self.normal_set_targets else self.tgt_w
+        normal_seed_r = self.normal_set_targets[0]["r"] if self.normal_set_targets else self.tgt_r
+        while len(self.normal_set_targets) < 20:
+            self.normal_set_targets.append({"w": normal_seed_w, "r": normal_seed_r})
+
+        # Apply today's temporary reduction only to the displayed/logged targets.
+        self.set_targets = []
+        for normal_target in self.normal_set_targets:
+            regulated_w = normal_target["w"]
+            regulated_r = normal_target["r"]
+            if reduction_pct > 0:
+                regulated_w = normal_target["w"] if is_bw else snap_weight(normal_target["w"] * (1.0 - reduction_pct), eq_type)
+                regulated_r = max(1, int(normal_target["r"]) - int(rep_drop))
+            self.set_targets.append({"w": regulated_w, "r": regulated_r})
+
+        adj_w, adj_r = self.set_targets[0]["w"], self.set_targets[0]["r"]
+        base_target_w, base_target_r = adj_w, adj_r
+        if reduction_pct > 0:
+            pct_label = round(reduction_pct * 100, 1)
+            regulation_msg = f"Today only: -{pct_label:g}% Lbs"
+            if rep_drop:
+                regulation_msg += f", -{rep_drop} Reps"
         default_sets = 1 if r_score <= 7 else 2
 
         # --- AUTOSAVE NOTE ---
@@ -365,12 +364,14 @@ class ExerciseCard(ft.Card):
         if self.db_id not in self.app.sets:
             self.app.sets[self.db_id] = []
             if saved_sets:
-                for idx, (sw, sr, srpe, s_rest, stw, strp, completed_at, is_complete) in enumerate(saved_sets):
+                for idx, (sw, sr, srpe, s_rest, stw, strp, normal_tw, normal_tr, completed_at, is_complete) in enumerate(saved_sets):
                     w_str = str(sw) if sw is not None and str(sw) != "None" else ""
                     r_str = str(sr) if sr is not None and str(sr) != "None" else ""
                     rpe_str = str(srpe) if srpe is not None and str(srpe) != "None" else ""
                     if stw is not None and strp is not None and idx < len(self.set_targets):
                         self.set_targets[idx] = {"w": float(stw), "r": int(strp)}
+                    if normal_tw is not None and normal_tr is not None and idx < len(self.normal_set_targets):
+                        self.normal_set_targets[idx] = {"w": float(normal_tw), "r": int(normal_tr)}
                     self.app.sets[self.db_id].append({
                         "w": w_str, "r": r_str, "rpe": rpe_str, "rest": s_rest,
                         "completed_at": completed_at, "done": bool(is_complete)
@@ -601,7 +602,14 @@ class ExerciseCard(ft.Card):
                     ft.Text(f"{self.exercise}", size=14, weight="bold", color="white"),
                     ft.TextButton(content=ft.Text("🔄", size=14, color="cyan300"), style=ft.ButtonStyle(padding=2), on_click=self.open_swap_dialog)
                 ], spacing=2, expand=True),
-                status_chip
+                ft.Row([
+                    ft.Container(
+                        content=ft.Text(f"Prev #{(self.context or {}).get('previous_week_order')}", size=9, weight="bold", color="amber200"),
+                        bgcolor="amber900", border_radius=10, padding=4,
+                        visible=bool(self.context and self.context.get("previous_week_order"))
+                    ),
+                    status_chip
+                ], spacing=5)
             ], alignment="spaceBetween"),
             
             # Bottom Floor: e1RM text and Notes Field
@@ -765,6 +773,7 @@ class ExerciseCard(ft.Card):
                     rpe_val = float(s_data["rpe"]) if str(s_data.get("rpe", "")).strip() else None
                     
                     target = self.set_targets[i - 1] if i - 1 < len(self.set_targets) else {"w": self.tgt_w, "r": self.tgt_r}
+                    normal_target = self.normal_set_targets[i - 1] if i - 1 < len(self.normal_set_targets) else target
                     completed_at = s_data.get("completed_at")
                     done = 1 if s_data.get("done") else 0
                     rest_secs = None
@@ -777,10 +786,10 @@ class ExerciseCard(ft.Card):
                                 rest_secs = None
                     cursor.execute("""
                         INSERT INTO workout_sets
-                            (session_id, set_number, weight, reps, rpe, rest_seconds, target_weight, target_reps, completed_at, is_complete)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            (session_id, set_number, weight, reps, rpe, rest_seconds, target_weight, target_reps, normal_target_weight, normal_target_reps, completed_at, is_complete)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, (self.db_id, i, w_val, r_val, rpe_val, rest_secs,
-                          float(target["w"]), int(target["r"]), completed_at, done))
+                          float(target["w"]), int(target["r"]), float(normal_target["w"]), int(normal_target["r"]), completed_at, done))
                 conn.commit()
         except Exception as e:
             print(f"Error autosaving pending sets: {e}")
@@ -928,6 +937,7 @@ class ExerciseCard(ft.Card):
 
             prev_completed_at = None
             for i, (w_val, r_val, rpe_val, orig_idx, target, completed_at) in enumerate(rows_to_save, start=1):
+                normal_target = self.normal_set_targets[orig_idx] if orig_idx < len(self.normal_set_targets) else target
                 rest_secs = None
                 if prev_completed_at and completed_at:
                     try:
@@ -937,10 +947,10 @@ class ExerciseCard(ft.Card):
                 prev_completed_at = completed_at or prev_completed_at
                 cursor.execute("""
                     INSERT INTO workout_sets
-                        (session_id, set_number, weight, reps, rpe, rest_seconds, target_weight, target_reps, completed_at, is_complete)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                        (session_id, set_number, weight, reps, rpe, rest_seconds, target_weight, target_reps, normal_target_weight, normal_target_reps, completed_at, is_complete)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
                 """, (self.db_id, i, float(w_val), int(r_val), float(rpe_val), rest_secs,
-                      float(target["w"]), int(target["r"]), completed_at))
+                      float(target["w"]), int(target["r"]), float(normal_target["w"]), int(normal_target["r"]), completed_at))
             
             true_completion_date = datetime.now().strftime("%Y-%m-%d")
             cursor.execute(f"UPDATE workout_sessions SET status = '{STATUS_COMPLETED}', date = ?, bodyweight_snapshot = ? WHERE id = ?", (true_completion_date, current_bw, self.db_id))
@@ -2922,6 +2932,41 @@ class WorkoutTrackerApp:
         self.pending_scroll_key = self.exercise_anchor_key(session_id)
         self.rebuild_entire_display()
 
+    def get_previous_week_exercise_order(self):
+        """Rank exercises by first completed set within each category last week."""
+        with get_db() as conn:
+            cursor = conn.cursor()
+            if str(self.current_week).isdigit() and int(self.current_week) > 1:
+                previous_week = str(int(self.current_week) - 1)
+            elif str(self.current_week) == "Deload":
+                cursor.execute("""
+                    SELECT week FROM workout_sessions
+                    WHERE meso_number = ? AND day_of_week = ? AND week != 'Deload'
+                    ORDER BY CAST(week AS INTEGER) DESC LIMIT 1
+                """, (self.current_meso, self.current_day))
+                row = cursor.fetchone()
+                previous_week = row[0] if row else None
+            else:
+                previous_week = None
+            if previous_week is None:
+                return {}
+            cursor.execute("""
+                SELECT ws.category, ws.exercise, MIN(s.completed_at) AS first_done
+                FROM workout_sessions ws
+                JOIN workout_sets s ON s.session_id = ws.id
+                WHERE ws.meso_number = ? AND ws.week = ? AND ws.day_of_week = ?
+                  AND s.is_complete = 1 AND s.completed_at IS NOT NULL
+                GROUP BY ws.category, ws.exercise
+                ORDER BY ws.category, first_done
+            """, (self.current_meso, previous_week, self.current_day))
+            rows = cursor.fetchall()
+        result = {}
+        counters = {}
+        for category, exercise, _ in rows:
+            counters[category] = counters.get(category, 0) + 1
+            result[(category, exercise)] = counters[category]
+        return result
+
     def build_category_quick_nav(self):
         with get_db() as conn:
             cursor = conn.cursor()
@@ -2972,7 +3017,21 @@ class WorkoutTrackerApp:
 
     def toggle_category(self, category_name):
         key = self.category_key(category_name)
-        self.collapsed_categories[key] = not self.collapsed_categories.get(key, False)
+        opening = self.collapsed_categories.get(key, False)
+        if opening:
+            # Accordion behavior for manual header taps: opening one group closes all others.
+            with get_db() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT DISTINCT category FROM workout_sessions
+                    WHERE meso_number = ? AND week = ? AND day_of_week = ?
+                """, (self.current_meso, self.current_week, self.current_day))
+                for row in cursor.fetchall():
+                    if row[0]:
+                        self.collapsed_categories[self.category_key(row[0])] = (row[0] != category_name)
+        else:
+            self.collapsed_categories[key] = True
+        self.pending_scroll_key = self.category_anchor_key(category_name) if opening else None
         self.rebuild_entire_display()
 
     def make_category_header(self, category_name, rows_in_cat):
@@ -5125,9 +5184,9 @@ class WorkoutTrackerApp:
                         
                     if session_ids:
                         placeholders = ",".join("?" for _ in session_ids)
-                        cursor.execute(f"SELECT session_id, weight, reps, rpe, rest_seconds, target_weight, target_reps, completed_at, is_complete FROM workout_sets WHERE session_id IN ({placeholders}) ORDER BY set_number ASC", session_ids)
-                        for sid, w, r, rpe, rest_secs, target_w, target_r, completed_at, is_complete in cursor.fetchall():
-                            pre_saved_sets[sid].append((w, r, rpe, rest_secs, target_w, target_r, completed_at, is_complete))
+                        cursor.execute(f"SELECT session_id, weight, reps, rpe, rest_seconds, target_weight, target_reps, normal_target_weight, normal_target_reps, completed_at, is_complete FROM workout_sets WHERE session_id IN ({placeholders}) ORDER BY set_number ASC", session_ids)
+                        for sid, w, r, rpe, rest_secs, target_w, target_r, normal_w, normal_r, completed_at, is_complete in cursor.fetchall():
+                            pre_saved_sets[sid].append((w, r, rpe, rest_secs, target_w, target_r, normal_w, normal_r, completed_at, is_complete))
                             
                         cursor.execute(f"SELECT id, bodyweight_snapshot FROM workout_sessions WHERE id IN ({placeholders})", session_ids)
                         for sid, snap in cursor.fetchall():
@@ -5141,7 +5200,7 @@ class WorkoutTrackerApp:
                             
                         # ONE single optimized query for all past exercise records
                         cursor.execute(f"""
-                            SELECT ws.exercise, ws.id, s.set_number, s.weight, s.reps, s.rpe, s.target_weight, s.target_reps 
+                            SELECT ws.exercise, ws.id, s.set_number, s.weight, s.reps, s.rpe, s.target_weight, s.target_reps, s.normal_target_weight, s.normal_target_reps 
                             FROM workout_sets s 
                             JOIN workout_sessions ws ON s.session_id = ws.id 
                             WHERE ws.exercise IN ({placeholders}) 
@@ -5150,8 +5209,8 @@ class WorkoutTrackerApp:
                             ORDER BY ws.date DESC, ws.id DESC, s.set_number ASC
                         """, (*exercises, self.current_meso))
                         
-                        for ex_name, sid, set_number, hw, hr, hrpe, target_w, target_r in cursor.fetchall():
-                            pre_past_records[ex_name].append((sid, set_number, hw, hr, hrpe, target_w, target_r))
+                        for ex_name, sid, set_number, hw, hr, hrpe, target_w, target_r, normal_w, normal_r in cursor.fetchall():
+                            pre_past_records[ex_name].append((sid, set_number, hw, hr, hrpe, target_w, target_r, normal_w, normal_r))
             # --- END DATA BATCHING ENGINE ---
 
             if not current_rows and pending_week_count > 0:
@@ -5194,6 +5253,8 @@ class WorkoutTrackerApp:
             category_order = sorted(category_order, key=category_completion_sort_key)
             # --- END NEW SORTING ---
 
+            previous_week_order = self.get_previous_week_exercise_order()
+
             for category_name in category_order:
                 rows_in_cat = grouped[category_name]
                 active_id = self.active_exercise_by_category.get(self.category_key(category_name))
@@ -5225,6 +5286,7 @@ class WorkoutTrackerApp:
                         "saved_note": pre_notes.get(exercise, ""),
                         "snap_bw": pre_snap_bw.get(db_id, None),
                         "category": db_cat,
+                        "previous_week_order": previous_week_order.get((db_cat, exercise)),
                     }
                     
                     card = ExerciseCard(db_id, exercise, tgt_w, tgt_r, status, mov_type, self, context=ctx)
