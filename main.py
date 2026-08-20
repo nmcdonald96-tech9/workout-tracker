@@ -3,6 +3,7 @@ import os
 import sqlite3
 import traceback
 import json
+import time
 from datetime import datetime
 import csv
 from io import StringIO
@@ -2897,10 +2898,32 @@ class WorkoutTrackerApp:
         return f"exercise-{session_id}"
 
     def scroll_to_workout_key(self, key):
+        """Scroll immediately, then retry after layout settles.
+
+        Promotion rebuilds can finish before Android has measured the newly moved
+        card. The second pass keeps the promoted, open exercise in view.
+        """
+        def do_scroll():
+            try:
+                self.main_canvas.scroll_to(key=key, duration=350, offset=-8)
+            except TypeError:
+                # Compatibility fallback for older Flet builds without offset.
+                self.main_canvas.scroll_to(key=key, duration=350)
+            except Exception as ex:
+                print(f"[scroll_to_workout_key] {ex}")
+
+        do_scroll()
+
+        def delayed_scroll():
+            time.sleep(0.14)
+            do_scroll()
+
         try:
-            self.main_canvas.scroll_to(key=key, duration=350)
-        except Exception as ex:
-            print(f"[scroll_to_workout_key] {ex}")
+            self.page.run_thread(delayed_scroll)
+        except Exception:
+            # Immediate pass above still preserves compatibility if run_thread
+            # is unavailable in the packaged runtime.
+            pass
 
     def jump_to_category(self, category_name):
         # Quick-nav behaves like an accordion: open the selected muscle group
@@ -2928,6 +2951,16 @@ class WorkoutTrackerApp:
         if self.active_exercise_by_category.get(key) == session_id:
             return
         self.active_exercise_by_category[key] = session_id
+        # Keep the promoted exercise's group open and reduce screen clutter.
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT DISTINCT category FROM workout_sessions
+                WHERE meso_number = ? AND week = ? AND day_of_week = ?
+            """, (self.current_meso, self.current_week, self.current_day))
+            for row in cursor.fetchall():
+                if row[0]:
+                    self.collapsed_categories[self.category_key(row[0])] = (row[0] != category_name)
         self.collapsed_categories[key] = False
         self.pending_scroll_key = self.exercise_anchor_key(session_id)
         self.rebuild_entire_display()
