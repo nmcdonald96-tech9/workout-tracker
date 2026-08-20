@@ -376,8 +376,8 @@ def get_readiness_adjustment(readiness_score=15, joint_score=5, movement_type="C
     """Temporary difficulty reduction for the current day only.
 
     Sleep and Drive are inferred from readiness_score - joint_score and averaged.
-    General scale: 5=0%/0 reps, 4=2.5%/0, 3=5%/0, 2=7.5%/-1, 1=10%/-2.
-    Compound joint scale: 5=0%/0, 4=2.5%/0, 3=5%/-1, 2=10%/-2, 1=15%/-3.
+    General scale: 5=0%/0 reps, 4=5%/-1, 3=10%/-2, 2=15%/-3, 1=20%/-4.
+    Compound joint scale: 5=0%/0, 4=5%/-1, 3=10%/-2, 2=15%/-3, 1=20%/-4.
     The more protective load and rep reductions win; reductions are not stacked.
     """
     try:
@@ -388,18 +388,18 @@ def get_readiness_adjustment(readiness_score=15, joint_score=5, movement_type="C
     sleep_drive_avg = min(5.0, max(1.0, (total - joint) / 2.0))
 
     if sleep_drive_avg >= 4.5: fatigue_pct, fatigue_rep_drop = 0.0, 0
-    elif sleep_drive_avg >= 3.5: fatigue_pct, fatigue_rep_drop = 0.025, 0
-    elif sleep_drive_avg >= 2.5: fatigue_pct, fatigue_rep_drop = 0.05, 0
-    elif sleep_drive_avg >= 1.5: fatigue_pct, fatigue_rep_drop = 0.075, 1
-    else: fatigue_pct, fatigue_rep_drop = 0.10, 2
+    elif sleep_drive_avg >= 3.5: fatigue_pct, fatigue_rep_drop = 0.05, 1
+    elif sleep_drive_avg >= 2.5: fatigue_pct, fatigue_rep_drop = 0.10, 2
+    elif sleep_drive_avg >= 1.5: fatigue_pct, fatigue_rep_drop = 0.15, 3
+    else: fatigue_pct, fatigue_rep_drop = 0.20, 4
 
     joint_pct, joint_rep_drop = 0.0, 0
     if movement_type == "Compound":
         if joint >= 4.5: joint_pct, joint_rep_drop = 0.0, 0
-        elif joint >= 3.5: joint_pct, joint_rep_drop = 0.025, 0
-        elif joint >= 2.5: joint_pct, joint_rep_drop = 0.05, 1
-        elif joint >= 1.5: joint_pct, joint_rep_drop = 0.10, 2
-        else: joint_pct, joint_rep_drop = 0.15, 3
+        elif joint >= 3.5: joint_pct, joint_rep_drop = 0.05, 1
+        elif joint >= 2.5: joint_pct, joint_rep_drop = 0.10, 2
+        elif joint >= 1.5: joint_pct, joint_rep_drop = 0.15, 3
+        else: joint_pct, joint_rep_drop = 0.20, 4
 
     return {
         "reduction_pct": max(fatigue_pct, joint_pct),
