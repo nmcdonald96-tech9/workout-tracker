@@ -218,8 +218,9 @@ class ExerciseCard(ft.Card):
     def build_card(self):
         # --- DATA FETCHING PHASE ---
         if self.context is not None:
-            j_score = self.context.get("j_score", 3)
-            r_score = self.context.get("r_score", 9)
+            readiness_logged = bool(self.context.get("readiness_logged", False))
+            j_score = self.context.get("j_score", 5)
+            r_score = self.context.get("r_score", 15)
             past_records = self.context.get("past_records", [])
             saved_sets = self.context.get("saved_sets", [])
             saved_note = self.context.get("saved_note", "")
@@ -229,8 +230,9 @@ class ExerciseCard(ft.Card):
                 cursor = conn.cursor()
                 cursor.execute("SELECT sleep, joints, drive FROM readiness_logs WHERE meso_number = ? AND week = ? AND day_of_week = ?", (self.app.current_meso, self.app.current_week, self.app.current_day))
                 readiness_row = cursor.fetchone()
-                j_score = readiness_row[1] if readiness_row else 3
-                r_score = sum(readiness_row[:3]) if readiness_row else 9
+                readiness_logged = readiness_row is not None
+                j_score = readiness_row[1] if readiness_logged and readiness_row[1] is not None else 5
+                r_score = sum(v if v is not None else 5 for v in readiness_row[:3]) if readiness_logged else 15
 
                 cursor.execute("""
                     SELECT ws.id, s.set_number, s.weight, s.reps, s.rpe, s.target_weight, s.target_reps, s.normal_target_weight, s.normal_target_reps
@@ -279,9 +281,18 @@ class ExerciseCard(ft.Card):
             return round(w / 2.5) * 2.5
         
         regulation_msg = ""
-        readiness_adj = get_readiness_adjustment(r_score, j_score, self.mov_type)
-        reduction_pct = readiness_adj["reduction_pct"] if self.status == STATUS_PENDING and self.app.current_week != "Deload" else 0.0
-        rep_drop = readiness_adj["rep_drop"] if reduction_pct > 0 else 0
+        readiness_applies = (
+            readiness_logged
+            and self.status == STATUS_PENDING
+            and self.app.current_week != "Deload"
+        )
+        if readiness_applies:
+            readiness_adj = get_readiness_adjustment(r_score, j_score, self.mov_type)
+            reduction_pct = readiness_adj["reduction_pct"]
+            rep_drop = readiness_adj["rep_drop"] if reduction_pct > 0 else 0
+        else:
+            reduction_pct = 0.0
+            rep_drop = 0
         self.set_progression_diagnostics = []
 
         # Build the unregulated trajectory first.
@@ -5206,14 +5217,16 @@ class WorkoutTrackerApp:
                 pre_past_records = {ex: [] for ex in exercises}
                 pre_notes = {ex: "" for ex in exercises}
                 pre_snap_bw = {sid: None for sid in session_ids}
-                j_score, r_score = 3, 9
+                readiness_logged = False
+                j_score, r_score = 5, 15
                 
                 if session_ids or exercises:
                     cursor.execute("SELECT sleep, joints, drive FROM readiness_logs WHERE meso_number=? AND week=? AND day_of_week=?", (self.current_meso, self.current_week, self.current_day))
                     r_row = cursor.fetchone()
                     if r_row:
-                        j_score = r_row[1] if r_row[1] is not None else 3
-                        r_score = sum(r_row[:3])
+                        readiness_logged = True
+                        j_score = r_row[1] if r_row[1] is not None else 5
+                        r_score = sum(v if v is not None else 5 for v in r_row[:3])
                         
                     if session_ids:
                         placeholders = ",".join("?" for _ in session_ids)
@@ -5312,6 +5325,7 @@ class WorkoutTrackerApp:
                     
                     # Pack the batched data for this specific card
                     ctx = {
+                        "readiness_logged": readiness_logged,
                         "j_score": j_score,
                         "r_score": r_score,
                         "saved_sets": pre_saved_sets.get(db_id, []),
