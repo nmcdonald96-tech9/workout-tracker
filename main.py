@@ -2909,31 +2909,73 @@ class WorkoutTrackerApp:
         return f"exercise-{session_id}"
 
     def scroll_to_workout_key(self, key):
-        """Scroll immediately, then retry after layout settles.
+        """Follow a rebuilt control using keyed scroll when available.
 
-        Promotion rebuilds can finish before Android has measured the newly moved
-        card. The second pass keeps the promoted, open exercise in view.
+        Older Android Flet packages reject the key argument. For those builds,
+        estimate the target's vertical position from the rebuilt control tree
+        and use the widely-supported numeric offset API instead.
         """
+        def control_contains_key(control, wanted_key):
+            try:
+                if getattr(control, "key", None) == wanted_key:
+                    return True
+                content = getattr(control, "content", None)
+                if content is not None and control_contains_key(content, wanted_key):
+                    return True
+                controls = getattr(control, "controls", None) or []
+                return any(control_contains_key(child, wanted_key) for child in controls)
+            except Exception:
+                return False
+
+        def estimated_height(control):
+            explicit = getattr(control, "height", None)
+            if isinstance(explicit, (int, float)) and explicit > 0:
+                return float(explicit)
+            name = control.__class__.__name__
+            if name == "GestureDetector":
+                return 64.0
+            if name == "Card":
+                return 300.0
+            if name == "Row":
+                return 52.0
+            if name == "Container":
+                # Readiness/calculation panels are generally taller than spacers.
+                return 86.0
+            return 64.0
+
+        def numeric_target_offset():
+            offset = 0.0
+            for control in self.main_canvas.controls:
+                if control_contains_key(control, key):
+                    return max(0.0, offset - 8.0)
+                offset += estimated_height(control) + 6.0
+            return None
+
         def do_scroll():
             try:
                 self.main_canvas.scroll_to(key=key, duration=350, offset=-8)
                 return True
-            except TypeError as first_error:
+            except TypeError:
                 try:
-                    # Some intermediate Flet builds support key but not offset.
                     self.main_canvas.scroll_to(key=key, duration=350)
                     return True
-                except TypeError as second_error:
-                    # Older Android/Flet packages do not support keyed scrolling
-                    # at all. Do not let an optional navigation enhancement crash
-                    # the workout screen; promotion and category collapse remain.
-                    print(
-                        "[scroll_to_workout_key] keyed scrolling unavailable: "
-                        f"{second_error} (initial: {first_error})"
-                    )
-                    return False
+                except TypeError:
+                    target_offset = numeric_target_offset()
+                    if target_offset is None:
+                        print(f"[scroll_to_workout_key] target not found: {key}")
+                        return False
+                    try:
+                        self.main_canvas.scroll_to(offset=target_offset, duration=350)
+                        return True
+                    except TypeError:
+                        # Oldest signature may accept positional offset only.
+                        self.main_canvas.scroll_to(target_offset, duration=350)
+                        return True
+                    except Exception as ex:
+                        print(f"[scroll_to_workout_key numeric] {ex}")
+                        return False
                 except Exception as ex:
-                    print(f"[scroll_to_workout_key fallback] {ex}")
+                    print(f"[scroll_to_workout_key keyed fallback] {ex}")
                     return False
             except Exception as ex:
                 print(f"[scroll_to_workout_key] {ex}")
@@ -2942,14 +2984,12 @@ class WorkoutTrackerApp:
         do_scroll()
 
         def delayed_scroll():
-            time.sleep(0.14)
+            time.sleep(0.18)
             do_scroll()
 
         try:
             self.page.run_thread(delayed_scroll)
         except Exception:
-            # Immediate pass above still preserves compatibility if run_thread
-            # is unavailable in the packaged runtime.
             pass
 
     def jump_to_category(self, category_name):
@@ -2989,7 +3029,7 @@ class WorkoutTrackerApp:
                 if row[0]:
                     self.collapsed_categories[self.category_key(row[0])] = (row[0] != category_name)
         self.collapsed_categories[key] = False
-        self.pending_scroll_key = self.exercise_anchor_key(session_id)
+        self.pending_scroll_key = self.category_anchor_key(category_name)
         self.rebuild_entire_display()
 
     def get_previous_week_exercise_order(self):
