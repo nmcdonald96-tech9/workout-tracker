@@ -51,7 +51,7 @@ EXERCISE_METADATA = {
     "Cable Leaning Lateral Raise": {"category": "Shoulders", "pattern": "Lateral Isolation", "movement_type": "Isolation", "equipment": "Cable", "plate_loaded": False, "bar_weight": 0},
     "Cable Rope Facepull": {"category": "Shoulders", "pattern": "Rear Delt", "movement_type": "Isolation", "equipment": "Cable", "plate_loaded": False, "bar_weight": 0},
     "Freemotion Rear Delt Flyes (Paused)": {"category": "Shoulders", "pattern": "Rear Delt", "movement_type": "Isolation", "equipment": "Cable", "plate_loaded": False, "bar_weight": 0},
-    "Smith Machine Shoulder Press (Seated)": {"category": "Shoulders", "pattern": "Vertical Press", "movement_type": "Compound", "equipment": "Machine", "plate_loaded": True, "bar_weight": 45.0},
+    "Smith Machine Shoulder Press (Seated)": {"category": "Shoulders", "pattern": "Vertical Press", "movement_type": "Compound", "equipment": "Machine", "plate_loaded": True, "bar_weight": 0.0},
     "Smith Machine Shrug": {"category": "Shoulders", "pattern": "Upper Trap", "movement_type": "Isolation", "equipment": "Machine", "plate_loaded": True, "bar_weight": 45.0},
     "Dumbbell Shrug": {"category": "Shoulders", "pattern": "Upper Trap", "movement_type": "Isolation", "equipment": "Dumbbell", "plate_loaded": False, "bar_weight": 0},
     "Barbell Squat (High Bar)": {"category": "Quads", "pattern": "Squat Pattern", "movement_type": "Compound", "equipment": "Barbell", "plate_loaded": True, "bar_weight": 45.0},
