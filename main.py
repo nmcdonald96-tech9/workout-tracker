@@ -2908,6 +2908,16 @@ class WorkoutTrackerApp:
     def exercise_anchor_key(self, session_id):
         return f"exercise-{session_id}"
 
+    def promoted_workout_offset(self):
+        """Return the stable workout-area offset after readiness is submitted.
+
+        Promotion only occurs while logging a workout, so the large readiness
+        form has already been replaced by the compact readiness summary. The
+        active category is sorted first, making its header occupy a consistent
+        position below the day controls and quick navigation.
+        """
+        return 205.0
+
     def scroll_to_workout_key(self, key):
         """Follow a rebuilt control using keyed scroll when available.
 
@@ -2960,10 +2970,14 @@ class WorkoutTrackerApp:
                     self.main_canvas.scroll_to(key=key, duration=350)
                     return True
                 except TypeError:
-                    target_offset = numeric_target_offset()
+                    if str(key).startswith("category-"):
+                        target_offset = self.promoted_workout_offset()
+                    else:
+                        target_offset = numeric_target_offset()
                     if target_offset is None:
                         print(f"[scroll_to_workout_key] target not found: {key}")
                         return False
+                    print(f"[scroll_to_workout_key] numeric target={target_offset} key={key}")
                     try:
                         self.main_canvas.scroll_to(offset=target_offset, duration=350)
                         return True
@@ -5347,7 +5361,13 @@ class WorkoutTrackerApp:
                 rows = grouped.get(cat, [])
                 pending_count = sum(1 for row in rows if row[4] == STATUS_PENDING)
                 is_group_completed = pending_count == 0
+                active_id = self.active_exercise_by_category.get(self.category_key(cat))
+                has_active_pending = any(
+                    row[0] == active_id and row[4] == STATUS_PENDING
+                    for row in rows
+                )
                 return (
+                    0 if has_active_pending else 1,
                     1 if is_group_completed else 0,
                     original_category_index.get(cat, 999)
                 )
