@@ -2917,11 +2917,27 @@ class WorkoutTrackerApp:
         def do_scroll():
             try:
                 self.main_canvas.scroll_to(key=key, duration=350, offset=-8)
-            except TypeError:
-                # Compatibility fallback for older Flet builds without offset.
-                self.main_canvas.scroll_to(key=key, duration=350)
+                return True
+            except TypeError as first_error:
+                try:
+                    # Some intermediate Flet builds support key but not offset.
+                    self.main_canvas.scroll_to(key=key, duration=350)
+                    return True
+                except TypeError as second_error:
+                    # Older Android/Flet packages do not support keyed scrolling
+                    # at all. Do not let an optional navigation enhancement crash
+                    # the workout screen; promotion and category collapse remain.
+                    print(
+                        "[scroll_to_workout_key] keyed scrolling unavailable: "
+                        f"{second_error} (initial: {first_error})"
+                    )
+                    return False
+                except Exception as ex:
+                    print(f"[scroll_to_workout_key fallback] {ex}")
+                    return False
             except Exception as ex:
                 print(f"[scroll_to_workout_key] {ex}")
+                return False
 
         do_scroll()
 
