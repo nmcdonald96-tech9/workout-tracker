@@ -2909,14 +2909,23 @@ class WorkoutTrackerApp:
         return f"exercise-{session_id}"
 
     def promoted_workout_offset(self):
-        """Return the stable workout-area offset after readiness is submitted.
+        """Return the stable workout-area offset for the promoted category.
 
-        Promotion only occurs while logging a workout, so the large readiness
-        form has already been replaced by the compact readiness summary. The
-        active category is sorted first, making its header occupy a consistent
-        position below the day controls and quick navigation.
+        The active category is always sorted first, so its header occupies a
+        consistent position below the day controls and quick navigation --
+        BUT ONLY once today's readiness survey has been submitted. Nothing
+        actually blocks logging sets before submitting it, so the large
+        4-slider survey card can still be on screen when promotion fires.
+        When that's the case, add its estimated height so the offset doesn't
+        undershoot and land you partway up the still-visible form.
         """
-        return 205.0
+        base_offset = 205.0
+        if getattr(self, "survey_panel", None) is not None and self.survey_panel.content is not None:
+            # Card padding + title + divider + two slider rows + spacer + button.
+            # A heuristic like the rest of this fallback, not a measured value --
+            # adjust if it consistently over/undershoots on your device.
+            base_offset += 230.0
+        return base_offset
 
     def scroll_to_workout_key(self, key):
         """Follow a rebuilt control using keyed scroll when available.
