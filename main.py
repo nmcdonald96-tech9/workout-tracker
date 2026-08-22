@@ -1230,7 +1230,14 @@ class WorkoutTrackerApp:
 
         self.dict_dropdown = ft.Dropdown(label="Select Exercise to Delete", expand=True, text_size=12, options=dropdown_options_list)
 
-        self.main_canvas = ft.ListView(expand=True, spacing=6)
+        # build_controls_on_demand defaults to True in Flet's ListView, which
+        # builds children lazily as they're about to become visible. Flet's own
+        # docs state scroll_to() is "ineffective for controls that build items
+        # dynamically" -- explaining why every previous scroll_to attempt here
+        # failed regardless of key/offset/timing. This list is small (a day's
+        # worth of exercises, never thousands of items), so eager building costs
+        # nothing meaningful and makes scroll_to actually work.
+        self.main_canvas = ft.ListView(expand=True, spacing=6, build_controls_on_demand=False)
         self.history_canvas = ft.ListView(expand=True, spacing=10)
         self.generator_canvas = ft.ListView(expand=True, spacing=6) 
         self.summary_canvas = ft.ListView(expand=True, spacing=10)
@@ -2971,12 +2978,15 @@ class WorkoutTrackerApp:
             return None
 
         def do_scroll():
+            # duration below 500 is documented (flet-dev/flet#1659) to work
+            # poorly or not scroll at all -- 350 was too short regardless of
+            # the on-demand-building issue fixed above.
             try:
-                self.main_canvas.scroll_to(key=key, duration=350, offset=-8)
+                self.main_canvas.scroll_to(key=key, duration=500, offset=-8)
                 return True
             except TypeError:
                 try:
-                    self.main_canvas.scroll_to(key=key, duration=350)
+                    self.main_canvas.scroll_to(key=key, duration=500)
                     return True
                 except TypeError:
                     if str(key).startswith("category-"):
@@ -2988,11 +2998,11 @@ class WorkoutTrackerApp:
                         return False
                     print(f"[scroll_to_workout_key] numeric target={target_offset} key={key}")
                     try:
-                        self.main_canvas.scroll_to(offset=target_offset, duration=350)
+                        self.main_canvas.scroll_to(offset=target_offset, duration=500)
                         return True
                     except TypeError:
                         # Oldest signature may accept positional offset only.
-                        self.main_canvas.scroll_to(target_offset, duration=350)
+                        self.main_canvas.scroll_to(target_offset, duration=500)
                         return True
                     except Exception as ex:
                         print(f"[scroll_to_workout_key numeric] {ex}")
