@@ -1237,7 +1237,18 @@ class WorkoutTrackerApp:
         # failed regardless of key/offset/timing. This list is small (a day's
         # worth of exercises, never thousands of items), so eager building costs
         # nothing meaningful and makes scroll_to actually work.
-        self.main_canvas = ft.ListView(expand=True, spacing=6, build_controls_on_demand=False)
+        self.main_canvas_generation = 0
+        self.remount_main_canvas_on_rebuild = False
+        self.main_canvas = ft.ListView(
+            key=f"main-canvas-{self.main_canvas_generation}",
+            expand=True,
+            spacing=6,
+            build_controls_on_demand=False,
+        )
+        # The host lets promotion replace the entire ListView instance. Android
+        # then mounts a fresh viewport at offset zero instead of preserving the
+        # old viewport and ignoring scroll_to().
+        self.main_canvas_host = ft.Container(content=self.main_canvas, expand=True)
         self.history_canvas = ft.ListView(expand=True, spacing=10)
         self.generator_canvas = ft.ListView(expand=True, spacing=6) 
         self.summary_canvas = ft.ListView(expand=True, spacing=10)
@@ -1294,7 +1305,7 @@ class WorkoutTrackerApp:
             ft.Container(height=1),
             self.navigation_header_container,
             ft.Divider(height=1, color="white10"),
-            self.main_canvas
+            self.main_canvas_host
         )
 
     def open_actions_menu(self, e=None):
@@ -2915,6 +2926,18 @@ class WorkoutTrackerApp:
     def exercise_anchor_key(self, session_id):
         return f"exercise-{session_id}"
 
+    def remount_main_canvas(self):
+        """Replace the main ListView so Android creates a new zeroed viewport."""
+        self.main_canvas_generation += 1
+        self.main_canvas = ft.ListView(
+            key=f"main-canvas-{self.main_canvas_generation}",
+            expand=True,
+            spacing=6,
+            build_controls_on_demand=False,
+        )
+        self.main_canvas_host.content = self.main_canvas
+        return self.main_canvas
+
     def promoted_workout_offset(self):
         """Return the stable workout-area offset for the promoted category.
 
@@ -3062,7 +3085,10 @@ class WorkoutTrackerApp:
                 if row[0]:
                     self.collapsed_categories[self.category_key(row[0])] = (row[0] != category_name)
         self.collapsed_categories[key] = False
-        self.pending_scroll_key = self.category_anchor_key(category_name)
+        # Replacing the ListView is the compatibility strategy: the active
+        # category is sorted first below, and the new viewport starts at zero.
+        self.pending_scroll_key = None
+        self.remount_main_canvas_on_rebuild = True
         self.rebuild_entire_display()
 
     def get_previous_week_exercise_order(self):
@@ -5082,7 +5108,11 @@ class WorkoutTrackerApp:
 
     def rebuild_entire_display(self):
         try:
-            self.main_canvas.controls.clear()    
+            if self.remount_main_canvas_on_rebuild:
+                self.remount_main_canvas_on_rebuild = False
+                self.remount_main_canvas()
+            else:
+                self.main_canvas.controls.clear()
 
             self.week_header_row.visible = (self.view_mode == "workout")
             self.day_header_row.visible = (self.view_mode == "workout")
@@ -5442,6 +5472,9 @@ class WorkoutTrackerApp:
 
             self.main_canvas.update()
             self.page.update()
+            # Quick-nav/category taps may still use scrolling where supported.
+            # Exercise promotion sets no pending key because it remounts the
+            # ListView instead of issuing an ignored Android scroll command.
             if self.pending_scroll_key:
                 focus_key = self.pending_scroll_key
                 self.pending_scroll_key = None
