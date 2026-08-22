@@ -2936,6 +2936,10 @@ class WorkoutTrackerApp:
             build_controls_on_demand=False,
         )
         self.main_canvas_host.content = self.main_canvas
+        # Mount the replacement through the already-mounted host before any
+        # code calls update() on the new ListView itself. Older Android Flet
+        # raises "Control must be added to the page first" otherwise.
+        self.main_canvas_host.update()
         return self.main_canvas
 
     def promoted_workout_offset(self):
