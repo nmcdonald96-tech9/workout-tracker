@@ -173,16 +173,20 @@ class ExerciseCard(ft.Card):
             is_bw = EXERCISE_METADATA.get(self.exercise, {}).get("equipment") == "Bodyweight"
             bw = get_user_bodyweight() if is_bw else 0.0
 
-            raw_val = str(self.app.sets[self.db_id][set_idx].get("w", "")).strip()
-            current_r = str(self.app.sets[self.db_id][set_idx].get("r", "")).strip()
-            reps_already_entered = bool(current_r)
+            set_data = self.app.sets[self.db_id][set_idx]
+            raw_val = str(set_data.get("w", "")).strip()
+
+            # Left-to-right entry is authoritative for pending, incomplete sets:
+            # Weight -> recalculated REPS -> RPE -> Complete. A later weight edit
+            # intentionally replaces any current rep value; entering reps after
+            # weight remains the user's manual override.
+            if self.status != STATUS_PENDING or bool(set_data.get("done")):
+                return
 
             if raw_val in ("", ".", "-", "-."):
-                # Weight cleared. Never touch a reps value the user already
-                # typed -- that's a real result, not a target suggestion.
-                if not reps_already_entered:
-                    self.app.sets[self.db_id][set_idx]["r"] = str(orig_r)
-                    self.set_targets[set_idx]["r"] = orig_r
+                set_data["r"] = str(orig_r)
+                self.set_targets[set_idx]["r"] = orig_r
+                self.autosave_pending_sets()
                 self.app.pending_scroll_key = self.app.exercise_anchor_key(self.db_id)
                 self.app.rebuild_entire_display()
                 return
@@ -192,21 +196,15 @@ class ExerciseCard(ft.Card):
             except ValueError:
                 return  # let on_save's validation catch genuinely invalid text
 
-            if new_w == orig_w:
-                return  # unchanged, nothing to recompute
-
             orig_e1rm = calculate_e1rm(orig_w, orig_r, bw)
-            if orig_e1rm > 0 and not reps_already_entered:
-                # Only auto-suggest a reps target while reps is still blank.
-                # Once the user has recorded an actual result, a later weight
-                # correction must never silently overwrite it.
+            if orig_e1rm > 0:
                 new_total_w = new_w + bw
                 if new_total_w < orig_e1rm:
                     new_target_r = int(round(37 - (36 * new_total_w / orig_e1rm)))
                 else:
                     new_target_r = 1
                 new_target_r = max(1, new_target_r)
-                self.app.sets[self.db_id][set_idx]["r"] = str(new_target_r)
+                set_data["r"] = str(new_target_r)
                 self.set_targets[set_idx]["r"] = new_target_r
 
             # Rebuild regardless of whether the reps branch above fired --
