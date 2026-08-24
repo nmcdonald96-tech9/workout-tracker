@@ -16,6 +16,7 @@ import socket
 import urllib.parse
 import secrets
 import inspect
+import sys
 
 from constants import *
 from database import *
@@ -516,17 +517,24 @@ class ExerciseCard(ft.Card):
             self.reps_fields.append(r_f)
             self.rpe_fields.append(rpe_f)
 
-            done_checkbox = ft.Checkbox(
-                label="Done",
-                value=bool(set_data.get("done")),
+            set_is_done = bool(set_data.get("done"))
+            complete_set_btn = ft.ElevatedButton(
+                content=ft.Text("✓ DONE" if set_is_done else "COMPLETE", size=10, weight="bold"),
+                data=(not set_is_done),
                 disabled=(self.status == STATUS_COMPLETED),
-                on_change=self.make_set_done_handler(idx),
-                width=70,
-                label_style=ft.TextStyle(size=11, color="white70"),
+                on_click=self.make_set_done_handler(idx),
+                height=40,
+                width=88,
+                style=ft.ButtonStyle(
+                    bgcolor="green700" if set_is_done else "cyan700",
+                    color="white",
+                    padding=6,
+                    shape=ft.RoundedRectangleBorder(radius=7),
+                ),
             )
             
             # Explicit completion controls rest timing. Editing planned values never starts a timer.
-            set_row = ft.Row([set_indicator, w_f, r_f, rpe_f, done_checkbox], alignment="start", vertical_alignment="center", spacing=6)
+            set_row = ft.Row([set_indicator, w_f, r_f, rpe_f, complete_set_btn], alignment="start", vertical_alignment="center", spacing=6)
 
             # Kinetic dimming, baked in at construction (see kinetic_active_idx above).
             if idx < kinetic_active_idx or kinetic_active_idx == -1:
@@ -613,7 +621,7 @@ class ExerciseCard(ft.Card):
             ft.Row([
                 ft.Row([
                     ft.Text(f"{self.exercise}", size=14, weight="bold", color="white"),
-                    ft.TextButton(content=ft.Text("🔄", size=14, color="cyan300"), style=ft.ButtonStyle(padding=2), on_click=self.open_swap_dialog)
+                    ft.TextButton(content=ft.Text("⋯", size=18, color="cyan300"), style=ft.ButtonStyle(padding=2), on_click=self.open_exercise_actions)
                 ], spacing=2, expand=True),
                 ft.Row([
                     ft.Container(
@@ -629,14 +637,17 @@ class ExerciseCard(ft.Card):
             ft.Row([
                 ft.Text(f"{type_code}{e1rm_display_str}", size=11, color="white54"),
                 self.notes_field
-            ], alignment="spaceBetween", spacing=10)
+            ], alignment="spaceBetween", spacing=10, visible=not self.app.workout_focus_mode)
         ], spacing=4)
         
         display_weight = self.format_target_weight(is_bw, base_target_w)
         self.target_banner_text = ft.Text(f"🎯 Target: {display_weight} x {base_target_r}  |  RPE Goal: 8-9", color="blue200", size=12, weight="bold")
         
         target_banner = ft.Container(
-            content=self.target_banner_text,
+            content=ft.Row([
+                self.target_banner_text,
+                ft.TextButton("Why?", on_click=self.open_target_explanation, style=ft.ButtonStyle(padding=2)),
+            ], alignment="spaceBetween"),
             padding=4,
             visible=(self.status == STATUS_PENDING)
         )
@@ -662,7 +673,10 @@ class ExerciseCard(ft.Card):
             chips_row.controls.append(make_helper_chip(f"🏆 Top {top_pct:.0f}% ({cls['level']})", "purple900", "purple100"))
             
         chips_row.controls.append(self.plate_container)
-        helper_zone = ft.Container(content=chips_row, margin=4) if chips_row.controls else ft.Container()
+        helper_zone = ft.Container(
+            content=chips_row, margin=4,
+            visible=(not self.app.workout_focus_mode) or bool(regulation_msg) or bool(plate_text),
+        ) if chips_row.controls else ft.Container()
 
         # Softer utility buttons
         minus_btn = ft.TextButton(content=ft.Text("—", color="white54", size=20, weight="bold"), style=ft.ButtonStyle(padding=8), on_click=self.on_remove_set)
@@ -684,11 +698,12 @@ class ExerciseCard(ft.Card):
         )
 
         action_zone = ft.Row([
-            ft.Row([delete_btn, skip_btn], spacing=0),  
-            ft.Row([minus_btn, plus_btn], spacing=2),   
-            log_btn                                     
+            ft.Row([delete_btn, skip_btn], spacing=0, visible=not self.app.workout_focus_mode),
+            ft.Row([minus_btn, plus_btn], spacing=2, visible=not self.app.workout_focus_mode),
+            log_btn
         ], alignment="spaceBetween")
 
+        density_scale = 0.78 if self.app.ui_density == "compact" else 1.0
         card_body = ft.Column([
             title_zone,
             target_banner,
@@ -696,17 +711,62 @@ class ExerciseCard(ft.Card):
             sets_column,
             self.rpe_warning,
             action_zone
-        ], spacing=6, expand=True)
+        ], spacing=4 if self.app.ui_density == "compact" else 6, expand=True)
         
         accent_bar = ft.Container(width=4, bgcolor=accent_color, border_radius=4)
         
         self.content = ft.Container(
             content=ft.Row([accent_bar, card_body], spacing=10),
-            padding=10,
+            padding=8 if self.app.ui_density == "compact" else 10,
             border_radius=8,
             bgcolor="white10"
         )
         self.margin = 4
+
+    def open_target_explanation(self, e=None):
+        lines = []
+        if self.app.current_week == "Deload":
+            lines.append("Deload targets reduce training demand for recovery.")
+        elif self.set_progression_diagnostics:
+            for item in self.set_progression_diagnostics[:6]:
+                decision = str(item.get("decision", "hold")).title()
+                lines.append(f"Set {item.get('set_number', '?')}: {decision}. Next target {item.get('next_weight', '?'):g} x {item.get('next_reps', '?')}.")
+                if item.get("readiness_regulated"):
+                    lines.append("  Previous readiness reduction was isolated from long-term progression.")
+        else:
+            lines.append("No prior completed set data was available, so the stored session target is being used.")
+
+        if self.context and self.context.get("readiness_logged") and self.status == STATUS_PENDING and self.app.current_week != "Deload":
+            normal = self.normal_set_targets[0] if self.normal_set_targets else {"w": self.tgt_w, "r": self.tgt_r}
+            today = self.set_targets[0] if self.set_targets else normal
+            if normal != today:
+                lines.append(f"Today only: {today['w']:g} x {today['r']}. Normal trajectory: {normal['w']:g} x {normal['r']}.")
+            else:
+                lines.append("Readiness was logged and no temporary reduction was required.")
+        elif self.status == STATUS_PENDING and self.app.current_week != "Deload":
+            lines.append("No readiness reduction is active. Normal progression targets are shown.")
+
+        dialog = ft.AlertDialog(
+            title=ft.Text(f"Why this target? {self.exercise}", size=15, weight="bold"),
+            content=ft.Container(width=360, content=ft.Text("\n".join(lines), size=11, selectable=True)),
+            actions=[ft.TextButton("Close", on_click=lambda ev: self.app.safe_close(dialog))],
+        )
+        self.app.safe_open(dialog)
+
+    def open_exercise_actions(self, e=None):
+        dialog = ft.AlertDialog(
+            title=ft.Text(self.exercise, size=15, weight="bold"),
+            content=ft.Column([
+                ft.TextButton("Why this target?", on_click=lambda ev: [self.app.safe_close(dialog), self.open_target_explanation()]),
+                ft.TextButton("Swap exercise", on_click=lambda ev: [self.app.safe_close(dialog), self.open_swap_dialog(ev)]),
+                ft.TextButton("Add set", on_click=lambda ev: [self.app.safe_close(dialog), self.on_add_set(ev)]),
+                ft.TextButton("Remove last set", on_click=lambda ev: [self.app.safe_close(dialog), self.on_remove_set(ev)]),
+                ft.TextButton("Unskip" if self.status in [STATUS_SKIPPED, STATUS_COMPLETED] else "Skip", on_click=lambda ev: [self.app.safe_close(dialog), self.on_unskip(ev) if self.status in [STATUS_SKIPPED, STATUS_COMPLETED] else self.on_skip(ev)]),
+                ft.TextButton(content=ft.Text("Delete", color="red300"), on_click=lambda ev: [self.app.safe_close(dialog), self.trigger_delete_warning(ev)]),
+            ], tight=True, spacing=2),
+            actions=[ft.TextButton("Close", on_click=lambda ev: self.app.safe_close(dialog))],
+        )
+        self.app.safe_open(dialog)
 
     def make_set_done_handler(self, set_idx):
         def set_done_changed(ev):
@@ -714,7 +774,10 @@ class ExerciseCard(ft.Card):
                 return
             set_data = self.app.sets[self.db_id][set_idx]
             exercise_was_started = any(bool(s.get("done")) for s in self.app.sets.get(self.db_id, []))
-            if ev.control.value:
+            requested_value = getattr(ev.control, "value", None)
+            if requested_value is None:
+                requested_value = bool(getattr(ev.control, "data", not bool(set_data.get("done"))))
+            if requested_value:
                 w_raw = str(set_data.get("w", "")).strip()
                 r_raw = str(set_data.get("r", "")).strip()
                 rpe_raw = str(set_data.get("rpe", "")).strip()
@@ -751,7 +814,7 @@ class ExerciseCard(ft.Card):
                 set_data["done"] = False
                 set_data["completed_at"] = None
             self.autosave_pending_sets()
-            if ev.control.value and not exercise_was_started:
+            if requested_value and not exercise_was_started:
                 category_name = self.context.get("category") if self.context else None
                 self.app.activate_exercise(category_name, self.db_id)  # rebuilds internally
             else:
@@ -1038,6 +1101,9 @@ class WorkoutTrackerApp:
         self.gen_length = 4
 
         init_and_seed_db()
+        self.workout_focus_mode = self.get_bool_setting("workout_focus_mode", False)
+        self.ui_density = self.get_text_setting("ui_density", "comfortable")
+        self.last_rebuild_ms = None
         
         with get_db() as conn:
             cursor = conn.cursor()
@@ -1357,6 +1423,10 @@ class WorkoutTrackerApp:
                         ft.ElevatedButton("👤 Profile Settings", on_click=self.open_settings_dialog, expand=True, style=btn_style),
                         ft.ElevatedButton("📖 Dictionary", on_click=self.menu_manage_dict, expand=True, style=btn_style),
                     ], spacing=6),
+                    ft.Row([
+                        ft.ElevatedButton("🎯 Toggle Focus", on_click=self.toggle_workout_focus_mode, expand=True, style=btn_style),
+                        ft.ElevatedButton("🛠 Diagnostics", on_click=self.open_diagnostics_dialog, expand=True, style=btn_style),
+                    ], spacing=6),
                     ft.ElevatedButton("📊 Export History to CSV", on_click=self.export_to_csv, width=float('inf'), style=btn_style),
 
                     ft.Divider(height=10, color="white10"),
@@ -1389,6 +1459,13 @@ class WorkoutTrackerApp:
         )
         self.safe_open(self.actions_menu_dialog)
 
+    def toggle_workout_focus_mode(self, e=None):
+        self.close_actions_menu()
+        self.workout_focus_mode = not self.workout_focus_mode
+        self.save_setting("workout_focus_mode", "1" if self.workout_focus_mode else "0")
+        self.show_snackbar(f"Workout focus mode {'enabled' if self.workout_focus_mode else 'disabled'}.", "cyan300")
+        self.rebuild_entire_display()
+
     def menu_change_meso(self, e):
         try:
             meso_num = int(e.control.value)
@@ -1408,6 +1485,12 @@ class WorkoutTrackerApp:
         current_age = get_user_age()
         current_profile = get_user_progression_profile()
         current_sex = get_user_sex()
+        self.focus_mode_switch = ft.Switch(label="Workout focus mode", value=self.workout_focus_mode)
+        self.density_dropdown = ft.Dropdown(
+            label="Display density",
+            value=self.ui_density,
+            options=[ft.dropdown.Option("comfortable"), ft.dropdown.Option("compact")],
+        )
         
         self.bw_input = ft.TextField(label="Bodyweight (Lbs)", value=str(current_bw), keyboard_type=ft.KeyboardType.NUMBER, expand=True)
         self.age_input = ft.TextField(label="Age (Years)", value=str(current_age), keyboard_type=ft.KeyboardType.NUMBER, expand=True)
@@ -1444,13 +1527,19 @@ class WorkoutTrackerApp:
                 new_age = int(self.age_input.value)
                 new_profile = int(self.profile_slider.value)
                 new_sex = self.sex_dropdown.value or "Male"
+                new_focus_mode = bool(self.focus_mode_switch.value)
+                new_density = self.density_dropdown.value or "comfortable"
                 with get_db() as conn:
                     cursor = conn.cursor()
                     cursor.execute("INSERT OR REPLACE INTO user_settings (setting_key, setting_value) VALUES ('bodyweight', ?)", (str(new_bw),))
                     cursor.execute("INSERT OR REPLACE INTO user_settings (setting_key, setting_value) VALUES ('age', ?)", (str(new_age),))
                     cursor.execute("INSERT OR REPLACE INTO user_settings (setting_key, setting_value) VALUES ('progression_profile', ?)", (str(new_profile),))
                     cursor.execute("INSERT OR REPLACE INTO user_settings (setting_key, setting_value) VALUES ('sex', ?)", (new_sex,))
+                    cursor.execute("INSERT OR REPLACE INTO user_settings (setting_key, setting_value) VALUES ('workout_focus_mode', ?)", ("1" if new_focus_mode else "0",))
+                    cursor.execute("INSERT OR REPLACE INTO user_settings (setting_key, setting_value) VALUES ('ui_density', ?)", (new_density,))
                     conn.commit()
+                self.workout_focus_mode = new_focus_mode
+                self.ui_density = new_density
                 self.safe_close(self.settings_dialog)
                 self.show_snackbar("Profile settings saved!", "green300")
                 self.rebuild_entire_display()
@@ -1467,7 +1556,12 @@ class WorkoutTrackerApp:
                 ft.Text("Pacing Override", size=13, weight="bold", color="white"),
                 ft.Text("Force the engine to progress faster or slower.", size=11, color="white54"),
                 self.slider_label,
-                self.profile_slider
+                self.profile_slider,
+                ft.Divider(height=10, color="transparent"),
+                ft.Text("Workout Display", size=13, weight="bold", color="white"),
+                ft.Text("Focus mode condenses secondary details while preserving targets, plate feedback, set entry, and logging.", size=11, color="white54"),
+                self.focus_mode_switch,
+                self.density_dropdown
             ], tight=True),
             actions=[
                 ft.TextButton("Cancel", on_click=lambda ev: self.safe_close(self.settings_dialog)),
@@ -1877,6 +1971,72 @@ class WorkoutTrackerApp:
     def show_snackbar(self, text, color="green300"):
         sb = ft.SnackBar(ft.Text(text, color=color, weight="bold"), bgcolor="grey900", duration=3000)
         self.safe_open(sb)
+
+    def get_text_setting(self, key, default=""):
+        try:
+            with get_db() as conn:
+                row = conn.execute("SELECT setting_value FROM user_settings WHERE setting_key = ?", (key,)).fetchone()
+            return row[0] if row and row[0] is not None else default
+        except Exception:
+            return default
+
+    def get_bool_setting(self, key, default=False):
+        raw = str(self.get_text_setting(key, "1" if default else "0")).strip().lower()
+        return raw in ("1", "true", "yes", "on")
+
+    def save_setting(self, key, value):
+        with get_db() as conn:
+            conn.execute("INSERT OR REPLACE INTO user_settings (setting_key, setting_value) VALUES (?, ?)", (key, str(value)))
+            conn.commit()
+
+    def record_rebuild_time(self, started_at):
+        self.last_rebuild_ms = round((time.perf_counter() - started_at) * 1000.0, 1)
+        if DEBUG_PERFORMANCE:
+            print(f"[performance] rebuild_entire_display: {self.last_rebuild_ms:.1f} ms")
+
+    def open_diagnostics_dialog(self, e=None):
+        self.close_actions_menu()
+        integrity = "Unavailable"
+        db_size = 0
+        try:
+            with sqlite3.connect(DB_PATH, timeout=5.0) as conn:
+                integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
+            db_size = os.path.getsize(DB_PATH) if os.path.exists(DB_PATH) else 0
+        except Exception as err:
+            integrity = f"Error: {err}"
+
+        clipboard_paths = []
+        if getattr(ft, "Clipboard", None) is not None:
+            clipboard_paths.append("ft.Clipboard")
+        page_clipboard = getattr(self.page, "clipboard", None)
+        if page_clipboard is not None and callable(getattr(page_clipboard, "set", None)):
+            clipboard_paths.append("page.clipboard")
+        if callable(getattr(self.page, "set_clipboard", None)):
+            clipboard_paths.append("page.set_clipboard")
+
+        lines = [
+            f"App version: {APP_VERSION}",
+            f"Schema version: {DATABASE_SCHEMA_VERSION}",
+            f"Python: {sys.version.split()[0]}",
+            f"Flet: {getattr(ft, '__version__', 'not exposed')}",
+            f"Platform: {sys.platform}",
+            f"Database: {DB_PATH}",
+            f"Database size: {db_size:,} bytes",
+            f"Integrity check: {integrity}",
+            f"Clipboard APIs: {', '.join(clipboard_paths) if clipboard_paths else 'none detected'}",
+            f"Focus mode: {'On' if self.workout_focus_mode else 'Off'}",
+            f"Density: {self.ui_density}",
+            f"Last workout rebuild: {self.last_rebuild_ms if self.last_rebuild_ms is not None else 'not measured'} ms",
+        ]
+        self.diagnostics_dialog = ft.AlertDialog(
+            title=ft.Text("IronCycle Diagnostics", weight="bold"),
+            content=ft.Container(
+                width=360,
+                content=ft.Text("\n".join(lines), size=11, font_family="monospace", selectable=True),
+            ),
+            actions=[ft.TextButton("Close", on_click=lambda ev: self.safe_close(self.diagnostics_dialog))],
+        )
+        self.safe_open(self.diagnostics_dialog)
 
     async def copy_text_to_clipboard(self, text):
         """Copy text across current, transitional, and legacy Flet runtimes."""
@@ -5033,6 +5193,7 @@ class WorkoutTrackerApp:
                 padding=15, 
                 content=ft.Column([
                     ft.Text("☀️ Daily Readiness Check", weight="bold", color="amber300", size=14),
+                    ft.Text("Normal targets remain active until this check is logged. No readiness reduction is currently applied.", size=10, color="cyan200"),
                     ft.Divider(height=1, color="white10"),
                     
                     # Row 1: Sleep & Joints
@@ -5164,6 +5325,7 @@ class WorkoutTrackerApp:
         self.show_snackbar(f"Advanced to Week {next_w}!", "green300")
 
     def rebuild_entire_display(self):
+        rebuild_started_at = time.perf_counter()
         try:
             if self.remount_main_canvas_on_rebuild:
                 self.remount_main_canvas_on_rebuild = False
@@ -5529,6 +5691,7 @@ class WorkoutTrackerApp:
 
             self.main_canvas.update()
             self.page.update()
+            self.record_rebuild_time(rebuild_started_at)
             # Quick-nav/category taps may still use scrolling where supported.
             # Exercise promotion sets no pending key because it remounts the
             # ListView instead of issuing an ignored Android scroll command.
