@@ -1,7 +1,7 @@
 import os
 
-APP_VERSION = "1.2.0"
-DATABASE_SCHEMA_VERSION = 1
+APP_VERSION = "1.2.2"
+DATABASE_SCHEMA_VERSION = 7
 DEBUG_PERFORMANCE = False
 
 # ==========================================
