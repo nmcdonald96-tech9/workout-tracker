@@ -553,6 +553,7 @@ def _progression_weight_step(weight, movement_type, equipment_type, direction=1)
     return max(0.0, weight + (step * direction))
 
 
+# Experimental analytical helper. Production targets use set-specific progression.
 def evaluate_straight_set_session(completed_sets, target_weight, target_reps, is_bodyweight=False, bodyweight=0.0):
     """Evaluate the complete straight-set prescription instead of only Set 1.
 
@@ -705,15 +706,8 @@ def calculate_set_specific_progression(completed_sets, default_target_weight, de
                                        movement_type, readiness_score=15, joint_score=5,
                                        equipment_type="Barbell", is_bodyweight=False,
                                        bodyweight=0.0, age=43, profile=0):
-    """Return an independent next target for each completed set position.
-
-    Expected row shape:
-      (weight, reps, rpe[, target_weight, target_reps])
-    Legacy rows without per-set targets fall back to the session target.
-    """
-    next_targets = []
-    diagnostics = []
-
+    """Return authoritative independent targets for completed set positions."""
+    next_targets, diagnostics = [], []
     try:
         fallback_w = float(default_target_weight or 0.0)
     except (TypeError, ValueError):
@@ -722,7 +716,6 @@ def calculate_set_specific_progression(completed_sets, default_target_weight, de
         fallback_r = max(1, int(default_target_reps or 10))
     except (TypeError, ValueError):
         fallback_r = 10
-
     for set_index, row in enumerate(completed_sets or []):
         try:
             actual_w = float(row[0]) if row[0] is not None else fallback_w
@@ -736,54 +729,33 @@ def calculate_set_specific_progression(completed_sets, default_target_weight, de
             continue
         if actual_r <= 0:
             continue
-
-        was_readiness_regulated = (
-            abs(prior_target_w - normal_target_w) > 0.01 or
-            prior_target_r != normal_target_r
-        )
-        if was_readiness_regulated:
-            # A poor-feeling day is isolated. Resume the saved normal trajectory
-            # next time instead of progressing or regressing from the easier target.
-            next_w, next_r = normal_target_w, normal_target_r
-        else:
-            next_w, next_r = calculate_progression(
-                actual_w, actual_r, actual_rpe, normal_target_r, movement_type,
-                15, 5, equipment_type=equipment_type,
-                is_bodyweight=is_bodyweight, age=age, profile=profile
-            )
-
-        # Preserve bodyweight external-load semantics and practical numeric types.
-        next_w = float(next_w)
-        next_r = max(1, int(next_r))
-        # Ratio-based, not absolute -- a miss of N reps means something very
-        # different on a 5-rep set than a 20-rep set. STRAIGHT_SET_REDUCE_REP_COMPLETION
-        # (currently 0.70) is the same constant the session-level evaluator uses,
-        # so "reduce" means the same thing everywhere in the app, not two
-        # different standards depending on which code path got there.
-        completion_ratio = (actual_r / prior_target_r) if prior_target_r > 0 else 1.0
-        if actual_r >= prior_target_r:
+        regulated = abs(prior_target_w-normal_target_w) > 0.01 or prior_target_r != normal_target_r
+        ratio = actual_r/prior_target_r if prior_target_r > 0 else 1.0
+        if regulated:
+            decision, next_w, next_r = "resume_normal", normal_target_w, normal_target_r
+            reason = "Temporary readiness regulation was isolated; the normal trajectory resumes."
+        elif actual_r >= prior_target_r and actual_rpe <= STRAIGHT_SET_MAX_PROGRESS_RPE:
             decision = "progress"
-        elif completion_ratio < STRAIGHT_SET_REDUCE_REP_COMPLETION:
+            next_w, next_r = calculate_progression(actual_w, actual_r, actual_rpe, normal_target_r, movement_type, 15, 5, equipment_type=equipment_type, is_bodyweight=is_bodyweight, age=age, profile=profile)
+            reason = "The target was achieved within the progression RPE ceiling."
+        elif actual_r >= prior_target_r:
+            decision, next_w, next_r = "hold", normal_target_w, normal_target_r
+            reason = "The target was achieved, but RPE was too high to progress."
+        elif ratio < STRAIGHT_SET_REDUCE_REP_COMPLETION:
             decision = "reduce"
+            if is_bodyweight and normal_target_w <= 0:
+                next_w, next_r = 0.0, max(1, min(normal_target_r-1, actual_r+1))
+            elif is_bodyweight:
+                next_w, next_r = _progression_weight_step(normal_target_w, movement_type, "Barbell", -1), normal_target_r
+            else:
+                next_w, next_r = _progression_weight_step(normal_target_w, movement_type, equipment_type, -1), normal_target_r
+            reason = "Performance was substantially below target; demand was reduced."
         else:
-            decision = "hold"
-
-        next_targets.append({"w": next_w, "r": next_r})
-        diagnostics.append({
-            "set_number": set_index + 1,
-            "decision": decision,
-            "actual_weight": actual_w,
-            "actual_reps": actual_r,
-            "actual_rpe": actual_rpe,
-            "prior_target_weight": prior_target_w,
-            "prior_target_reps": prior_target_r,
-            "normal_target_weight": normal_target_w,
-            "normal_target_reps": normal_target_r,
-            "readiness_regulated": was_readiness_regulated,
-            "next_weight": next_w,
-            "next_reps": next_r,
-        })
-
+            decision, next_w, next_r = "hold", normal_target_w, normal_target_r
+            reason = "The set was a small miss, so the normal target is held."
+        next_w, next_r = max(0.0,float(next_w)), max(1,int(next_r))
+        next_targets.append({"w":next_w,"r":next_r})
+        diagnostics.append({"set_number":set_index+1,"decision":decision,"reason":reason,"actual_weight":actual_w,"actual_reps":actual_r,"actual_rpe":actual_rpe,"completion_ratio":round(ratio,4),"prior_target_weight":prior_target_w,"prior_target_reps":prior_target_r,"normal_target_weight":normal_target_w,"normal_target_reps":normal_target_r,"readiness_regulated":regulated,"next_weight":next_w,"next_reps":next_r})
     return next_targets, diagnostics
 
 def get_exercise_smart_defaults(exercise_name, meso_number):
@@ -805,7 +777,8 @@ def get_exercise_smart_defaults(exercise_name, meso_number):
         if session_row:
             session_id, tgt_w, tgt_r, db_mov_type, bodyweight_snapshot = session_row
             cursor.execute("""
-                SELECT weight, reps, rpe, target_weight, target_reps
+                SELECT weight, reps, rpe, target_weight, target_reps,
+                       normal_target_weight, normal_target_reps
                 FROM workout_sets
                 WHERE session_id = ?
                 ORDER BY set_number ASC
