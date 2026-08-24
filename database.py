@@ -716,6 +716,7 @@ def calculate_set_specific_progression(completed_sets, default_target_weight, de
         fallback_r = max(1, int(default_target_reps or 10))
     except (TypeError, ValueError):
         fallback_r = 10
+
     for set_index, row in enumerate(completed_sets or []):
         try:
             actual_w = float(row[0]) if row[0] is not None else fallback_w
@@ -729,14 +730,19 @@ def calculate_set_specific_progression(completed_sets, default_target_weight, de
             continue
         if actual_r <= 0:
             continue
-        regulated = abs(prior_target_w-normal_target_w) > 0.01 or prior_target_r != normal_target_r
-        ratio = actual_r/prior_target_r if prior_target_r > 0 else 1.0
+
+        regulated = abs(prior_target_w - normal_target_w) > 0.01 or prior_target_r != normal_target_r
+        ratio = actual_r / prior_target_r if prior_target_r > 0 else 1.0
         if regulated:
             decision, next_w, next_r = "resume_normal", normal_target_w, normal_target_r
             reason = "Temporary readiness regulation was isolated; the normal trajectory resumes."
         elif actual_r >= prior_target_r and actual_rpe <= STRAIGHT_SET_MAX_PROGRESS_RPE:
             decision = "progress"
-            next_w, next_r = calculate_progression(actual_w, actual_r, actual_rpe, normal_target_r, movement_type, 15, 5, equipment_type=equipment_type, is_bodyweight=is_bodyweight, age=age, profile=profile)
+            next_w, next_r = calculate_progression(
+                actual_w, actual_r, actual_rpe, normal_target_r, movement_type,
+                15, 5, equipment_type=equipment_type, is_bodyweight=is_bodyweight,
+                age=age, profile=profile
+            )
             reason = "The target was achieved within the progression RPE ceiling."
         elif actual_r >= prior_target_r:
             decision, next_w, next_r = "hold", normal_target_w, normal_target_r
@@ -744,7 +750,7 @@ def calculate_set_specific_progression(completed_sets, default_target_weight, de
         elif ratio < STRAIGHT_SET_REDUCE_REP_COMPLETION:
             decision = "reduce"
             if is_bodyweight and normal_target_w <= 0:
-                next_w, next_r = 0.0, max(1, min(normal_target_r-1, actual_r+1))
+                next_w, next_r = 0.0, max(1, min(normal_target_r - 1, actual_r + 1))
             elif is_bodyweight:
                 next_w, next_r = _progression_weight_step(normal_target_w, movement_type, "Barbell", -1), normal_target_r
             else:
@@ -753,9 +759,17 @@ def calculate_set_specific_progression(completed_sets, default_target_weight, de
         else:
             decision, next_w, next_r = "hold", normal_target_w, normal_target_r
             reason = "The set was a small miss, so the normal target is held."
-        next_w, next_r = max(0.0,float(next_w)), max(1,int(next_r))
-        next_targets.append({"w":next_w,"r":next_r})
-        diagnostics.append({"set_number":set_index+1,"decision":decision,"reason":reason,"actual_weight":actual_w,"actual_reps":actual_r,"actual_rpe":actual_rpe,"completion_ratio":round(ratio,4),"prior_target_weight":prior_target_w,"prior_target_reps":prior_target_r,"normal_target_weight":normal_target_w,"normal_target_reps":normal_target_r,"readiness_regulated":regulated,"next_weight":next_w,"next_reps":next_r})
+
+        next_w, next_r = max(0.0, float(next_w)), max(1, int(next_r))
+        next_targets.append({"w": next_w, "r": next_r})
+        diagnostics.append({
+            "set_number": set_index + 1, "decision": decision, "reason": reason,
+            "actual_weight": actual_w, "actual_reps": actual_r, "actual_rpe": actual_rpe,
+            "completion_ratio": round(ratio, 4), "prior_target_weight": prior_target_w,
+            "prior_target_reps": prior_target_r, "normal_target_weight": normal_target_w,
+            "normal_target_reps": normal_target_r, "readiness_regulated": regulated,
+            "next_weight": next_w, "next_reps": next_r,
+        })
     return next_targets, diagnostics
 
 def get_exercise_smart_defaults(exercise_name, meso_number):
