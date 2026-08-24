@@ -1,5 +1,9 @@
 import os
 
+APP_VERSION = "1.2.0"
+DATABASE_SCHEMA_VERSION = 1
+DEBUG_PERFORMANCE = False
+
 # ==========================================
 # --- APP CONFIGURATION & CONSTANTS ---
 # ==========================================
