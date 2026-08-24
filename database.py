@@ -35,6 +35,9 @@ def init_and_seed_db():
         cursor.execute("INSERT OR IGNORE INTO user_settings (setting_key, setting_value) VALUES ('bodyweight', '178.0')")
         cursor.execute("INSERT OR IGNORE INTO user_settings (setting_key, setting_value) VALUES ('age', '43')")
         cursor.execute("INSERT OR IGNORE INTO user_settings (setting_key, setting_value) VALUES ('progression_profile', '0')") # 0 = Auto
+        cursor.execute("INSERT OR IGNORE INTO user_settings (setting_key, setting_value) VALUES ('workout_focus_mode', '0')")
+        cursor.execute("INSERT OR IGNORE INTO user_settings (setting_key, setting_value) VALUES ('ui_density', 'comfortable')")
+        cursor.execute("INSERT OR REPLACE INTO user_settings (setting_key, setting_value) VALUES ('schema_version', ?)", (str(DATABASE_SCHEMA_VERSION),))
         
         # --- SAFE MIGRATIONS FOR EXERCISE DICT ---
         cursor.execute("PRAGMA table_info(exercise_dict)")
