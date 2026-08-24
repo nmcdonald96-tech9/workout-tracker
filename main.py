@@ -2686,8 +2686,11 @@ class WorkoutTrackerApp:
                 value=backup_str, multiline=True, min_lines=6, max_lines=8, text_size=11, read_only=True
             )
             
-            def copy_to_clip(ev):
-                self.page.set_clipboard(self.export_field.value)
+            async def copy_to_clip(ev):
+                # page.set_clipboard() no longer exists in current Flet; page.clipboard
+                # is deprecated and scheduled for removal in 0.90.0. ft.Clipboard().set()
+                # is the current, non-deprecated API -- it's async, hence async def here.
+                await ft.Clipboard().set(self.export_field.value)
                 self.show_snackbar("Copied to clipboard!", "green300")
             
             self.export_dialog = ft.AlertDialog(
@@ -2889,8 +2892,9 @@ class WorkoutTrackerApp:
                 read_only=True
             )
 
-            def copy_csv_to_clipboard(ev):
-                self.page.set_clipboard(self.export_field.value)
+            async def copy_csv_to_clipboard(ev):
+                # Same fix as copy_to_clip above -- current non-deprecated Clipboard API.
+                await ft.Clipboard().set(self.export_field.value)
                 self.show_snackbar("CSV data copied!", "green300")
 
             self.export_dialog = ft.AlertDialog(
