@@ -396,7 +396,7 @@ class ExerciseCard(ft.Card):
                 for idx in range(num_sets):
                     target = self.set_targets[idx]
                     self.app.sets[self.db_id].append({
-                        "w": str(target["w"]), "r": "", "rpe": "", "rest": None,
+                        "w": str(target["w"]), "r": str(target["r"]), "rpe": "", "rest": None,
                         "completed_at": None, "done": False
                     })
 
@@ -451,8 +451,14 @@ class ExerciseCard(ft.Card):
 
         for idx, set_data in enumerate(self.app.sets[self.db_id]):
             set_num = idx + 1
-            w_hint = str(self.set_targets[idx]["w"]) if idx < len(self.set_targets) else str(adj_w)
-            r_hint = str(self.set_targets[idx]["r"]) if hasattr(self, 'set_targets') and idx < len(self.set_targets) else str(adj_r)
+            target = self.set_targets[idx] if idx < len(self.set_targets) else {"w": adj_w, "r": adj_r}
+            if self.status == STATUS_PENDING and not bool(set_data.get("done")):
+                if not str(set_data.get("w", "")).strip():
+                    set_data["w"] = str(target["w"])
+                if not str(set_data.get("r", "")).strip():
+                    set_data["r"] = str(target["r"])
+            w_hint = str(target["w"])
+            r_hint = str(target["r"])
             rpe_hint = past_rpe_list[idx].strip() if idx < len(past_rpe_list) else "8"
 
             # Clean, bold set number outside the box
@@ -640,18 +646,6 @@ class ExerciseCard(ft.Card):
             ], alignment="spaceBetween", spacing=10, visible=not self.app.workout_focus_mode)
         ], spacing=4)
         
-        display_weight = self.format_target_weight(is_bw, base_target_w)
-        self.target_banner_text = ft.Text(f"🎯 Target: {display_weight} x {base_target_r}  |  RPE Goal: 8-9", color="blue200", size=12, weight="bold")
-        
-        target_banner = ft.Container(
-            content=ft.Row([
-                self.target_banner_text,
-                ft.TextButton("Why?", on_click=self.open_target_explanation, style=ft.ButtonStyle(padding=2)),
-            ], alignment="spaceBetween"),
-            padding=4,
-            visible=(self.status == STATUS_PENDING)
-        )
-
         chips_row = ft.Row(spacing=6, wrap=True)
         
         if regulation_msg:
@@ -706,12 +700,11 @@ class ExerciseCard(ft.Card):
         density_scale = 0.78 if self.app.ui_density == "compact" else 1.0
         card_body = ft.Column([
             title_zone,
-            target_banner,
             helper_zone,
             sets_column,
             self.rpe_warning,
             action_zone
-        ], spacing=4 if self.app.ui_density == "compact" else 6, expand=True)
+        ], spacing=3 if self.app.ui_density == "compact" else 5, expand=True)
         
         accent_bar = ft.Container(width=4, bgcolor=accent_color, border_radius=4)
         
@@ -728,11 +721,12 @@ class ExerciseCard(ft.Card):
         if self.app.current_week == "Deload":
             lines.append("Deload targets reduce training demand for recovery.")
         elif self.set_progression_diagnostics:
+            labels = {"progress": "Progression applied", "hold": "Target held", "reduce": "Demand reduced", "resume_normal": "Normal trajectory resumed"}
             for item in self.set_progression_diagnostics[:6]:
-                decision = str(item.get("decision", "hold")).title()
-                lines.append(f"Set {item.get('set_number', '?')}: {decision}. Next target {item.get('next_weight', '?'):g} x {item.get('next_reps', '?')}.")
-                if item.get("readiness_regulated"):
-                    lines.append("  Previous readiness reduction was isolated from long-term progression.")
+                decision = str(item.get("decision", "hold"))
+                lines.append(f"Set {item.get('set_number', '?')}: {labels.get(decision, decision)}. Next target {item.get('next_weight', '?'):g} x {item.get('next_reps', '?')}.")
+                if item.get("reason"):
+                    lines.append(f"  {item['reason']}")
         else:
             lines.append("No prior completed set data was available, so the stored session target is being used.")
 
@@ -872,8 +866,9 @@ class ExerciseCard(ft.Card):
 
     def on_add_set(self, ev):
         if self.db_id not in self.app.sets: return
-        last_w = self.app.sets[self.db_id][-1].get("w", "") if self.app.sets[self.db_id] else str(self.tgt_w)
-        self.app.sets[self.db_id].append({"w": last_w, "r": "", "rpe": "", "rest": None, "completed_at": None, "done": False})
+        new_idx = len(self.app.sets[self.db_id])
+        target = self.set_targets[new_idx] if new_idx < len(self.set_targets) else {"w": self.tgt_w, "r": self.tgt_r}
+        self.app.sets[self.db_id].append({"w": str(target["w"]), "r": str(target["r"]), "rpe": "", "rest": None, "completed_at": None, "done": False})
         self.autosave_pending_sets() # Force save draft
         self.app.rebuild_entire_display()
 
@@ -2008,9 +2003,12 @@ class WorkoutTrackerApp:
         clipboard_paths = []
         if getattr(ft, "Clipboard", None) is not None:
             clipboard_paths.append("ft.Clipboard")
-        page_clipboard = getattr(self.page, "clipboard", None)
-        if page_clipboard is not None and callable(getattr(page_clipboard, "set", None)):
-            clipboard_paths.append("page.clipboard")
+        try:
+            page_clipboard = getattr(self.page, "clipboard", None)
+            if page_clipboard is not None and callable(getattr(page_clipboard, "set", None)):
+                clipboard_paths.append("page.clipboard")
+        except Exception:
+            pass
         if callable(getattr(self.page, "set_clipboard", None)):
             clipboard_paths.append("page.set_clipboard")
 
