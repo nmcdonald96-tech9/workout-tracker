@@ -15,6 +15,7 @@ import threading
 import socket
 import urllib.parse
 import secrets
+import inspect
 
 from constants import *
 from database import *
@@ -1877,6 +1878,52 @@ class WorkoutTrackerApp:
         sb = ft.SnackBar(ft.Text(text, color=color, weight="bold"), bgcolor="grey900", duration=3000)
         self.safe_open(sb)
 
+    async def copy_text_to_clipboard(self, text):
+        """Copy text across current, transitional, and legacy Flet runtimes."""
+        text = "" if text is None else str(text)
+        failures = []
+
+        clipboard_class = getattr(ft, "Clipboard", None)
+        if clipboard_class is not None:
+            try:
+                clipboard = clipboard_class()
+                setter = getattr(clipboard, "set", None)
+                if callable(setter):
+                    result = setter(text)
+                    if inspect.isawaitable(result):
+                        await result
+                    return
+                failures.append("ft.Clipboard.set is unavailable")
+            except Exception as err:
+                failures.append(f"ft.Clipboard: {err}")
+
+        page_clipboard = getattr(self.page, "clipboard", None)
+        if page_clipboard is not None:
+            setter = getattr(page_clipboard, "set", None)
+            if callable(setter):
+                try:
+                    result = setter(text)
+                    if inspect.isawaitable(result):
+                        await result
+                    return
+                except Exception as err:
+                    failures.append(f"page.clipboard: {err}")
+            else:
+                failures.append("page.clipboard.set is unavailable")
+
+        legacy_setter = getattr(self.page, "set_clipboard", None)
+        if callable(legacy_setter):
+            try:
+                result = legacy_setter(text)
+                if inspect.isawaitable(result):
+                    await result
+                return
+            except Exception as err:
+                failures.append(f"page.set_clipboard: {err}")
+
+        detail = "; ".join(failures) if failures else "no supported clipboard API was found"
+        raise RuntimeError(f"Clipboard access is unavailable in this Flet runtime ({detail}).")
+
     def current_meso_label(self):
         with get_db() as conn:
             cursor = conn.cursor()
@@ -2687,11 +2734,11 @@ class WorkoutTrackerApp:
             )
             
             async def copy_to_clip(ev):
-                # page.set_clipboard() no longer exists in current Flet; page.clipboard
-                # is deprecated and scheduled for removal in 0.90.0. ft.Clipboard().set()
-                # is the current, non-deprecated API -- it's async, hence async def here.
-                await ft.Clipboard().set(self.export_field.value)
-                self.show_snackbar("Copied to clipboard!", "green300")
+                try:
+                    await self.copy_text_to_clipboard(self.export_field.value or "")
+                    self.show_snackbar("Copied to clipboard!", "green300")
+                except Exception as err:
+                    self.show_snackbar(f"Copy failed: {err}", "red300")
             
             self.export_dialog = ft.AlertDialog(
                 title=ft.Text("Off-Device Export", weight="bold"),
@@ -2893,9 +2940,11 @@ class WorkoutTrackerApp:
             )
 
             async def copy_csv_to_clipboard(ev):
-                # Same fix as copy_to_clip above -- current non-deprecated Clipboard API.
-                await ft.Clipboard().set(self.export_field.value)
-                self.show_snackbar("CSV data copied!", "green300")
+                try:
+                    await self.copy_text_to_clipboard(self.export_field.value or "")
+                    self.show_snackbar("CSV data copied!", "green300")
+                except Exception as err:
+                    self.show_snackbar(f"Copy failed: {err}", "red300")
 
             self.export_dialog = ft.AlertDialog(
                 title=ft.Text("CSV Export Ready"),
