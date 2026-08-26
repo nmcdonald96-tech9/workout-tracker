@@ -1079,6 +1079,8 @@ class WorkoutTrackerApp:
         self.pr_celebrations = {}
         self.strength_badges = {}
         self.meso_just_completed = False
+        self.summary_replay_mode = False
+        self.summary_return_position = None
         # Retained for compatibility with older in-memory state. Rest timing now
         # uses each set's explicit Done checkbox and workout_sets.completed_at.
         self.set_touch_times = {}
@@ -1215,6 +1217,8 @@ class WorkoutTrackerApp:
                 )
                 pending_non_deload = cursor.fetchone()[0]
                 self.meso_just_completed = (pending_non_deload == 0 and self.current_week != "Deload")
+                self.summary_replay_mode = False
+                self.summary_return_position = None
                 self.view_mode = "summary"
                 return
 
@@ -1408,6 +1412,7 @@ class WorkoutTrackerApp:
                         ft.ElevatedButton("📈 Strength Standards", on_click=self.open_strength_standards, expand=True, style=btn_style),
                         ft.ElevatedButton("🏁 Meso Report", on_click=self.open_meso_report, expand=True, style=btn_style),
                     ], spacing=6),
+                    ft.ElevatedButton("📋 View Last Workout Summary", on_click=self.open_latest_workout_summary, width=float('inf'), style=btn_style),
 
                     ft.Divider(height=10, color="white10"),
                     
@@ -1451,6 +1456,41 @@ class WorkoutTrackerApp:
             content_padding=20
         )
         self.safe_open(self.actions_menu_dialog)
+
+    def open_latest_workout_summary(self, e=None):
+        self.close_actions_menu()
+        with get_db() as conn:
+            row = conn.execute(
+                """
+                SELECT meso_number, week, day_of_week
+                FROM workout_sessions
+                WHERE status = 'Completed'
+                ORDER BY date DESC, id DESC
+                LIMIT 1
+                """
+            ).fetchone()
+        if not row:
+            self.show_snackbar("No completed workout is available yet.", "amber300")
+            return
+        self.summary_return_position = (
+            self.current_meso, self.current_week, self.current_day, self.view_mode
+        )
+        self.current_meso, self.current_week, self.current_day = row
+        self.summary_replay_mode = True
+        self.view_mode = "summary"
+        self.rebuild_navigation_headers()
+        self.rebuild_entire_display()
+
+    def close_replayed_workout_summary(self, e=None):
+        if self.summary_return_position:
+            self.current_meso, self.current_week, self.current_day, return_view = self.summary_return_position
+            self.view_mode = return_view if return_view != "summary" else "workout"
+        else:
+            self.view_mode = "workout"
+        self.summary_replay_mode = False
+        self.summary_return_position = None
+        self.rebuild_navigation_headers()
+        self.rebuild_entire_display()
 
     def toggle_workout_focus_mode(self, e=None):
         self.close_actions_menu()
@@ -3469,7 +3509,11 @@ class WorkoutTrackerApp:
                     break
 
             cursor.execute("""
-                SELECT s.weight, s.reps, s.rpe, ws.exercise, ws.category, ws.bodyweight_snapshot, s.rest_seconds
+                SELECT s.weight, s.reps, s.rpe, ws.exercise, ws.category,
+                       ws.bodyweight_snapshot, s.rest_seconds,
+                       s.target_weight, s.target_reps,
+                       s.normal_target_weight, s.normal_target_reps,
+                       s.is_complete
                 FROM workout_sets s
                 JOIN workout_sessions ws ON s.session_id = ws.id
                 WHERE ws.meso_number = ? AND ws.week = ? AND ws.day_of_week = ? AND ws.status = 'Completed'
@@ -3481,15 +3525,45 @@ class WorkoutTrackerApp:
             valid_rpe_sets = 0
             total_rest = 0
             valid_rest_sets = 0
+            total_reps = 0
+            completed_exercises = set()
+            outcome_counts = {"progress": 0, "hold": 0, "reduce": 0, "resume_normal": 0}
             group_stats = {}
 
-            for sw, sr, srpe, ex_name, cat, snap_bw, rest_secs in cursor.fetchall():
+            for sw, sr, srpe, ex_name, cat, snap_bw, rest_secs, target_w, target_r, normal_w, normal_r, is_complete in cursor.fetchall():
+                if not is_complete:
+                    continue
                 is_bw = EXERCISE_METADATA.get(ex_name, {}).get("equipment") == "Bodyweight"
                 bw_to_use = snap_bw if snap_bw is not None else bw
                 effective_weight = (sw + bw_to_use) if is_bw else sw
 
                 total_vol += (effective_weight * sr)
                 total_sets += 1
+                total_reps += int(sr or 0)
+                completed_exercises.add(ex_name)
+
+                # Mirror the authoritative set-specific decision doctrine for
+                # this completed workout without modifying future targets.
+                try:
+                    prior_r = int(target_r if target_r is not None else sr)
+                    normal_target_r = int(normal_r if normal_r is not None else prior_r)
+                    regulated = (
+                        abs(float(target_w or 0) - float(normal_w if normal_w is not None else target_w or 0)) > 0.01
+                        or prior_r != normal_target_r
+                    )
+                    ratio = (int(sr) / prior_r) if prior_r > 0 else 1.0
+                    if regulated:
+                        outcome_counts["resume_normal"] += 1
+                    elif int(sr) >= prior_r and float(srpe or 8.0) <= STRAIGHT_SET_MAX_PROGRESS_RPE:
+                        outcome_counts["progress"] += 1
+                    elif int(sr) >= prior_r:
+                        outcome_counts["hold"] += 1
+                    elif ratio < STRAIGHT_SET_REDUCE_REP_COMPLETION:
+                        outcome_counts["reduce"] += 1
+                    else:
+                        outcome_counts["hold"] += 1
+                except Exception:
+                    outcome_counts["hold"] += 1
 
                 if cat and cat != "General":
                     if cat not in group_stats:
@@ -3569,8 +3643,10 @@ class WorkoutTrackerApp:
             ft.Text("Targeted Breakdown:", size=14, color="cyan300", weight="bold"),
             breakdown_col,
             ft.Container(height=4),
-            ft.Text(f"Total Volume: {total_vol:,.0f} lbs", size=16, color="white"),
+            ft.Text(f"Exercises Completed: {len(completed_exercises)}", size=16, color="white"),
             ft.Text(f"Total Sets: {total_sets}", size=16, color="white"),
+            ft.Text(f"Total Reps: {total_reps}", size=16, color="white"),
+            ft.Text(f"Total Volume: {total_vol:,.0f} lbs", size=16, color="white"),
             ft.Text(
                 f"Average RPE: {avg_rpe:.1f}",
                 size=16,
@@ -3582,6 +3658,18 @@ class WorkoutTrackerApp:
             stats_col.controls.append(
                 ft.Text(f"Avg Rest Between Sets: {format_duration_seconds(avg_rest_today)}", size=16, color="cyan200")
             )
+
+        outcome_row = ft.Row([
+            ft.Container(content=ft.Column([ft.Text(str(outcome_counts["progress"]), size=18, weight="bold", color="green300"), ft.Text("Progress", size=9, color="white54")], spacing=1, horizontal_alignment="center"), bgcolor="white10", border_radius=8, padding=8, expand=True),
+            ft.Container(content=ft.Column([ft.Text(str(outcome_counts["hold"]), size=18, weight="bold", color="amber300"), ft.Text("Hold", size=9, color="white54")], spacing=1, horizontal_alignment="center"), bgcolor="white10", border_radius=8, padding=8, expand=True),
+            ft.Container(content=ft.Column([ft.Text(str(outcome_counts["reduce"]), size=18, weight="bold", color="red300"), ft.Text("Reduce", size=9, color="white54")], spacing=1, horizontal_alignment="center"), bgcolor="white10", border_radius=8, padding=8, expand=True),
+            ft.Container(content=ft.Column([ft.Text(str(outcome_counts["resume_normal"]), size=18, weight="bold", color="cyan300"), ft.Text("Resume", size=9, color="white54")], spacing=1, horizontal_alignment="center"), bgcolor="white10", border_radius=8, padding=8, expand=True),
+        ], spacing=6)
+        stats_col.controls.extend([
+            ft.Container(height=4),
+            ft.Text("Next-Target Outcomes", size=14, color="cyan300", weight="bold"),
+            outcome_row,
+        ])
 
         stats_col.controls.append(ft.Container(height=4))
         stats_col.controls.append(
@@ -3622,7 +3710,8 @@ class WorkoutTrackerApp:
             bgcolor="white5",
             border_radius=8,
         )
-        stats_col.controls.append(pump_section)
+        if not self.summary_replay_mode:
+            stats_col.controls.append(pump_section)
 
         # Weekly recap only on the last planned training day of the week
         planned_days = self.current_week_days()
@@ -3686,6 +3775,9 @@ class WorkoutTrackerApp:
             stats_col.controls.append(weekly_recap_section)
 
         def finish_and_advance(e):
+            if self.summary_replay_mode:
+                self.close_replayed_workout_summary()
+                return
             pump_val = int(pump_slider.value)
             with get_db() as conn:
                 cursor = conn.cursor()
@@ -3706,13 +3798,13 @@ class WorkoutTrackerApp:
             self.rebuild_entire_display()
 
         finish_btn = ft.ElevatedButton(
-            "Stamp Workout & Advance",
-            style=ft.ButtonStyle(bgcolor="green700", color="white", padding=20),
+            "Back to Workout" if self.summary_replay_mode else "Stamp Workout & Advance",
+            style=ft.ButtonStyle(bgcolor="blue700" if self.summary_replay_mode else "green700", color="white", padding=20),
             on_click=finish_and_advance
         )
 
         meso_complete_section = ft.Column(spacing=8, horizontal_alignment="center")
-        if getattr(self, 'meso_just_completed', False):
+        if getattr(self, 'meso_just_completed', False) and not self.summary_replay_mode:
             meso_complete_section.controls.extend([
                 ft.Divider(height=10, color="purple700"),
                 ft.Text("🏁 MESOCYCLE COMPLETE 🏁", size=18, weight="bold", color="purple200", text_align=ft.TextAlign.CENTER),
