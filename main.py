@@ -1623,6 +1623,7 @@ class WorkoutTrackerApp:
                     cursor.execute("INSERT OR REPLACE INTO user_settings (setting_key, setting_value) VALUES ('workout_focus_mode', ?)", ("1" if new_focus_mode else "0",))
                     cursor.execute("INSERT OR REPLACE INTO user_settings (setting_key, setting_value) VALUES ('ui_density', ?)", (new_density,))
                     conn.commit()
+                invalidate_progression_settings_cache()
                 self.workout_focus_mode = new_focus_mode
                 self.ui_density = new_density
                 self.safe_close(self.settings_dialog)
@@ -1931,11 +1932,7 @@ class WorkoutTrackerApp:
                         self.dict_dropdown,
                         ft.Row([
                             self.dict_cat_dropdown,
-                            ft.ElevatedButton(
-                                "Update",
-                                style=ft.ButtonStyle(bgcolor="blue700", color="white", padding=10),
-                                on_click=self.update_dictionary_category,
-                            ),
+                            ft.ElevatedButton("Update", style=ft.ButtonStyle(bgcolor="blue700", color="white", padding=10), on_click=self.update_dictionary_category),
                         ], spacing=6),
                         ft.Divider(height=6, color="white10"),
                         ft.Text("Exercise Progression", size=12, weight="bold", color="cyan300"),
@@ -1950,12 +1947,7 @@ class WorkoutTrackerApp:
                         ], alignment="spaceBetween"),
                         ft.Divider(height=6, color="white10"),
                         self.dict_rename_field,
-                        ft.ElevatedButton(
-                            "Rename Exercise",
-                            style=ft.ButtonStyle(bgcolor="teal700", color="white"),
-                            on_click=self.rename_dictionary_exercise,
-                            width=float('inf'),
-                        ),
+                        ft.ElevatedButton("Rename Exercise", style=ft.ButtonStyle(bgcolor="teal700", color="white"), on_click=self.rename_dictionary_exercise, width=float('inf')),
                         ft.Divider(height=6, color="white10"),
                         ft.Row([
                             ft.TextButton("Cancel", on_click=self.close_dict_dialog),
@@ -2021,7 +2013,8 @@ class WorkoutTrackerApp:
                 values=(step,reduction,ceiling,threshold,maxrpe)
             with get_db() as conn:
                 conn.execute("UPDATE exercise_dict SET progression_mode=?, progression_step=?, reduction_steps=?, rep_ceiling=?, reduction_threshold=?, max_progress_rpe=? WHERE name=?", (mode,*values,ex)); conn.commit()
-            self.show_snackbar(f"Progression settings saved for {ex}.", "green300")
+            invalidate_progression_settings_cache(ex)
+            self.show_snackbar(f"Progression settings saved for {ex}.", COLOR_SUCCESS)
             self.on_dict_ex_change(None)
         except Exception: self.show_snackbar("Use valid custom values: step >0, reduction 1-3, ceiling 2-50, threshold 50-85%, RPE 6-10.", "red300")
 
@@ -2030,7 +2023,8 @@ class WorkoutTrackerApp:
         if not ex: return
         with get_db() as conn:
             conn.execute("UPDATE exercise_dict SET progression_mode='default', progression_step=NULL, reduction_steps=NULL, rep_ceiling=NULL, reduction_threshold=NULL, max_progress_rpe=NULL WHERE name=?", (ex,)); conn.commit()
-        self.show_snackbar(f"{ex} restored to progression defaults.", "green300"); self.on_dict_ex_change(None)
+        invalidate_progression_settings_cache(ex)
+        self.show_snackbar(f"{ex} restored to progression defaults.", COLOR_SUCCESS); self.on_dict_ex_change(None)
 
     def update_dictionary_category(self, e):
         ex_name = self.dict_dropdown.value
@@ -2619,8 +2613,15 @@ class WorkoutTrackerApp:
                     src_conn.backup(dst_conn)
 
             with sqlite3.connect(snapshot_path) as meta_conn:
-                for k,v in (("backup_app_version",APP_VERSION),("backup_schema_version",str(DATABASE_SCHEMA_VERSION)),("backup_created_at",datetime.now().isoformat(timespec="seconds"))):
-                    meta_conn.execute("INSERT OR REPLACE INTO user_settings (setting_key,setting_value) VALUES (?,?)",(k,v))
+                metadata = (
+                    ("backup_app_version", APP_VERSION),
+                    ("backup_schema_version", str(DATABASE_SCHEMA_VERSION)),
+                    ("backup_created_at", datetime.now().isoformat(timespec="seconds")),
+                )
+                meta_conn.executemany(
+                    "INSERT OR REPLACE INTO user_settings (setting_key, setting_value) VALUES (?, ?)",
+                    metadata,
+                )
                 meta_conn.commit()
             with open(snapshot_path, "rb") as f:
                 db_data = f.read()
@@ -3566,26 +3567,71 @@ class WorkoutTrackerApp:
 
     def get_workout_context(self):
         with get_db() as conn:
-            row=conn.execute("SELECT COALESCE(MAX(workout_note),''),COALESCE(MAX(session_tags),'') FROM workout_sessions WHERE meso_number=? AND week=? AND day_of_week=?",(self.current_meso,self.current_week,self.current_day)).fetchone()
-        return (row[0] if row else "",[x for x in (row[1] if row else "").split(",") if x])
+            row = conn.execute(
+                "SELECT COALESCE(MAX(workout_note), ''), COALESCE(MAX(session_tags), '') "
+                "FROM workout_sessions WHERE meso_number=? AND week=? AND day_of_week=?",
+                (self.current_meso, self.current_week, self.current_day),
+            ).fetchone()
+        note = row[0] if row else ""
+        tags = [value.strip() for value in (row[1] if row else "").split(",") if value.strip()]
+        return note, tags
 
     def build_workout_context_panel(self):
-        note,tags=self.get_workout_context(); field=ft.TextField(label="Workout note",value=note,multiline=True,min_lines=1,max_lines=3,text_size=11)
-        chips=[ft.FilterChip(label=ft.Text(x,size=10),selected=x in tags) for x in SESSION_TAG_OPTIONS]
-        def save(e=None):
-            chosen=",".join(c.label.value for c in chips if c.selected)
+        note, selected_tags = self.get_workout_context()
+        note_field = ft.TextField(
+            label="Workout note", value=note,
+            hint_text="Context, limitations, cues, or session observations",
+            multiline=True, min_lines=1, max_lines=3, text_size=11,
+        )
+        # Switch is supported by the packaged Android Flet runtime. FilterChip is not.
+        tag_switches = [
+            ft.Switch(label=label, value=label in selected_tags)
+            for label in SESSION_TAG_OPTIONS
+        ]
+        def save_context(e=None):
+            chosen = ",".join(control.label for control in tag_switches if control.value)
             with get_db() as conn:
-                conn.execute("UPDATE workout_sessions SET workout_note=?,session_tags=? WHERE meso_number=? AND week=? AND day_of_week=?",((field.value or "").strip(),chosen,self.current_meso,self.current_week,self.current_day)); conn.commit()
-            self.show_snackbar("Workout context saved.",COLOR_SUCCESS)
-        return ft.Container(content=ft.Column([ft.Row([ft.Text("SESSION CONTEXT",size=9,weight="bold",color=COLOR_INFO),ft.TextButton("Save",on_click=save)],alignment="spaceBetween"),field,ft.Row(chips,spacing=5,wrap=True)],spacing=4,tight=True),bgcolor="white5",border_radius=8,padding=8)
+                conn.execute(
+                    "UPDATE workout_sessions SET workout_note=?, session_tags=? "
+                    "WHERE meso_number=? AND week=? AND day_of_week=?",
+                    ((note_field.value or "").strip(), chosen, self.current_meso, self.current_week, self.current_day),
+                )
+                conn.commit()
+            self.show_snackbar("Workout context saved.", COLOR_SUCCESS)
+        return ft.Container(
+            content=ft.Column([
+                ft.Row([
+                    ft.Text("SESSION CONTEXT", size=9, weight="bold", color=COLOR_INFO),
+                    ft.TextButton("Save", on_click=save_context),
+                ], alignment="spaceBetween"),
+                note_field,
+                ft.Row(tag_switches, spacing=5, wrap=True),
+            ], spacing=4, tight=True),
+            bgcolor="white5", border_radius=8, padding=8,
+        )
 
     def get_previous_workout_comparison(self):
-        q="SELECT COALESCE(SUM(s.weight*s.reps),0),COUNT(s.id),AVG(NULLIF(s.rpe,0)),AVG(s.rest_seconds) FROM workout_sessions ws JOIN workout_sets s ON s.session_id=ws.id WHERE ws.meso_number=? AND ws.week=? AND ws.day_of_week=? AND ws.status='Completed' AND s.is_complete=1"
+        metric_sql = (
+            "SELECT COALESCE(SUM(s.weight*s.reps),0), COUNT(s.id), "
+            "AVG(NULLIF(s.rpe,0)), AVG(s.rest_seconds) "
+            "FROM workout_sessions ws JOIN workout_sets s ON s.session_id=ws.id "
+            "WHERE ws.meso_number=? AND ws.week=? AND ws.day_of_week=? "
+            "AND ws.status='Completed' AND s.is_complete=1"
+        )
         with get_db() as conn:
-            cur=conn.execute(q,(self.current_meso,self.current_week,self.current_day)).fetchone()
-            slot=conn.execute("SELECT meso_number,week,day_of_week FROM workout_sessions WHERE status='Completed' AND day_of_week=? AND NOT(meso_number=? AND week=? AND day_of_week=?) GROUP BY meso_number,week,day_of_week ORDER BY MAX(date) DESC,MAX(id) DESC LIMIT 1",(self.current_day,self.current_meso,self.current_week,self.current_day)).fetchone()
-            prev=conn.execute(q,slot).fetchone() if slot else None
-        return cur,prev
+            current = conn.execute(
+                metric_sql, (self.current_meso, self.current_week, self.current_day)
+            ).fetchone()
+            previous_slot = conn.execute(
+                "SELECT meso_number, week, day_of_week FROM workout_sessions "
+                "WHERE status='Completed' AND day_of_week=? "
+                "AND NOT (meso_number=? AND week=? AND day_of_week=?) "
+                "GROUP BY meso_number, week, day_of_week "
+                "ORDER BY MAX(date) DESC, MAX(id) DESC LIMIT 1",
+                (self.current_day, self.current_meso, self.current_week, self.current_day),
+            ).fetchone()
+            previous = conn.execute(metric_sql, previous_slot).fetchone() if previous_slot else None
+        return current, previous
 
     def build_summary_view(self):
         self.summary_canvas.controls.clear()
@@ -3742,14 +3788,23 @@ class WorkoutTrackerApp:
             ),
         ], alignment="center", horizontal_alignment="center")
 
-        current_cmp,previous_cmp=self.get_previous_workout_comparison()
+        current_cmp, previous_cmp = self.get_previous_workout_comparison()
         if previous_cmp:
-            delta=lambda a,b,s="":f"{float(a or 0)-float(b or 0):+,.1f}{s}"
-            stats_col.controls.extend([ft.Text("Compared with Previous Matching Workout",size=14,color=COLOR_INFO,weight="bold"),ft.Row([
-                ft.Container(content=ft.Text("Volume "+delta(current_cmp[0],previous_cmp[0]," lb")),bgcolor="white10",padding=8,border_radius=8,expand=True),
-                ft.Container(content=ft.Text("Sets "+delta(current_cmp[1],previous_cmp[1])),bgcolor="white10",padding=8,border_radius=8,expand=True),
-                ft.Container(content=ft.Text("Rest "+delta(current_cmp[3],previous_cmp[3],"s")),bgcolor="white10",padding=8,border_radius=8,expand=True)],spacing=6)])
-        else: stats_col.controls.append(ft.Text("No previous matching workout is available for comparison.",size=10,color=COLOR_MUTED,italic=True))
+            def metric_delta(current_value, previous_value, suffix=""):
+                return f"{float(current_value or 0) - float(previous_value or 0):+,.1f}{suffix}"
+            stats_col.controls.extend([
+                ft.Container(height=4),
+                ft.Text("Compared with Previous Matching Workout", size=14, color=COLOR_INFO, weight="bold"),
+                ft.Row([
+                    ft.Container(content=ft.Text("Volume " + metric_delta(current_cmp[0], previous_cmp[0], " lb")), bgcolor="white10", padding=8, border_radius=8, expand=True),
+                    ft.Container(content=ft.Text("Sets " + metric_delta(current_cmp[1], previous_cmp[1])), bgcolor="white10", padding=8, border_radius=8, expand=True),
+                    ft.Container(content=ft.Text("Rest " + metric_delta(current_cmp[3], previous_cmp[3], "s")), bgcolor="white10", padding=8, border_radius=8, expand=True),
+                ], spacing=6),
+            ])
+        else:
+            stats_col.controls.append(
+                ft.Text("No previous matching workout is available for comparison.", size=10, color=COLOR_MUTED, italic=True)
+            )
         if avg_rest_today is not None:
             stats_col.controls.append(
                 ft.Text(f"Avg Rest Between Sets: {format_duration_seconds(avg_rest_today)}", size=16, color="cyan200")
