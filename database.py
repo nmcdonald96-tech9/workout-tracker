@@ -72,7 +72,7 @@ def init_and_seed_db():
             f"date TEXT, exercise TEXT, category TEXT DEFAULT 'General', "
             f"day_of_week TEXT, week TEXT, target_weight REAL, target_reps INTEGER, "
             f"status TEXT DEFAULT '{STATUS_PENDING}', movement_type TEXT DEFAULT 'Isolation', "
-            f"meso_number INTEGER DEFAULT 1, bodyweight_snapshot REAL)"
+            f"meso_number INTEGER DEFAULT 1, bodyweight_snapshot REAL, workout_note TEXT DEFAULT '', session_tags TEXT DEFAULT '')"
         )
         cursor.execute(
             "CREATE TABLE IF NOT EXISTS workout_sets ("
@@ -116,6 +116,12 @@ def init_and_seed_db():
         cols = [info[1] for info in cursor.fetchall()]
         if "bodyweight_snapshot" not in cols:
             cursor.execute("ALTER TABLE workout_sessions ADD COLUMN bodyweight_snapshot REAL")
+            conn.commit()
+        if "workout_note" not in cols:
+            cursor.execute("ALTER TABLE workout_sessions ADD COLUMN workout_note TEXT DEFAULT ''")
+            conn.commit()
+        if "session_tags" not in cols:
+            cursor.execute("ALTER TABLE workout_sessions ADD COLUMN session_tags TEXT DEFAULT ''")
             conn.commit()
 
         # --- SAFE MIGRATION: REST TIME BETWEEN SETS ---
@@ -725,8 +731,18 @@ def calculate_session_progression(completed_sets, target_weight, target_reps, mo
     return next_weight, next_reps, metrics
 
 
+_EFFECTIVE_SETTINGS_CACHE={}
+
+def invalidate_progression_settings_cache(exercise_name=None):
+    if exercise_name is None: _EFFECTIVE_SETTINGS_CACHE.clear()
+    else:
+        for key in list(_EFFECTIVE_SETTINGS_CACHE):
+            if key[0]==exercise_name: _EFFECTIVE_SETTINGS_CACHE.pop(key,None)
+
 def get_effective_progression_settings(exercise_name, movement_type, equipment_type, age=43, profile=0):
     """Resolve exercise overrides over current profile and movement defaults."""
+    cache_key=(exercise_name,movement_type,equipment_type,int(age or 0),int(profile or 0))
+    if cache_key in _EFFECTIVE_SETTINGS_CACHE: return dict(_EFFECTIVE_SETTINGS_CACHE[cache_key])
     effective_profile = profile
     if effective_profile == 0:
         effective_profile = 3 if age < 35 else (2 if age < 45 else 1)
@@ -753,8 +769,8 @@ def get_effective_progression_settings(exercise_name, movement_type, equipment_t
                     result[key + "_source"] = "exercise_override"
     except Exception:
         pass
-    if equipment_type == "Dumbbell":
-        result["progression_step_source"] = "dumbbell_rack"
+    if equipment_type == "Dumbbell": result["progression_step_source"] = "dumbbell_rack"
+    _EFFECTIVE_SETTINGS_CACHE[cache_key]=dict(result)
     return result
 
 
