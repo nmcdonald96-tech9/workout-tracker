@@ -530,7 +530,7 @@ class ExerciseCard(ft.Card):
                 height=40,
                 width=88,
                 style=ft.ButtonStyle(
-                    bgcolor="green700" if set_is_done else "cyan700",
+                    bgcolor=COLOR_COMPLETE if set_is_done else COLOR_ACTIVE,
                     color="white",
                     padding=6,
                     shape=ft.RoundedRectangleBorder(radius=7),
@@ -544,7 +544,7 @@ class ExerciseCard(ft.Card):
             if idx < kinetic_active_idx or kinetic_active_idx == -1:
                 row_opacity, row_bgcolor = 0.4, None   # completed, dimmed
             elif idx == kinetic_active_idx:
-                row_opacity, row_bgcolor = 1.0, "white10"  # active, highlighted
+                row_opacity, row_bgcolor = 1.0, "cyan900"  # active, strongly highlighted
             else:
                 row_opacity, row_bgcolor = 0.8, None   # upcoming
 
@@ -1907,10 +1907,10 @@ class WorkoutTrackerApp:
             )
 
             self.dict_progression_mode = ft.Dropdown(label="Progression", value="default", options=[ft.dropdown.Option(key="default", text="Use Default"), ft.dropdown.Option(key="custom", text="Custom")])
-            self.dict_progression_step = ft.TextField(label="Weight step (lbs)", keyboard_type=ft.KeyboardType.NUMBER)
-            self.dict_reduction_steps = ft.Dropdown(label="Reduction steps", value="1", options=[ft.dropdown.Option(str(i)) for i in range(1,4)])
-            self.dict_rep_ceiling = ft.TextField(label="Rep ceiling", keyboard_type=ft.KeyboardType.NUMBER)
-            self.dict_reduction_threshold = ft.TextField(label="Reduce below (%)", keyboard_type=ft.KeyboardType.NUMBER)
+            self.dict_progression_step = ft.TextField(label="Weight step (lbs)", keyboard_type=ft.KeyboardType.NUMBER, expand=True, text_size=12)
+            self.dict_reduction_steps = ft.Dropdown(label="Reduction steps", value="1", options=[ft.dropdown.Option(str(i)) for i in range(1,4)], width=132, text_size=12)
+            self.dict_rep_ceiling = ft.TextField(label="Rep ceiling", keyboard_type=ft.KeyboardType.NUMBER, expand=True, text_size=12)
+            self.dict_reduction_threshold = ft.TextField(label="Reduce below (%)", keyboard_type=ft.KeyboardType.NUMBER, width=150, text_size=12)
             self.dict_max_rpe = ft.Dropdown(label="Max progression RPE", value="9.5", options=[ft.dropdown.Option(f"{x/2:.1f}") for x in range(12,21)])
             self.dict_progression_preview = ft.Text("Select an exercise to view effective settings.", size=10, color="cyan200")
             self.dict_rename_field = ft.TextField(
@@ -1924,17 +1924,19 @@ class WorkoutTrackerApp:
             self.dict_dialog = ft.AlertDialog(
                 title=ft.Text("Manage Dictionary", size=16, weight="bold"),
                 content=ft.Container(
-                    width=320, 
+                    width=350,
+                    height=560,
                     content=ft.Column([
-                        ft.Text("Modify category, rename, or remove an exercise.", size=12, color="white54"), 
+                        ft.Text("Modify category, progression, name, or remove an exercise.", size=11, color="white54"),
                         self.dict_dropdown,
-                        self.dict_cat_dropdown,
-                        ft.ElevatedButton(
-                            "Update Category",
-                            style=ft.ButtonStyle(bgcolor="blue700", color="white"),
-                            on_click=self.update_dictionary_category,
-                            width=320
-                        ),
+                        ft.Row([
+                            self.dict_cat_dropdown,
+                            ft.ElevatedButton(
+                                "Update",
+                                style=ft.ButtonStyle(bgcolor="blue700", color="white", padding=10),
+                                on_click=self.update_dictionary_category,
+                            ),
+                        ], spacing=6),
                         ft.Divider(height=6, color="white10"),
                         ft.Text("Exercise Progression", size=12, weight="bold", color="cyan300"),
                         self.dict_progression_mode,
@@ -1942,23 +1944,27 @@ class WorkoutTrackerApp:
                         ft.Row([self.dict_rep_ceiling, self.dict_reduction_threshold], spacing=6),
                         self.dict_max_rpe,
                         self.dict_progression_preview,
-                        ft.Row([ft.TextButton("Reset Defaults", on_click=self.reset_dictionary_progression), ft.ElevatedButton("Save Progression", on_click=self.save_dictionary_progression, style=ft.ButtonStyle(bgcolor="purple700", color="white"))], alignment="spaceBetween"),
+                        ft.Row([
+                            ft.TextButton("Reset Defaults", on_click=self.reset_dictionary_progression),
+                            ft.ElevatedButton("Save Progression", on_click=self.save_dictionary_progression, style=ft.ButtonStyle(bgcolor="purple700", color="white")),
+                        ], alignment="spaceBetween"),
                         ft.Divider(height=6, color="white10"),
                         self.dict_rename_field,
                         ft.ElevatedButton(
                             "Rename Exercise",
                             style=ft.ButtonStyle(bgcolor="teal700", color="white"),
                             on_click=self.rename_dictionary_exercise,
-                            width=320,
+                            width=float('inf'),
                         ),
                         ft.Divider(height=6, color="white10"),
                         ft.Row([
                             ft.TextButton("Cancel", on_click=self.close_dict_dialog),
-                            ft.TextButton("Delete", icon="delete", icon_color="red400", on_click=self.delete_from_dictionary)
+                            ft.TextButton("Delete", icon="delete", icon_color="red400", on_click=self.delete_from_dictionary),
                         ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-                        ft.ElevatedButton("Update Category", style=ft.ButtonStyle(bgcolor="blue700", color="white"), on_click=self.update_dictionary_category, width=320)
-                    ], tight=True, spacing=6)
-                )
+                    ], tight=True, spacing=6, scroll="auto"),
+                ),
+                content_padding=16,
+                inset_padding=12,
             )
             self.safe_open(self.dict_dialog)
 
@@ -2612,6 +2618,10 @@ class WorkoutTrackerApp:
                 with sqlite3.connect(snapshot_path) as dst_conn:
                     src_conn.backup(dst_conn)
 
+            with sqlite3.connect(snapshot_path) as meta_conn:
+                for k,v in (("backup_app_version",APP_VERSION),("backup_schema_version",str(DATABASE_SCHEMA_VERSION)),("backup_created_at",datetime.now().isoformat(timespec="seconds"))):
+                    meta_conn.execute("INSERT OR REPLACE INTO user_settings (setting_key,setting_value) VALUES (?,?)",(k,v))
+                meta_conn.commit()
             with open(snapshot_path, "rb") as f:
                 db_data = f.read()
 
@@ -2628,7 +2638,7 @@ class WorkoutTrackerApp:
         try:
             encoded_str = self.create_backup_string()
             backup_dir = self.get_backup_storage_dir()
-            filename = f"workout_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+            filename = f"IronCycle_v{APP_VERSION}_schema{DATABASE_SCHEMA_VERSION}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
             backup_path = os.path.join(backup_dir, filename)
 
             with open(backup_path, "w", encoding="utf-8") as f:
@@ -3554,6 +3564,29 @@ class WorkoutTrackerApp:
             content=header_container
         )
 
+    def get_workout_context(self):
+        with get_db() as conn:
+            row=conn.execute("SELECT COALESCE(MAX(workout_note),''),COALESCE(MAX(session_tags),'') FROM workout_sessions WHERE meso_number=? AND week=? AND day_of_week=?",(self.current_meso,self.current_week,self.current_day)).fetchone()
+        return (row[0] if row else "",[x for x in (row[1] if row else "").split(",") if x])
+
+    def build_workout_context_panel(self):
+        note,tags=self.get_workout_context(); field=ft.TextField(label="Workout note",value=note,multiline=True,min_lines=1,max_lines=3,text_size=11)
+        chips=[ft.FilterChip(label=ft.Text(x,size=10),selected=x in tags) for x in SESSION_TAG_OPTIONS]
+        def save(e=None):
+            chosen=",".join(c.label.value for c in chips if c.selected)
+            with get_db() as conn:
+                conn.execute("UPDATE workout_sessions SET workout_note=?,session_tags=? WHERE meso_number=? AND week=? AND day_of_week=?",((field.value or "").strip(),chosen,self.current_meso,self.current_week,self.current_day)); conn.commit()
+            self.show_snackbar("Workout context saved.",COLOR_SUCCESS)
+        return ft.Container(content=ft.Column([ft.Row([ft.Text("SESSION CONTEXT",size=9,weight="bold",color=COLOR_INFO),ft.TextButton("Save",on_click=save)],alignment="spaceBetween"),field,ft.Row(chips,spacing=5,wrap=True)],spacing=4,tight=True),bgcolor="white5",border_radius=8,padding=8)
+
+    def get_previous_workout_comparison(self):
+        q="SELECT COALESCE(SUM(s.weight*s.reps),0),COUNT(s.id),AVG(NULLIF(s.rpe,0)),AVG(s.rest_seconds) FROM workout_sessions ws JOIN workout_sets s ON s.session_id=ws.id WHERE ws.meso_number=? AND ws.week=? AND ws.day_of_week=? AND ws.status='Completed' AND s.is_complete=1"
+        with get_db() as conn:
+            cur=conn.execute(q,(self.current_meso,self.current_week,self.current_day)).fetchone()
+            slot=conn.execute("SELECT meso_number,week,day_of_week FROM workout_sessions WHERE status='Completed' AND day_of_week=? AND NOT(meso_number=? AND week=? AND day_of_week=?) GROUP BY meso_number,week,day_of_week ORDER BY MAX(date) DESC,MAX(id) DESC LIMIT 1",(self.current_day,self.current_meso,self.current_week,self.current_day)).fetchone()
+            prev=conn.execute(q,slot).fetchone() if slot else None
+        return cur,prev
+
     def build_summary_view(self):
         self.summary_canvas.controls.clear()
         confetti = ft.Text("🎉", size=50, text_align=ft.TextAlign.CENTER)
@@ -3709,6 +3742,14 @@ class WorkoutTrackerApp:
             ),
         ], alignment="center", horizontal_alignment="center")
 
+        current_cmp,previous_cmp=self.get_previous_workout_comparison()
+        if previous_cmp:
+            delta=lambda a,b,s="":f"{float(a or 0)-float(b or 0):+,.1f}{s}"
+            stats_col.controls.extend([ft.Text("Compared with Previous Matching Workout",size=14,color=COLOR_INFO,weight="bold"),ft.Row([
+                ft.Container(content=ft.Text("Volume "+delta(current_cmp[0],previous_cmp[0]," lb")),bgcolor="white10",padding=8,border_radius=8,expand=True),
+                ft.Container(content=ft.Text("Sets "+delta(current_cmp[1],previous_cmp[1])),bgcolor="white10",padding=8,border_radius=8,expand=True),
+                ft.Container(content=ft.Text("Rest "+delta(current_cmp[3],previous_cmp[3],"s")),bgcolor="white10",padding=8,border_radius=8,expand=True)],spacing=6)])
+        else: stats_col.controls.append(ft.Text("No previous matching workout is available for comparison.",size=10,color=COLOR_MUTED,italic=True))
         if avg_rest_today is not None:
             stats_col.controls.append(
                 ft.Text(f"Avg Rest Between Sets: {format_duration_seconds(avg_rest_today)}", size=16, color="cyan200")
@@ -5536,6 +5577,7 @@ class WorkoutTrackerApp:
                 current_day_is_planned = self.current_day in planned_days
                 current_day_is_rest = self.is_planned_rest_day(self.current_day)
 
+            self.main_canvas.controls.append(self.build_workout_context_panel())
             self.rebuild_readiness_survey_layer()
 
             if self.survey_panel.content:
