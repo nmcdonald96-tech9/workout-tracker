@@ -731,18 +731,23 @@ def calculate_session_progression(completed_sets, target_weight, target_reps, mo
     return next_weight, next_reps, metrics
 
 
-_EFFECTIVE_SETTINGS_CACHE={}
+_EFFECTIVE_SETTINGS_CACHE = {}
 
 def invalidate_progression_settings_cache(exercise_name=None):
-    if exercise_name is None: _EFFECTIVE_SETTINGS_CACHE.clear()
-    else:
-        for key in list(_EFFECTIVE_SETTINGS_CACHE):
-            if key[0]==exercise_name: _EFFECTIVE_SETTINGS_CACHE.pop(key,None)
+    """Drop cached effective settings after profile or dictionary changes."""
+    if exercise_name is None:
+        _EFFECTIVE_SETTINGS_CACHE.clear()
+        return
+    for key in list(_EFFECTIVE_SETTINGS_CACHE):
+        if key[0] == exercise_name:
+            _EFFECTIVE_SETTINGS_CACHE.pop(key, None)
 
 def get_effective_progression_settings(exercise_name, movement_type, equipment_type, age=43, profile=0):
     """Resolve exercise overrides over current profile and movement defaults."""
-    cache_key=(exercise_name,movement_type,equipment_type,int(age or 0),int(profile or 0))
-    if cache_key in _EFFECTIVE_SETTINGS_CACHE: return dict(_EFFECTIVE_SETTINGS_CACHE[cache_key])
+    cache_key = (exercise_name, movement_type, equipment_type, int(age or 0), int(profile or 0))
+    cached = _EFFECTIVE_SETTINGS_CACHE.get(cache_key)
+    if cached is not None:
+        return dict(cached)
     effective_profile = profile
     if effective_profile == 0:
         effective_profile = 3 if age < 35 else (2 if age < 45 else 1)
@@ -769,8 +774,9 @@ def get_effective_progression_settings(exercise_name, movement_type, equipment_t
                     result[key + "_source"] = "exercise_override"
     except Exception:
         pass
-    if equipment_type == "Dumbbell": result["progression_step_source"] = "dumbbell_rack"
-    _EFFECTIVE_SETTINGS_CACHE[cache_key]=dict(result)
+    if equipment_type == "Dumbbell":
+        result["progression_step_source"] = "dumbbell_rack"
+    _EFFECTIVE_SETTINGS_CACHE[cache_key] = dict(result)
     return result
 
 
