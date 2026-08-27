@@ -1150,6 +1150,8 @@ class WorkoutTrackerApp:
         init_and_seed_db()
         self.workout_focus_mode = self.get_bool_setting("workout_focus_mode", False)
         self.ui_density = self.get_text_setting("ui_density", "comfortable")
+        self.context_collapsed = self.get_bool_setting("context_collapsed", True)
+        self.nav_collapsed = self.get_bool_setting("nav_collapsed", False)
         self.last_rebuild_ms = None
         
         with get_db() as conn:
@@ -1403,10 +1405,12 @@ class WorkoutTrackerApp:
 
         # Equal-width side slots keep the mesocycle indicator truly centered.
         # The extra right inset keeps Menu clear of Android's landscape nav overlay.
+        self.nav_collapse_button = ft.TextButton(content=ft.Text("▲", size=12, color="cyan300"), on_click=self.toggle_navigation_rows, width=34)
+        self.nav_position_text = ft.Text("", size=11, color="white70", weight="bold")
         self.top_header_row = ft.Row([
-            ft.Container(width=140),
+            ft.Container(content=self.nav_position_text, width=140, padding=4),
             self.meso_nav_row,
-            ft.Container(content=self.btn_menu, width=140, padding=4),
+            ft.Container(content=ft.Row([self.nav_collapse_button, self.btn_menu], spacing=4), width=140, padding=4),
         ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN, vertical_alignment=ft.CrossAxisAlignment.CENTER, spacing=0)
         self.week_header_row = ft.Row([self.week_nav_row], alignment=ft.MainAxisAlignment.START, vertical_alignment=ft.CrossAxisAlignment.CENTER)
         self.day_header_row = ft.Row([self.day_nav_row], alignment=ft.MainAxisAlignment.START, vertical_alignment=ft.CrossAxisAlignment.CENTER)
@@ -1924,40 +1928,22 @@ class WorkoutTrackerApp:
 
             self.dict_dialog = ft.AlertDialog(
                 title=ft.Text("Manage Dictionary", size=16, weight="bold"),
-                content=ft.Container(
-                    width=350,
-                    height=560,
-                    content=ft.Column([
-                        ft.Text("Modify category, progression, name, or remove an exercise.", size=11, color="white54"),
-                        self.dict_dropdown,
-                        ft.Row([
-                            self.dict_cat_dropdown,
-                            ft.ElevatedButton("Update", style=ft.ButtonStyle(bgcolor="blue700", color="white", padding=10), on_click=self.update_dictionary_category),
-                        ], spacing=6),
-                        ft.Divider(height=6, color="white10"),
-                        ft.Text("Exercise Progression", size=12, weight="bold", color="cyan300"),
-                        self.dict_progression_mode,
-                        ft.Row([self.dict_progression_step, self.dict_reduction_steps], spacing=6),
-                        ft.Row([self.dict_rep_ceiling, self.dict_reduction_threshold], spacing=6),
-                        self.dict_max_rpe,
-                        self.dict_progression_preview,
-                        ft.Row([
-                            ft.TextButton("Reset Defaults", on_click=self.reset_dictionary_progression),
-                            ft.ElevatedButton("Save Progression", on_click=self.save_dictionary_progression, style=ft.ButtonStyle(bgcolor="purple700", color="white")),
-                        ], alignment="spaceBetween"),
-                        ft.Divider(height=6, color="white10"),
-                        self.dict_rename_field,
-                        ft.ElevatedButton("Rename Exercise", style=ft.ButtonStyle(bgcolor="teal700", color="white"), on_click=self.rename_dictionary_exercise, width=float('inf')),
-                        ft.Divider(height=6, color="white10"),
-                        ft.Row([
-                            ft.TextButton("Cancel", on_click=self.close_dict_dialog),
-                            ft.TextButton("Delete", icon="delete", icon_color="red400", on_click=self.delete_from_dictionary),
-                        ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-                    ], tight=True, spacing=6, scroll="auto"),
-                ),
-                content_padding=16,
-                inset_padding=12,
-            )
+                content=ft.Container(width=350, height=560, content=ft.Column([
+                    ft.Text("Modify category, progression, name, or remove an exercise.", size=11, color="white54"),
+                    self.dict_dropdown,
+                    ft.Row([self.dict_cat_dropdown, ft.ElevatedButton("Update", style=ft.ButtonStyle(bgcolor="blue700", color="white", padding=10), on_click=self.update_dictionary_category)], spacing=6),
+                    ft.Divider(height=6, color="white10"),
+                    ft.Text("Exercise Progression", size=12, weight="bold", color="cyan300"),
+                    self.dict_progression_mode,
+                    ft.Row([self.dict_progression_step, self.dict_reduction_steps], spacing=6),
+                    ft.Row([self.dict_rep_ceiling, self.dict_reduction_threshold], spacing=6),
+                    self.dict_max_rpe, self.dict_progression_preview,
+                    ft.Row([ft.TextButton("Reset Defaults", on_click=self.reset_dictionary_progression), ft.ElevatedButton("Save Progression", on_click=self.save_dictionary_progression, style=ft.ButtonStyle(bgcolor="purple700", color="white"))], alignment="spaceBetween"),
+                    ft.Divider(height=6, color="white10"), self.dict_rename_field,
+                    ft.ElevatedButton("Rename Exercise", style=ft.ButtonStyle(bgcolor="teal700", color="white"), on_click=self.rename_dictionary_exercise, width=float('inf')),
+                    ft.Divider(height=6, color="white10"),
+                    ft.Row([ft.TextButton("Cancel", on_click=self.close_dict_dialog), ft.TextButton("Delete", icon="delete", icon_color="red400", on_click=self.delete_from_dictionary)], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+                ], tight=True, spacing=6, scroll="auto")), content_padding=16, inset_padding=12)
             self.safe_open(self.dict_dialog)
 
         except Exception as ex:
@@ -2613,14 +2599,9 @@ class WorkoutTrackerApp:
                     src_conn.backup(dst_conn)
 
             with sqlite3.connect(snapshot_path) as meta_conn:
-                metadata = (
-                    ("backup_app_version", APP_VERSION),
-                    ("backup_schema_version", str(DATABASE_SCHEMA_VERSION)),
-                    ("backup_created_at", datetime.now().isoformat(timespec="seconds")),
-                )
                 meta_conn.executemany(
                     "INSERT OR REPLACE INTO user_settings (setting_key, setting_value) VALUES (?, ?)",
-                    metadata,
+                    (("backup_app_version", APP_VERSION), ("backup_schema_version", str(DATABASE_SCHEMA_VERSION)), ("backup_created_at", datetime.now().isoformat(timespec="seconds"))),
                 )
                 meta_conn.commit()
             with open(snapshot_path, "rb") as f:
@@ -3567,70 +3548,56 @@ class WorkoutTrackerApp:
 
     def get_workout_context(self):
         with get_db() as conn:
-            row = conn.execute(
-                "SELECT COALESCE(MAX(workout_note), ''), COALESCE(MAX(session_tags), '') "
-                "FROM workout_sessions WHERE meso_number=? AND week=? AND day_of_week=?",
-                (self.current_meso, self.current_week, self.current_day),
-            ).fetchone()
-        note = row[0] if row else ""
-        tags = [value.strip() for value in (row[1] if row else "").split(",") if value.strip()]
-        return note, tags
+            row = conn.execute("SELECT COALESCE(MAX(workout_note), ''), COALESCE(MAX(session_tags), '') FROM workout_sessions WHERE meso_number=? AND week=? AND day_of_week=?", (self.current_meso, self.current_week, self.current_day)).fetchone()
+        return (row[0] if row else "", [x.strip() for x in (row[1] if row else "").split(",") if x.strip()])
+
+    def save_workout_context(self, note, tags):
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute("UPDATE workout_sessions SET workout_note=?, session_tags=? WHERE meso_number=? AND week=? AND day_of_week=?", ((note or "").strip(), ",".join(tags), self.current_meso, self.current_week, self.current_day))
+            changed = cursor.rowcount
+            conn.commit()
+        return changed
+
+    def toggle_context_panel(self, e=None):
+        self.context_collapsed = not self.context_collapsed
+        self.save_setting("context_collapsed", "1" if self.context_collapsed else "0")
+        self.rebuild_entire_display()
 
     def build_workout_context_panel(self):
         note, selected_tags = self.get_workout_context()
-        note_field = ft.TextField(
-            label="Workout note", value=note,
-            hint_text="Context, limitations, cues, or session observations",
-            multiline=True, min_lines=1, max_lines=3, text_size=11,
+        summary = ", ".join(selected_tags[:2]) + (f" +{len(selected_tags)-2}" if len(selected_tags) > 2 else "")
+        if not summary: summary = "No tags"
+        header = ft.Container(
+            content=ft.Row([ft.Text("SESSION CONTEXT", size=9, weight="bold", color=COLOR_INFO), ft.Text(summary, size=10, color=COLOR_MUTED, expand=True, text_align="right"), ft.Text("▼" if self.context_collapsed else "▲", size=11, color=COLOR_INFO)], spacing=8),
+            padding=6, ink=True, on_click=self.toggle_context_panel,
         )
-        # Switch is supported by the packaged Android Flet runtime. FilterChip is not.
-        tag_switches = [
-            ft.Switch(label=label, value=label in selected_tags)
-            for label in SESSION_TAG_OPTIONS
-        ]
-        def save_context(e=None):
-            chosen = ",".join(control.label for control in tag_switches if control.value)
-            with get_db() as conn:
-                conn.execute(
-                    "UPDATE workout_sessions SET workout_note=?, session_tags=? "
-                    "WHERE meso_number=? AND week=? AND day_of_week=?",
-                    ((note_field.value or "").strip(), chosen, self.current_meso, self.current_week, self.current_day),
-                )
-                conn.commit()
-            self.show_snackbar("Workout context saved.", COLOR_SUCCESS)
-        return ft.Container(
-            content=ft.Column([
-                ft.Row([
-                    ft.Text("SESSION CONTEXT", size=9, weight="bold", color=COLOR_INFO),
-                    ft.TextButton("Save", on_click=save_context),
-                ], alignment="spaceBetween"),
-                note_field,
-                ft.Row(tag_switches, spacing=5, wrap=True),
-            ], spacing=4, tight=True),
-            bgcolor="white5", border_radius=8, padding=8,
-        )
+        if self.context_collapsed:
+            return ft.Container(content=header, bgcolor="white5", border_radius=8)
+        note_field = ft.TextField(label="Workout note", value=note, hint_text="Context, limitations, cues, or session observations", multiline=True, min_lines=1, max_lines=2, text_size=11)
+        def save_note(e=None):
+            changed = self.save_workout_context(note_field.value, [c.label for c in tag_checks if c.value])
+            self.show_snackbar("Workout context saved." if changed else "No workout rows exist for this day.", COLOR_SUCCESS if changed else COLOR_WARNING)
+        note_field.on_blur = save_note
+        tag_checks = []
+        for label in SESSION_TAG_OPTIONS:
+            control = ft.Checkbox(label=label, value=label in selected_tags, dense=True)
+            control.on_change = save_note
+            tag_checks.append(control)
+        return ft.Container(content=ft.Column([header, note_field, ft.Row(tag_checks, spacing=2, wrap=True), ft.Text("Notes save when leaving the field. Tags save immediately. Documentation only; targets are unchanged.", size=9, color=COLOR_MUTED, italic=True)], spacing=3, tight=True), bgcolor="white5", border_radius=8, padding=4)
+
+    def toggle_navigation_rows(self, e=None):
+        self.nav_collapsed = not self.nav_collapsed
+        self.save_setting("nav_collapsed", "1" if self.nav_collapsed else "0")
+        self.rebuild_navigation_headers()
+        self.rebuild_entire_display()
 
     def get_previous_workout_comparison(self):
-        metric_sql = (
-            "SELECT COALESCE(SUM(s.weight*s.reps),0), COUNT(s.id), "
-            "AVG(NULLIF(s.rpe,0)), AVG(s.rest_seconds) "
-            "FROM workout_sessions ws JOIN workout_sets s ON s.session_id=ws.id "
-            "WHERE ws.meso_number=? AND ws.week=? AND ws.day_of_week=? "
-            "AND ws.status='Completed' AND s.is_complete=1"
-        )
+        q = "SELECT COALESCE(SUM(s.weight*s.reps),0), COUNT(s.id), AVG(NULLIF(s.rpe,0)), AVG(s.rest_seconds) FROM workout_sessions ws JOIN workout_sets s ON s.session_id=ws.id WHERE ws.meso_number=? AND ws.week=? AND ws.day_of_week=? AND ws.status='Completed' AND s.is_complete=1"
         with get_db() as conn:
-            current = conn.execute(
-                metric_sql, (self.current_meso, self.current_week, self.current_day)
-            ).fetchone()
-            previous_slot = conn.execute(
-                "SELECT meso_number, week, day_of_week FROM workout_sessions "
-                "WHERE status='Completed' AND day_of_week=? "
-                "AND NOT (meso_number=? AND week=? AND day_of_week=?) "
-                "GROUP BY meso_number, week, day_of_week "
-                "ORDER BY MAX(date) DESC, MAX(id) DESC LIMIT 1",
-                (self.current_day, self.current_meso, self.current_week, self.current_day),
-            ).fetchone()
-            previous = conn.execute(metric_sql, previous_slot).fetchone() if previous_slot else None
+            current = conn.execute(q, (self.current_meso, self.current_week, self.current_day)).fetchone()
+            slot = conn.execute("SELECT meso_number, week, day_of_week FROM workout_sessions WHERE status='Completed' AND day_of_week=? AND NOT (meso_number=? AND week=? AND day_of_week=?) GROUP BY meso_number, week, day_of_week ORDER BY MAX(date) DESC, MAX(id) DESC LIMIT 1", (self.current_day, self.current_meso, self.current_week, self.current_day)).fetchone()
+            previous = conn.execute(q, slot).fetchone() if slot else None
         return current, previous
 
     def build_summary_view(self):
@@ -3790,21 +3757,13 @@ class WorkoutTrackerApp:
 
         current_cmp, previous_cmp = self.get_previous_workout_comparison()
         if previous_cmp:
-            def metric_delta(current_value, previous_value, suffix=""):
-                return f"{float(current_value or 0) - float(previous_value or 0):+,.1f}{suffix}"
-            stats_col.controls.extend([
-                ft.Container(height=4),
-                ft.Text("Compared with Previous Matching Workout", size=14, color=COLOR_INFO, weight="bold"),
-                ft.Row([
-                    ft.Container(content=ft.Text("Volume " + metric_delta(current_cmp[0], previous_cmp[0], " lb")), bgcolor="white10", padding=8, border_radius=8, expand=True),
-                    ft.Container(content=ft.Text("Sets " + metric_delta(current_cmp[1], previous_cmp[1])), bgcolor="white10", padding=8, border_radius=8, expand=True),
-                    ft.Container(content=ft.Text("Rest " + metric_delta(current_cmp[3], previous_cmp[3], "s")), bgcolor="white10", padding=8, border_radius=8, expand=True),
-                ], spacing=6),
-            ])
+            def delta(a, b, suffix=""): return f"{float(a or 0)-float(b or 0):+,.1f}{suffix}"
+            stats_col.controls.extend([ft.Text("Compared with Previous Matching Workout", size=14, color=COLOR_INFO, weight="bold"), ft.Row([
+                ft.Container(content=ft.Text("Volume " + delta(current_cmp[0], previous_cmp[0], " lb")), bgcolor="white10", padding=8, border_radius=8, expand=True),
+                ft.Container(content=ft.Text("Sets " + delta(current_cmp[1], previous_cmp[1])), bgcolor="white10", padding=8, border_radius=8, expand=True),
+                ft.Container(content=ft.Text("Rest " + delta(current_cmp[3], previous_cmp[3], "s")), bgcolor="white10", padding=8, border_radius=8, expand=True)], spacing=6)])
         else:
-            stats_col.controls.append(
-                ft.Text("No previous matching workout is available for comparison.", size=10, color=COLOR_MUTED, italic=True)
-            )
+            stats_col.controls.append(ft.Text("No previous matching workout is available for comparison.", size=10, color=COLOR_MUTED, italic=True))
         if avg_rest_today is not None:
             stats_col.controls.append(
                 ft.Text(f"Avg Rest Between Sets: {format_duration_seconds(avg_rest_today)}", size=16, color="cyan200")
@@ -5308,7 +5267,10 @@ class WorkoutTrackerApp:
         # Completed and inactive mesocycles now live in Menu > Mesocycle.
         # The workout header shows only the active mesocycle title.
         self.current_meso_title.value = self.current_meso_label()
-
+        self.nav_position_text.value = f"W{self.current_week} • {self.current_day[:3]}"
+        self.nav_collapse_button.content.value = "▼" if self.nav_collapsed else "▲"
+        self.week_header_row.visible = (self.view_mode == "workout" and not self.nav_collapsed)
+        self.day_header_row.visible = (self.view_mode == "workout" and not self.nav_collapsed)
         week_completions = {}
         day_completions = {}
         with get_db() as conn:
@@ -5572,8 +5534,8 @@ class WorkoutTrackerApp:
             else:
                 self.main_canvas.controls.clear()
 
-            self.week_header_row.visible = (self.view_mode == "workout")
-            self.day_header_row.visible = (self.view_mode == "workout")
+            self.week_header_row.visible = (self.view_mode == "workout" and not self.nav_collapsed)
+            self.day_header_row.visible = (self.view_mode == "workout" and not self.nav_collapsed)
 
             if self.view_mode == "generator":
                 self.build_generator_view()
