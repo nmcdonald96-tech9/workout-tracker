@@ -3581,7 +3581,7 @@ class WorkoutTrackerApp:
         note_field.on_blur = save_note
         tag_checks = []
         for label in SESSION_TAG_OPTIONS:
-            control = ft.Checkbox(label=label, value=label in selected_tags, dense=True)
+            control = ft.Checkbox(label=label, value=label in selected_tags)
             control.on_change = save_note
             tag_checks.append(control)
         return ft.Container(content=ft.Column([header, note_field, ft.Row(tag_checks, spacing=2, wrap=True), ft.Text("Notes save when leaving the field. Tags save immediately. Documentation only; targets are unchanged.", size=9, color=COLOR_MUTED, italic=True)], spacing=3, tight=True), bgcolor="white5", border_radius=8, padding=4)
