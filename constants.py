@@ -1,10 +1,8 @@
 import os
 
-APP_VERSION = "1.7.1"
+APP_VERSION = "1.7.2"
 DATABASE_SCHEMA_VERSION = 9
 DEBUG_PERFORMANCE = False
-
-# Shared semantic colors and session-context labels.
 COLOR_SUCCESS = "green300"
 COLOR_WARNING = "amber300"
 COLOR_DANGER = "red300"
