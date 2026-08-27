@@ -1,8 +1,15 @@
 import os
 
-APP_VERSION = "1.5.0"
-DATABASE_SCHEMA_VERSION = 8
+APP_VERSION = "1.7.0"
+DATABASE_SCHEMA_VERSION = 9
 DEBUG_PERFORMANCE = False
+COLOR_SUCCESS="green300"
+COLOR_WARNING="amber300"
+COLOR_INFO="cyan300"
+COLOR_MUTED="white54"
+COLOR_ACTIVE="cyan700"
+COLOR_COMPLETE="green700"
+SESSION_TAG_OPTIONS=["Strength","Hypertrophy","Technique","Recovery","PR Attempt","Short Session"]
 
 # ==========================================
 # --- APP CONFIGURATION & CONSTANTS ---
