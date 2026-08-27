@@ -734,7 +734,6 @@ def calculate_session_progression(completed_sets, target_weight, target_reps, mo
 _EFFECTIVE_SETTINGS_CACHE = {}
 
 def invalidate_progression_settings_cache(exercise_name=None):
-    """Drop cached effective settings after profile or dictionary changes."""
     if exercise_name is None:
         _EFFECTIVE_SETTINGS_CACHE.clear()
         return
