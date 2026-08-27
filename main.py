@@ -310,7 +310,7 @@ class ExerciseCard(ft.Card):
                         recent_session_sets, self.tgt_w, self.tgt_r, self.mov_type,
                         readiness_score=15, joint_score=5, equipment_type=eq_type,
                         is_bodyweight=is_bw, bodyweight=get_user_bodyweight(),
-                        age=get_user_age(), profile=get_user_progression_profile()
+                        age=get_user_age(), profile=get_user_progression_profile(), exercise_name=self.exercise
                     )
                     self.normal_set_targets = [
                         {"w": snap_weight(t["w"], eq_type), "r": max(1, int(t["r"]))}
@@ -750,6 +750,8 @@ class ExerciseCard(ft.Card):
             title=ft.Text(self.exercise, size=15, weight="bold"),
             content=ft.Column([
                 ft.TextButton("Why this target?", on_click=lambda ev: [self.app.safe_close(dialog), self.open_target_explanation()]),
+                ft.TextButton("Repeat previous set", on_click=lambda ev: [self.app.safe_close(dialog), self.repeat_previous_set()]),
+                ft.TextButton("Progression history", on_click=lambda ev: [self.app.safe_close(dialog), self.open_progression_history()]),
                 ft.TextButton("Swap exercise", on_click=lambda ev: [self.app.safe_close(dialog), self.open_swap_dialog(ev)]),
                 ft.TextButton("Add set", on_click=lambda ev: [self.app.safe_close(dialog), self.on_add_set(ev)]),
                 ft.TextButton("Remove last set", on_click=lambda ev: [self.app.safe_close(dialog), self.on_remove_set(ev)]),
@@ -758,6 +760,48 @@ class ExerciseCard(ft.Card):
             ], tight=True, spacing=2),
             actions=[ft.TextButton("Close", on_click=lambda ev: self.app.safe_close(dialog))],
         )
+        self.app.safe_open(dialog)
+
+    def repeat_previous_set(self, e=None):
+        sets = self.app.sets.get(self.db_id, [])
+        destination = next((i for i, row in enumerate(sets) if not row.get("done")), None)
+        if destination is None or destination == 0:
+            self.app.show_snackbar("Complete at least one set before repeating it.", "amber300")
+            return
+        source = sets[destination - 1]
+        sets[destination]["w"] = str(source.get("w", ""))
+        sets[destination]["r"] = str(source.get("r", ""))
+        sets[destination]["rpe"] = ""
+        sets[destination]["done"] = False
+        sets[destination]["completed_at"] = None
+        self.autosave_pending_sets()
+        self.app.show_snackbar(f"Set {destination + 1} copied from Set {destination}. RPE left blank.", "cyan300")
+        self.app.rebuild_entire_display()
+
+    def open_progression_history(self, e=None):
+        with get_db() as conn:
+            rows = conn.execute("""
+                SELECT ws.date, ws.week, s.set_number, s.target_weight, s.target_reps,
+                       s.weight, s.reps, s.rpe, s.progression_decision,
+                       s.progression_reason, s.normal_target_weight, s.normal_target_reps
+                FROM workout_sets s JOIN workout_sessions ws ON ws.id=s.session_id
+                WHERE ws.exercise=? AND ws.status='Completed' AND s.is_complete=1
+                ORDER BY ws.date DESC, ws.id DESC, s.set_number ASC LIMIT 60
+            """, (self.exercise,)).fetchall()
+        controls=[]
+        def fmt(value):
+            try: return f"{float(value):g}"
+            except: return "?"
+        for date,wk,num,tw,tr,aw,ar,rpe,decision,reason,nw,nr in rows:
+            controls.append(ft.Container(content=ft.Column([
+                ft.Text(f"{date or 'Unknown'} • W{wk} • Set {num}", size=11, weight="bold", color="cyan200"),
+                ft.Text(f"Target {fmt(tw)} x {tr if tr is not None else '?'} → Actual {fmt(aw)} x {ar if ar is not None else '?'} @ RPE {fmt(rpe)}", size=11),
+                ft.Text(f"{(decision or 'legacy').replace('_',' ').title()}: {reason or 'Legacy set; no saved decision.'}", size=10, color="white54"),
+            ], spacing=2), bgcolor="white10", border_radius=8, padding=8))
+        if not controls: controls=[ft.Text("No completed history for this exercise.", color="white54")]
+        dialog=ft.AlertDialog(title=ft.Text(f"Progression History: {self.exercise}", size=15, weight="bold"),
+            content=ft.Container(width=380,height=420,content=ft.Column(controls,scroll="auto",spacing=6)),
+            actions=[ft.TextButton("Close",on_click=lambda ev:self.app.safe_close(dialog))])
         self.app.safe_open(dialog)
 
     def make_set_done_handler(self, set_idx):
@@ -1014,12 +1058,16 @@ class ExerciseCard(ft.Card):
                     except Exception:
                         rest_secs = None
                 prev_completed_at = completed_at or prev_completed_at
+                effective_settings = get_effective_progression_settings(self.exercise, self.mov_type, EXERCISE_METADATA.get(self.exercise, {}).get("equipment", "Barbell"), get_user_age(), get_user_progression_profile())
+                outcome = classify_set_progression(float(w_val), int(r_val), float(rpe_val), float(target["w"]), int(target["r"]), float(normal_target["w"]), int(normal_target["r"]), effective_settings)
                 cursor.execute("""
                     INSERT INTO workout_sets
-                        (session_id, set_number, weight, reps, rpe, rest_seconds, target_weight, target_reps, normal_target_weight, normal_target_reps, completed_at, is_complete)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                        (session_id, set_number, weight, reps, rpe, rest_seconds, target_weight, target_reps, normal_target_weight, normal_target_reps, completed_at, is_complete,
+                         progression_decision, progression_reason_code, progression_reason, progression_settings_snapshot)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
                 """, (self.db_id, i, float(w_val), int(r_val), float(rpe_val), rest_secs,
-                      float(target["w"]), int(target["r"]), float(normal_target["w"]), int(normal_target["r"]), completed_at))
+                      float(target["w"]), int(target["r"]), float(normal_target["w"]), int(normal_target["r"]), completed_at,
+                      outcome["decision"], outcome["reason_code"], outcome["reason"], json.dumps(effective_settings, sort_keys=True)))
             
             true_completion_date = datetime.now().strftime("%Y-%m-%d")
             cursor.execute(f"UPDATE workout_sessions SET status = '{STATUS_COMPLETED}', date = ?, bodyweight_snapshot = ? WHERE id = ?", (true_completion_date, current_bw, self.db_id))
@@ -1095,6 +1143,10 @@ class WorkoutTrackerApp:
         self.gen_days = {"Monday": True, "Tuesday": True, "Wednesday": True, "Thursday": True, "Friday": True, "Saturday": False, "Sunday": False}
         self.gen_length = 4
 
+        required_symbols = {"init_and_seed_db": init_and_seed_db, "calculate_set_specific_progression": calculate_set_specific_progression, "classify_set_progression": classify_set_progression}
+        missing = [name for name, value in required_symbols.items() if not callable(value)]
+        if missing:
+            raise RuntimeError("Installation validation failed. Check matching main.py, database.py, and constants.py. Missing: " + ", ".join(missing))
         init_and_seed_db()
         self.workout_focus_mode = self.get_bool_setting("workout_focus_mode", False)
         self.ui_density = self.get_text_setting("ui_density", "comfortable")
@@ -1854,6 +1906,13 @@ class WorkoutTrackerApp:
                 options=cat_options
             )
 
+            self.dict_progression_mode = ft.Dropdown(label="Progression", value="default", options=[ft.dropdown.Option(key="default", text="Use Default"), ft.dropdown.Option(key="custom", text="Custom")])
+            self.dict_progression_step = ft.TextField(label="Weight step (lbs)", keyboard_type=ft.KeyboardType.NUMBER)
+            self.dict_reduction_steps = ft.Dropdown(label="Reduction steps", value="1", options=[ft.dropdown.Option(str(i)) for i in range(1,4)])
+            self.dict_rep_ceiling = ft.TextField(label="Rep ceiling", keyboard_type=ft.KeyboardType.NUMBER)
+            self.dict_reduction_threshold = ft.TextField(label="Reduce below (%)", keyboard_type=ft.KeyboardType.NUMBER)
+            self.dict_max_rpe = ft.Dropdown(label="Max progression RPE", value="9.5", options=[ft.dropdown.Option(f"{x/2:.1f}") for x in range(12,21)])
+            self.dict_progression_preview = ft.Text("Select an exercise to view effective settings.", size=10, color="cyan200")
             self.dict_rename_field = ft.TextField(
                 label="Rename to...",
                 text_size=12,
@@ -1876,6 +1935,14 @@ class WorkoutTrackerApp:
                             on_click=self.update_dictionary_category,
                             width=320
                         ),
+                        ft.Divider(height=6, color="white10"),
+                        ft.Text("Exercise Progression", size=12, weight="bold", color="cyan300"),
+                        self.dict_progression_mode,
+                        ft.Row([self.dict_progression_step, self.dict_reduction_steps], spacing=6),
+                        ft.Row([self.dict_rep_ceiling, self.dict_reduction_threshold], spacing=6),
+                        self.dict_max_rpe,
+                        self.dict_progression_preview,
+                        ft.Row([ft.TextButton("Reset Defaults", on_click=self.reset_dictionary_progression), ft.ElevatedButton("Save Progression", on_click=self.save_dictionary_progression, style=ft.ButtonStyle(bgcolor="purple700", color="white"))], alignment="spaceBetween"),
                         ft.Divider(height=6, color="white10"),
                         self.dict_rename_field,
                         ft.ElevatedButton(
@@ -1912,6 +1979,22 @@ class WorkoutTrackerApp:
                 self.dict_cat_dropdown.update()
             except:
                 pass
+        if selected_ex:
+            meta = EXERCISE_METADATA.get(selected_ex, {})
+            settings = get_effective_progression_settings(selected_ex, meta.get("movement_type", "Compound"), meta.get("equipment", "Barbell"), get_user_age(), get_user_progression_profile())
+            with get_db() as conn:
+                row = conn.execute("SELECT progression_mode, progression_step, reduction_steps, rep_ceiling, reduction_threshold, max_progress_rpe FROM exercise_dict WHERE name=?", (selected_ex,)).fetchone()
+            mode = row[0] if row and row[0] else "default"
+            self.dict_progression_mode.value = mode
+            self.dict_progression_step.value = "" if not row or row[1] is None else str(row[1])
+            self.dict_reduction_steps.value = str(row[2] if row and row[2] is not None else 1)
+            self.dict_rep_ceiling.value = "" if not row or row[3] is None else str(row[3])
+            self.dict_reduction_threshold.value = "" if not row or row[4] is None else f"{float(row[4])*100:g}"
+            self.dict_max_rpe.value = str(row[5] if row and row[5] is not None else 9.5)
+            self.dict_progression_preview.value = f"Effective: step {settings['progression_step']:g} lb • reduce {settings['reduction_steps']} step(s) • ceiling {settings['rep_ceiling']} reps • reduce below {settings['reduction_threshold']*100:g}% • max RPE {settings['max_progress_rpe']:g}"
+            for control in (self.dict_progression_mode,self.dict_progression_step,self.dict_reduction_steps,self.dict_rep_ceiling,self.dict_reduction_threshold,self.dict_max_rpe,self.dict_progression_preview):
+                try: control.update()
+                except: pass
         if hasattr(self, 'dict_rename_field'):
             self.dict_rename_field.value = selected_ex or ""
             self.dict_rename_field.visible = bool(selected_ex)
@@ -1919,6 +2002,29 @@ class WorkoutTrackerApp:
                 self.dict_rename_field.update()
             except:
                 pass
+
+    def save_dictionary_progression(self, e=None):
+        ex=self.dict_dropdown.value
+        if not ex: self.show_snackbar("Select an exercise first.", "red300"); return
+        try:
+            mode=self.dict_progression_mode.value or "default"
+            if mode == "default": values=(None,None,None,None,None)
+            else:
+                step=float(self.dict_progression_step.value); reduction=int(self.dict_reduction_steps.value); ceiling=int(self.dict_rep_ceiling.value); threshold=float(self.dict_reduction_threshold.value)/100.0; maxrpe=float(self.dict_max_rpe.value)
+                if step<=0 or not 1<=reduction<=3 or not 2<=ceiling<=50 or not .50<=threshold<=.85 or not 6<=maxrpe<=10: raise ValueError
+                values=(step,reduction,ceiling,threshold,maxrpe)
+            with get_db() as conn:
+                conn.execute("UPDATE exercise_dict SET progression_mode=?, progression_step=?, reduction_steps=?, rep_ceiling=?, reduction_threshold=?, max_progress_rpe=? WHERE name=?", (mode,*values,ex)); conn.commit()
+            self.show_snackbar(f"Progression settings saved for {ex}.", "green300")
+            self.on_dict_ex_change(None)
+        except Exception: self.show_snackbar("Use valid custom values: step >0, reduction 1-3, ceiling 2-50, threshold 50-85%, RPE 6-10.", "red300")
+
+    def reset_dictionary_progression(self, e=None):
+        ex=self.dict_dropdown.value
+        if not ex: return
+        with get_db() as conn:
+            conn.execute("UPDATE exercise_dict SET progression_mode='default', progression_step=NULL, reduction_steps=NULL, rep_ceiling=NULL, reduction_threshold=NULL, max_progress_rpe=NULL WHERE name=?", (ex,)); conn.commit()
+        self.show_snackbar(f"{ex} restored to progression defaults.", "green300"); self.on_dict_ex_change(None)
 
     def update_dictionary_category(self, e):
         ex_name = self.dict_dropdown.value
@@ -3110,58 +3216,20 @@ class WorkoutTrackerApp:
         self.close_actions_menu()
         try:
             with get_db() as conn:
-                cursor = conn.cursor()
-                cursor.execute("""
-                    SELECT ws.date, ws.meso_number, ws.week, ws.day_of_week, ws.exercise, ws.category,
-                           ws.target_weight, ws.target_reps, ws.status,
-                           (SELECT GROUP_CONCAT(weight || 'x' || reps, ' | ') 
-                            FROM (SELECT weight, reps FROM workout_sets WHERE session_id = ws.id ORDER BY set_number ASC)) as sets
-                    FROM workout_sessions ws
-                    ORDER BY ws.date DESC
-                """)
-                rows = cursor.fetchall()
-
-            output = StringIO()
-            writer = csv.writer(output)
-            writer.writerow(["Date", "Meso", "Week", "Day", "Exercise", "Category", "Target Weight", "Target Reps", "Status", "Logged Sets"])
+                rows=conn.execute("""SELECT ws.date,ws.meso_number,ws.week,ws.day_of_week,ws.exercise,ws.category,s.set_number,
+                    s.normal_target_weight,s.normal_target_reps,s.target_weight,s.target_reps,s.weight,s.reps,s.rpe,s.rest_seconds,s.completed_at,
+                    s.progression_decision,s.progression_reason_code,s.progression_reason,s.progression_settings_snapshot,ws.bodyweight_snapshot,ws.status
+                    FROM workout_sessions ws LEFT JOIN workout_sets s ON s.session_id=ws.id ORDER BY ws.date DESC,ws.id DESC,s.set_number""").fetchall()
+            output=StringIO(); writer=csv.writer(output)
+            writer.writerow(["Date","Meso","Week","Day","Exercise","Category","Set","Normal Target Weight","Normal Target Reps","Today Target Weight","Today Target Reps","Actual Weight","Actual Reps","RPE","Rest Seconds","Completed At","Decision","Reason Code","Reason","Settings Snapshot","Bodyweight Snapshot","Status"])
             writer.writerows(rows)
-
-            self.export_field = ft.TextField(
-                value=output.getvalue(), 
-                multiline=True, 
-                min_lines=8, 
-                max_lines=15, 
-                text_size=11,
-                read_only=True
-            )
-
+            self.export_field=ft.TextField(value=output.getvalue(),multiline=True,min_lines=8,max_lines=15,text_size=11,read_only=True)
             async def copy_csv_to_clipboard(ev):
-                try:
-                    await self.copy_text_to_clipboard(self.export_field.value or "")
-                    self.show_snackbar("CSV data copied!", "green300")
-                except Exception as err:
-                    self.show_snackbar(f"Copy failed: {err}", "red300")
-
-            self.export_dialog = ft.AlertDialog(
-                title=ft.Text("CSV Export Ready"),
-                content=ft.Column(
-                    [
-                        ft.Text("Copy this data to paste into an external spreadsheet:", size=12), 
-                        self.export_field
-                    ], 
-                    tight=True, spacing=10
-                ),
-                actions=[
-                    ft.TextButton(content=ft.Text("Copy CSV"), on_click=copy_csv_to_clipboard),
-                    ft.ElevatedButton(content=ft.Text("Close"), on_click=self.close_export_dialog)
-                ],
-                actions_alignment="spaceBetween"
-            )
+                try: await self.copy_text_to_clipboard(self.export_field.value or ""); self.show_snackbar("Detailed CSV copied!", "green300")
+                except Exception as err: self.show_snackbar(f"Copy failed: {err}", "red300")
+            self.export_dialog=ft.AlertDialog(title=ft.Text("Detailed Set CSV Ready"),content=ft.Column([ft.Text("One row per set, including targets, actuals, outcomes, settings, and rest.",size=12),self.export_field],tight=True),actions=[ft.TextButton("Copy CSV",on_click=copy_csv_to_clipboard),ft.ElevatedButton("Close",on_click=self.close_export_dialog)],actions_alignment="spaceBetween")
             self.safe_open(self.export_dialog)
-            
-        except Exception as err:
-            self.show_snackbar(f"Export failed: {err}", "red300")
-
+        except Exception as err: self.show_snackbar(f"Export failed: {err}", "red300")
     def close_export_dialog(self, e=None):
         if hasattr(self, 'export_dialog'):
             self.safe_close(self.export_dialog)
@@ -3513,7 +3581,7 @@ class WorkoutTrackerApp:
                        ws.bodyweight_snapshot, s.rest_seconds,
                        s.target_weight, s.target_reps,
                        s.normal_target_weight, s.normal_target_reps,
-                       s.is_complete
+                       s.is_complete, s.progression_decision
                 FROM workout_sets s
                 JOIN workout_sessions ws ON s.session_id = ws.id
                 WHERE ws.meso_number = ? AND ws.week = ? AND ws.day_of_week = ? AND ws.status = 'Completed'
@@ -3530,7 +3598,7 @@ class WorkoutTrackerApp:
             outcome_counts = {"progress": 0, "hold": 0, "reduce": 0, "resume_normal": 0}
             group_stats = {}
 
-            for sw, sr, srpe, ex_name, cat, snap_bw, rest_secs, target_w, target_r, normal_w, normal_r, is_complete in cursor.fetchall():
+            for sw, sr, srpe, ex_name, cat, snap_bw, rest_secs, target_w, target_r, normal_w, normal_r, is_complete, saved_decision in cursor.fetchall():
                 if not is_complete:
                     continue
                 is_bw = EXERCISE_METADATA.get(ex_name, {}).get("equipment") == "Bodyweight"
@@ -3542,29 +3610,16 @@ class WorkoutTrackerApp:
                 total_reps += int(sr or 0)
                 completed_exercises.add(ex_name)
 
-                # Mirror the authoritative set-specific decision doctrine for
-                # this completed workout without modifying future targets.
-                try:
-                    prior_r = int(target_r if target_r is not None else sr)
-                    normal_target_r = int(normal_r if normal_r is not None else prior_r)
-                    regulated = (
-                        abs(float(target_w or 0) - float(normal_w if normal_w is not None else target_w or 0)) > 0.01
-                        or prior_r != normal_target_r
-                    )
-                    ratio = (int(sr) / prior_r) if prior_r > 0 else 1.0
-                    if regulated:
-                        outcome_counts["resume_normal"] += 1
-                    elif int(sr) >= prior_r and float(srpe or 8.0) <= STRAIGHT_SET_MAX_PROGRESS_RPE:
-                        outcome_counts["progress"] += 1
-                    elif int(sr) >= prior_r:
+                # Prefer immutable completion-time decisions. Legacy rows use the shared classifier.
+                if saved_decision in outcome_counts:
+                    outcome_counts[saved_decision] += 1
+                else:
+                    try:
+                        settings = get_effective_progression_settings(ex_name, EXERCISE_METADATA.get(ex_name, {}).get("movement_type", "Compound"), EXERCISE_METADATA.get(ex_name, {}).get("equipment", "Barbell"), get_user_age(), get_user_progression_profile())
+                        outcome = classify_set_progression(sw, sr, srpe, target_w, target_r, normal_w, normal_r, settings)
+                        outcome_counts[outcome["decision"]] += 1
+                    except Exception:
                         outcome_counts["hold"] += 1
-                    elif ratio < STRAIGHT_SET_REDUCE_REP_COMPLETION:
-                        outcome_counts["reduce"] += 1
-                    else:
-                        outcome_counts["hold"] += 1
-                except Exception:
-                    outcome_counts["hold"] += 1
-
                 if cat and cat != "General":
                     if cat not in group_stats:
                         group_stats[cat] = {"sets": 0, "reps": 0}
