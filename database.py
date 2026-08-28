@@ -60,6 +60,7 @@ def init_and_seed_db():
             "rep_ceiling": "INTEGER",
             "reduction_threshold": "REAL",
             "max_progress_rpe": "REAL",
+            "max_progression_weight": "REAL",
         }
         for column_name, column_type in progression_columns.items():
             if column_name not in columns:
@@ -759,17 +760,18 @@ def get_effective_progression_settings(exercise_name, movement_type, equipment_t
         "rep_ceiling": profile_rep_ceiling, "rep_ceiling_source": "profile",
         "reduction_threshold": STRAIGHT_SET_REDUCE_REP_COMPLETION, "reduction_threshold_source": "global_default",
         "max_progress_rpe": STRAIGHT_SET_MAX_PROGRESS_RPE, "max_progress_rpe_source": "global_default",
+        "max_progression_weight": None, "max_progression_weight_source": "none",
     }
     try:
         with get_db() as conn:
             row = conn.execute("""SELECT progression_mode, progression_step, reduction_steps, rep_ceiling,
-                                  reduction_threshold, max_progress_rpe FROM exercise_dict WHERE name=?""", (exercise_name,)).fetchone()
+                                  reduction_threshold, max_progress_rpe, max_progression_weight FROM exercise_dict WHERE name=?""", (exercise_name,)).fetchone()
         if row and row[0] == "custom":
             result["custom_active"] = True
-            keys = ["progression_step", "reduction_steps", "rep_ceiling", "reduction_threshold", "max_progress_rpe"]
+            keys = ["progression_step", "reduction_steps", "rep_ceiling", "reduction_threshold", "max_progress_rpe", "max_progression_weight"]
             for key, value in zip(keys, row[1:]):
                 if value is not None:
-                    result[key] = float(value) if key in ("progression_step", "reduction_threshold", "max_progress_rpe") else int(value)
+                    result[key] = float(value) if key in ("progression_step", "reduction_threshold", "max_progress_rpe", "max_progression_weight") else int(value)
                     result[key + "_source"] = "exercise_override"
     except Exception:
         pass
@@ -785,8 +787,12 @@ def classify_set_progression(actual_weight, actual_reps, actual_rpe, target_weig
     target_reps = max(1, int(target_reps or 1))
     ratio = int(actual_reps or 0) / target_reps
     regulated = abs(float(target_weight or 0) - float(normal_target_weight or target_weight or 0)) > 0.01 or int(target_reps) != int(normal_target_reps or target_reps)
+    max_weight = settings.get("max_progression_weight")
+    at_load_ceiling = max_weight is not None and float(actual_weight or 0) >= float(max_weight) - 0.01
     if regulated:
         decision, code, reason = "resume_normal", "READINESS_ISOLATED", "Temporary readiness regulation was isolated; the normal trajectory resumes."
+    elif at_load_ceiling and int(actual_reps or 0) >= target_reps and float(actual_rpe or 8) <= float(settings["max_progress_rpe"]):
+        decision, code, reason = "hold", "LOAD_CEILING_REACHED", f"The {float(max_weight):g} lb progression ceiling has been reached; load is held."
     elif int(actual_reps or 0) >= target_reps and float(actual_rpe or 8) <= float(settings["max_progress_rpe"]):
         decision, code, reason = "progress", "TARGET_ACHIEVED", f"Target achieved within the RPE {settings['max_progress_rpe']:g} ceiling."
     elif int(actual_reps or 0) >= target_reps:
@@ -805,6 +811,8 @@ def _custom_weight_step(weight, movement_type, equipment_type, settings, directi
             result = get_next_dumbbell(result) if direction > 0 else get_prev_dumbbell(result)
         else:
             result=max(0.0, result + float(settings["progression_step"]) * direction)
+        if direction > 0 and settings.get("max_progression_weight") is not None:
+            result=min(result, float(settings["max_progression_weight"]))
     return result
 
 def calculate_set_specific_progression(completed_sets, default_target_weight, default_target_reps,

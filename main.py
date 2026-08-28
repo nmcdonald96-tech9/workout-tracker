@@ -20,6 +20,8 @@ import sys
 
 from constants import *
 from database import *
+from app.compatibility import compatible_checkbox
+from components.session_context_panel import build_tag_controls
 
 # --- WIFI TRANSFER HARDENING ---
 # Threaded server prevents browser side-requests (favicon/retries) from blocking the
@@ -1917,6 +1919,7 @@ class WorkoutTrackerApp:
             self.dict_rep_ceiling = ft.TextField(label="Rep ceiling", keyboard_type=ft.KeyboardType.NUMBER, expand=True, text_size=12)
             self.dict_reduction_threshold = ft.TextField(label="Reduce below (%)", keyboard_type=ft.KeyboardType.NUMBER, width=150, text_size=12)
             self.dict_max_rpe = ft.Dropdown(label="Max progression RPE", value="9.5", options=[ft.dropdown.Option(f"{x/2:.1f}") for x in range(12,21)])
+            self.dict_max_progression_weight = ft.TextField(label="Maximum progression weight (lbs)", hint_text="Optional", keyboard_type=ft.KeyboardType.NUMBER, text_size=12)
             self.dict_progression_preview = ft.Text("Select an exercise to view effective settings.", size=10, color="cyan200")
             self.dict_rename_field = ft.TextField(
                 label="Rename to...",
@@ -1937,7 +1940,7 @@ class WorkoutTrackerApp:
                     self.dict_progression_mode,
                     ft.Row([self.dict_progression_step, self.dict_reduction_steps], spacing=6),
                     ft.Row([self.dict_rep_ceiling, self.dict_reduction_threshold], spacing=6),
-                    self.dict_max_rpe, self.dict_progression_preview,
+                    self.dict_max_rpe, self.dict_max_progression_weight, self.dict_progression_preview,
                     ft.Row([ft.TextButton("Reset Defaults", on_click=self.reset_dictionary_progression), ft.ElevatedButton("Save Progression", on_click=self.save_dictionary_progression, style=ft.ButtonStyle(bgcolor="purple700", color="white"))], alignment="spaceBetween"),
                     ft.Divider(height=6, color="white10"), self.dict_rename_field,
                     ft.ElevatedButton("Rename Exercise", style=ft.ButtonStyle(bgcolor="teal700", color="white"), on_click=self.rename_dictionary_exercise, width=float('inf')),
@@ -1967,7 +1970,7 @@ class WorkoutTrackerApp:
             meta = EXERCISE_METADATA.get(selected_ex, {})
             settings = get_effective_progression_settings(selected_ex, meta.get("movement_type", "Compound"), meta.get("equipment", "Barbell"), get_user_age(), get_user_progression_profile())
             with get_db() as conn:
-                row = conn.execute("SELECT progression_mode, progression_step, reduction_steps, rep_ceiling, reduction_threshold, max_progress_rpe FROM exercise_dict WHERE name=?", (selected_ex,)).fetchone()
+                row = conn.execute("SELECT progression_mode, progression_step, reduction_steps, rep_ceiling, reduction_threshold, max_progress_rpe, max_progression_weight FROM exercise_dict WHERE name=?", (selected_ex,)).fetchone()
             mode = row[0] if row and row[0] else "default"
             self.dict_progression_mode.value = mode
             self.dict_progression_step.value = "" if not row or row[1] is None else str(row[1])
@@ -1975,8 +1978,10 @@ class WorkoutTrackerApp:
             self.dict_rep_ceiling.value = "" if not row or row[3] is None else str(row[3])
             self.dict_reduction_threshold.value = "" if not row or row[4] is None else f"{float(row[4])*100:g}"
             self.dict_max_rpe.value = str(row[5] if row and row[5] is not None else 9.5)
-            self.dict_progression_preview.value = f"Effective: step {settings['progression_step']:g} lb • reduce {settings['reduction_steps']} step(s) • ceiling {settings['rep_ceiling']} reps • reduce below {settings['reduction_threshold']*100:g}% • max RPE {settings['max_progress_rpe']:g}"
-            for control in (self.dict_progression_mode,self.dict_progression_step,self.dict_reduction_steps,self.dict_rep_ceiling,self.dict_reduction_threshold,self.dict_max_rpe,self.dict_progression_preview):
+            self.dict_max_progression_weight.value = "" if not row or row[6] is None else f"{float(row[6]):g}"
+            cap_text = f" • max load {settings['max_progression_weight']:g} lb" if settings.get("max_progression_weight") is not None else " • max load none"
+            self.dict_progression_preview.value = f"Effective: step {settings['progression_step']:g} lb{cap_text} • reduce {settings['reduction_steps']} step(s) • ceiling {settings['rep_ceiling']} reps • reduce below {settings['reduction_threshold']*100:g}% • max RPE {settings['max_progress_rpe']:g}"
+            for control in (self.dict_progression_mode,self.dict_progression_step,self.dict_reduction_steps,self.dict_rep_ceiling,self.dict_reduction_threshold,self.dict_max_rpe,self.dict_max_progression_weight,self.dict_progression_preview):
                 try: control.update()
                 except: pass
         if hasattr(self, 'dict_rename_field'):
@@ -1992,13 +1997,14 @@ class WorkoutTrackerApp:
         if not ex: self.show_snackbar("Select an exercise first.", "red300"); return
         try:
             mode=self.dict_progression_mode.value or "default"
-            if mode == "default": values=(None,None,None,None,None)
+            if mode == "default": values=(None,None,None,None,None,None)
             else:
                 step=float(self.dict_progression_step.value); reduction=int(self.dict_reduction_steps.value); ceiling=int(self.dict_rep_ceiling.value); threshold=float(self.dict_reduction_threshold.value)/100.0; maxrpe=float(self.dict_max_rpe.value)
-                if step<=0 or not 1<=reduction<=3 or not 2<=ceiling<=50 or not .50<=threshold<=.85 or not 6<=maxrpe<=10: raise ValueError
-                values=(step,reduction,ceiling,threshold,maxrpe)
+                cap_raw=(self.dict_max_progression_weight.value or "").strip(); maxweight=float(cap_raw) if cap_raw else None
+                if step<=0 or not 1<=reduction<=3 or not 2<=ceiling<=50 or not .50<=threshold<=.85 or not 6<=maxrpe<=10 or (maxweight is not None and maxweight<=0): raise ValueError
+                values=(step,reduction,ceiling,threshold,maxrpe,maxweight)
             with get_db() as conn:
-                conn.execute("UPDATE exercise_dict SET progression_mode=?, progression_step=?, reduction_steps=?, rep_ceiling=?, reduction_threshold=?, max_progress_rpe=? WHERE name=?", (mode,*values,ex)); conn.commit()
+                conn.execute("UPDATE exercise_dict SET progression_mode=?, progression_step=?, reduction_steps=?, rep_ceiling=?, reduction_threshold=?, max_progress_rpe=?, max_progression_weight=? WHERE name=?", (mode,*values,ex)); conn.commit()
             invalidate_progression_settings_cache(ex)
             self.show_snackbar(f"Progression settings saved for {ex}.", COLOR_SUCCESS)
             self.on_dict_ex_change(None)
@@ -2008,7 +2014,7 @@ class WorkoutTrackerApp:
         ex=self.dict_dropdown.value
         if not ex: return
         with get_db() as conn:
-            conn.execute("UPDATE exercise_dict SET progression_mode='default', progression_step=NULL, reduction_steps=NULL, rep_ceiling=NULL, reduction_threshold=NULL, max_progress_rpe=NULL WHERE name=?", (ex,)); conn.commit()
+            conn.execute("UPDATE exercise_dict SET progression_mode='default', progression_step=NULL, reduction_steps=NULL, rep_ceiling=NULL, reduction_threshold=NULL, max_progress_rpe=NULL, max_progression_weight=NULL WHERE name=?", (ex,)); conn.commit()
         invalidate_progression_settings_cache(ex)
         self.show_snackbar(f"{ex} restored to progression defaults.", COLOR_SUCCESS); self.on_dict_ex_change(None)
 
@@ -3579,11 +3585,7 @@ class WorkoutTrackerApp:
             changed = self.save_workout_context(note_field.value, [c.label for c in tag_checks if c.value])
             self.show_snackbar("Workout context saved." if changed else "No workout rows exist for this day.", COLOR_SUCCESS if changed else COLOR_WARNING)
         note_field.on_blur = save_note
-        tag_checks = []
-        for label in SESSION_TAG_OPTIONS:
-            control = ft.Checkbox(label=label, value=label in selected_tags)
-            control.on_change = save_note
-            tag_checks.append(control)
+        tag_checks = build_tag_controls(ft, SESSION_TAG_OPTIONS, selected_tags, save_note)
         return ft.Container(content=ft.Column([header, note_field, ft.Row(tag_checks, spacing=2, wrap=True), ft.Text("Notes save when leaving the field. Tags save immediately. Documentation only; targets are unchanged.", size=9, color=COLOR_MUTED, italic=True)], spacing=3, tight=True), bgcolor="white5", border_radius=8, padding=4)
 
     def toggle_navigation_rows(self, e=None):
