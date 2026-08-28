@@ -24,6 +24,8 @@ from app.compatibility import compatible_checkbox
 from components.session_context_panel import build_tag_controls
 from app.application import ApplicationFoundation
 from services.backup_service import BackupService
+from services.progression_service import progression_clarity, simulate_progression
+from services.workout_service import WorkoutStateService, workout_progress
 
 # --- WIFI TRANSFER HARDENING ---
 # Threaded server prevents browser side-requests (favicon/retries) from blocking the
@@ -403,6 +405,25 @@ class ExerciseCard(ft.Card):
                     })
 
         # --- UI CONSTRUCTION ---
+        if self.status == STATUS_COMPLETED:
+            completed_rows = self.app.sets.get(self.db_id, [])
+            done_rows = [x for x in completed_rows if x.get("done")]
+            reps_text = "/".join(str(x.get("r", "?")) for x in done_rows) or "No completed sets"
+            weights = [str(x.get("w", "")) for x in done_rows]
+            rpes = []
+            for x in done_rows:
+                try: rpes.append(float(x.get("rpe")))
+                except Exception: pass
+            bits = [f"{len(done_rows)} sets", f"Reps {reps_text}"]
+            if weights: bits.insert(1, f"{weights[0]} lb")
+            if rpes: bits.append(f"Avg RPE {sum(rpes)/len(rpes):.1f}")
+            self.content = ft.Container(content=ft.Row([
+                ft.Text("✓", size=16, color="green300", weight="bold"),
+                ft.Column([ft.Text(self.exercise, size=13, weight="bold"), ft.Text(" • ".join(bits), size=10, color="white54")], spacing=2, expand=True),
+                ft.Text("History ›", size=10, color="cyan300")], spacing=8),
+                bgcolor="green900", border_radius=8, padding=10, ink=True, on_click=self.open_progression_history)
+            self.margin = 4
+            return
         sets_column = ft.Column(spacing=4)
         self.set_ui_rows = [] # <-- KINETIC INIT
 
@@ -649,9 +670,28 @@ class ExerciseCard(ft.Card):
         ], spacing=4)
         
         chips_row = ft.Row(spacing=6, wrap=True)
+        active_pos, total_pos = WorkoutStateService.active_set_position(self.app.sets.get(self.db_id, []))
+        action_text = WorkoutStateService.next_action(self.app.sets.get(self.db_id, []), self.status)
+        chips_row.controls.append(make_helper_chip(f"SET {active_pos} OF {total_pos}", "blue900", "blue100"))
+        chips_row.controls.append(make_helper_chip(action_text, "white10", "white70"))
+        completed_times = [x.get("completed_at") for x in self.app.sets.get(self.db_id, []) if x.get("done") and x.get("completed_at")]
+        if completed_times and self.status == STATUS_PENDING:
+            elapsed = WorkoutStateService.elapsed_since(completed_times[-1])
+            rest_text = format_duration_seconds(elapsed) if elapsed is not None else None
+            if rest_text: chips_row.controls.append(make_helper_chip(f"RESTING {rest_text}", "teal900", "teal100"))
         
         if regulation_msg:
             chips_row.controls.append(make_helper_chip(regulation_msg, "red900", "red100"))
+        effective_settings = get_effective_progression_settings(self.exercise, self.mov_type, eq_type, get_user_age(), get_user_progression_profile())
+        max_load = effective_settings.get("max_progression_weight")
+        if max_load is not None:
+            chips_row.controls.append(make_helper_chip(f"LOAD CAP {float(max_load):g} LB", "purple900", "purple100"))
+        if self.set_progression_diagnostics:
+            first_diag = self.set_progression_diagnostics[0]
+            current_ref = recent_session_sets[0] if recent_session_sets else (self.tgt_w, self.tgt_r)
+            clarity = progression_clarity(effective_settings, current_ref[0], current_ref[1], first_diag.get("next_weight", self.tgt_w), first_diag.get("next_reps", self.tgt_r), first_diag.get("reason_code"))
+            chips_row.controls.append(make_helper_chip(clarity["load"], "bluegrey900", "cyan100"))
+            chips_row.controls.append(make_helper_chip(clarity["reps"], "bluegrey900", "green100"))
         
         if self.mov_type == "Compound" and self.app.current_week != "Deload" and self.status == STATUS_PENDING:
             w1 = snap_weight(adj_w * WARMUP_PERCENT_1, eq_type)
@@ -726,7 +766,8 @@ class ExerciseCard(ft.Card):
             labels = {"progress": "Progression applied", "hold": "Target held", "reduce": "Demand reduced", "resume_normal": "Normal trajectory resumed"}
             for item in self.set_progression_diagnostics[:6]:
                 decision = str(item.get("decision", "hold"))
-                lines.append(f"Set {item.get('set_number', '?')}: {labels.get(decision, decision)}. Next target {item.get('next_weight', '?'):g} x {item.get('next_reps', '?')}.")
+                clarity = progression_clarity(get_effective_progression_settings(self.exercise, self.mov_type, EXERCISE_METADATA.get(self.exercise, {}).get("equipment", "Barbell"), get_user_age(), get_user_progression_profile()), self.tgt_w, self.tgt_r, item.get("next_weight", self.tgt_w), item.get("next_reps", self.tgt_r), item.get("reason_code"))
+                lines.append(f"Set {item.get('set_number', '?')}: {labels.get(decision, decision)}. {clarity['load']}; {clarity['reps']}.")
                 if item.get("reason"):
                     lines.append(f"  {item['reason']}")
         else:
@@ -801,6 +842,7 @@ class ExerciseCard(ft.Card):
                 ft.Text(f"{date or 'Unknown'} • W{wk} • Set {num}", size=11, weight="bold", color="cyan200"),
                 ft.Text(f"Target {fmt(tw)} x {tr if tr is not None else '?'} → Actual {fmt(aw)} x {ar if ar is not None else '?'} @ RPE {fmt(rpe)}", size=11),
                 ft.Text(f"{(decision or 'legacy').replace('_',' ').title()}: {reason or 'Legacy set; no saved decision.'}", size=10, color="white54"),
+                ft.Text(f"Load {'increased' if (tw is not None and aw is not None and float(aw)>float(tw)) else 'held/reduced'} • Reps {'met' if (tr is not None and ar is not None and int(ar)>=int(tr)) else 'building'}", size=9, color="cyan200"),
             ], spacing=2), bgcolor="white10", border_radius=8, padding=8))
         if not controls: controls=[ft.Text("No completed history for this exercise.", color="white54")]
         dialog=ft.AlertDialog(title=ft.Text(f"Progression History: {self.exercise}", size=15, weight="bold"),
@@ -1926,6 +1968,7 @@ class WorkoutTrackerApp:
             self.dict_max_rpe = ft.Dropdown(label="Max progression RPE", value="9.5", options=[ft.dropdown.Option(f"{x/2:.1f}") for x in range(12,21)])
             self.dict_max_progression_weight = ft.TextField(label="Maximum progression weight (lbs)", hint_text="Optional", keyboard_type=ft.KeyboardType.NUMBER, text_size=12)
             self.dict_progression_preview = ft.Text("Select an exercise to view effective settings.", size=10, color="cyan200")
+            self.dict_progression_simulation = ft.Text("", size=11, color="green300", weight="bold")
             self.dict_rename_field = ft.TextField(
                 label="Rename to...",
                 text_size=12,
@@ -1945,7 +1988,7 @@ class WorkoutTrackerApp:
                     self.dict_progression_mode,
                     ft.Row([self.dict_progression_step, self.dict_reduction_steps], spacing=6),
                     ft.Row([self.dict_rep_ceiling, self.dict_reduction_threshold], spacing=6),
-                    self.dict_max_rpe, self.dict_max_progression_weight, self.dict_progression_preview,
+                    self.dict_max_rpe, self.dict_max_progression_weight, self.dict_progression_preview, self.dict_progression_simulation,
                     ft.Row([ft.TextButton("Reset Defaults", on_click=self.reset_dictionary_progression), ft.ElevatedButton("Save Progression", on_click=self.save_dictionary_progression, style=ft.ButtonStyle(bgcolor="purple700", color="white"))], alignment="spaceBetween"),
                     ft.Divider(height=6, color="white10"), self.dict_rename_field,
                     ft.ElevatedButton("Rename Exercise", style=ft.ButtonStyle(bgcolor="teal700", color="white"), on_click=self.rename_dictionary_exercise, width=float('inf')),
@@ -1985,8 +2028,18 @@ class WorkoutTrackerApp:
             self.dict_max_rpe.value = str(row[5] if row and row[5] is not None else 9.5)
             self.dict_max_progression_weight.value = "" if not row or row[6] is None else f"{float(row[6]):g}"
             cap_text = f" • max load {settings['max_progression_weight']:g} lb" if settings.get("max_progression_weight") is not None else " • max load none"
-            self.dict_progression_preview.value = f"Effective: step {settings['progression_step']:g} lb{cap_text} • reduce {settings['reduction_steps']} step(s) • ceiling {settings['rep_ceiling']} reps • reduce below {settings['reduction_threshold']*100:g}% • max RPE {settings['max_progress_rpe']:g}"
-            for control in (self.dict_progression_mode,self.dict_progression_step,self.dict_reduction_steps,self.dict_rep_ceiling,self.dict_reduction_threshold,self.dict_max_rpe,self.dict_max_progression_weight,self.dict_progression_preview):
+            step_source = "custom" if row and row[1] is not None else "inherited"
+            cap_source = "custom" if row and row[6] is not None else "none"
+            self.dict_progression_preview.value = f"Effective: {step_source} step {settings['progression_step']:g} lb • max load {settings['max_progression_weight']:g} lb ({cap_source})" if settings.get("max_progression_weight") is not None else f"Effective: {step_source} step {settings['progression_step']:g} lb • max load none"
+            try:
+                with get_db() as conn:
+                    latest = conn.execute("SELECT target_weight,target_reps FROM workout_sessions WHERE exercise=? ORDER BY id DESC LIMIT 1", (selected_ex,)).fetchone()
+                current_w, current_r = latest if latest else (0 if meta.get("equipment")=="Bodyweight" else 45, 10)
+                simulation = simulate_progression(settings, float(current_w or 0), int(current_r or 10), meta.get("equipment", "Barbell"))
+                self.dict_progression_simulation.value = "If the next target succeeds: " + simulation["summary"]
+            except Exception:
+                self.dict_progression_simulation.value = "Simulation unavailable until a valid target exists."
+            for control in (self.dict_progression_mode,self.dict_progression_step,self.dict_reduction_steps,self.dict_rep_ceiling,self.dict_reduction_threshold,self.dict_max_rpe,self.dict_max_progression_weight,self.dict_progression_preview,self.dict_progression_simulation):
                 try: control.update()
                 except: pass
         if hasattr(self, 'dict_rename_field'):
@@ -3548,21 +3601,34 @@ class WorkoutTrackerApp:
 
     def build_workout_context_panel(self):
         note, selected_tags = self.get_workout_context()
-        summary = ", ".join(selected_tags[:2]) + (f" +{len(selected_tags)-2}" if len(selected_tags) > 2 else "")
-        if not summary: summary = "No tags"
-        header = ft.Container(
-            content=ft.Row([ft.Text("SESSION CONTEXT", size=9, weight="bold", color=COLOR_INFO), ft.Text(summary, size=10, color=COLOR_MUTED, expand=True, text_align="right"), ft.Text("▼" if self.context_collapsed else "▲", size=11, color=COLOR_INFO)], spacing=8),
-            padding=6, ink=True, on_click=self.toggle_context_panel,
-        )
-        if self.context_collapsed:
-            return ft.Container(content=header, bgcolor="white5", border_radius=8)
-        note_field = ft.TextField(label="Workout note", value=note, hint_text="Context, limitations, cues, or session observations", multiline=True, min_lines=1, max_lines=2, text_size=11)
-        def save_note(e=None):
-            changed = self.save_workout_context(note_field.value, [c.label for c in tag_checks if c.value])
-            self.show_snackbar("Workout context saved." if changed else "No workout rows exist for this day.", COLOR_SUCCESS if changed else COLOR_WARNING)
-        note_field.on_blur = save_note
-        tag_checks = build_tag_controls(ft, SESSION_TAG_OPTIONS, selected_tags, save_note)
-        return ft.Container(content=ft.Column([header, note_field, ft.Row(tag_checks, spacing=2, wrap=True), ft.Text("Notes save when leaving the field. Tags save immediately. Documentation only; targets are unchanged.", size=9, color=COLOR_MUTED, italic=True)], spacing=3, tight=True), bgcolor="white5", border_radius=8, padding=4)
+        with get_db() as conn:
+            readiness_row = conn.execute("SELECT sleep,joints,drive,COALESCE(diet,0) FROM readiness_logs WHERE meso_number=? AND week=? AND day_of_week=?", (self.current_meso,self.current_week,self.current_day)).fetchone()
+        readiness_logged = readiness_row is not None
+        initial = readiness_row if readiness_logged else (3,3,3,3)
+        normalized = sum(float(v or 0) for v in initial) / 2.0
+        adjustment = get_readiness_adjustment(sum(int(v or 3) for v in initial[:3]), int(initial[1] or 3), "Compound")
+        adjustment_text = "No adjustment" if adjustment["reduction_pct"] <= 0 else f"Up to -{adjustment['reduction_pct']*100:g}% load, -{adjustment['rep_drop']} reps"
+        header=ft.Container(content=ft.Row([ft.Text("SESSION READINESS",size=9,weight="bold",color=COLOR_INFO),ft.Text(f"{normalized:.1f}/10",size=10,weight="bold",color="green300" if normalized>=8.5 else "amber300" if normalized>=7 else "red300"),ft.Text(adjustment_text,size=9,color=COLOR_MUTED,expand=True,text_align="right"),ft.Text("▼" if self.context_collapsed else "▲",size=11,color=COLOR_INFO)],spacing=7),padding=6,ink=True,on_click=self.toggle_context_panel)
+        if self.context_collapsed: return ft.Container(content=header,bgcolor="white5",border_radius=8)
+        sleep_s=ft.Slider(min=1,max=5,divisions=4,value=int(initial[0] or 3),label="{value}"); joint_s=ft.Slider(min=1,max=5,divisions=4,value=int(initial[1] or 3),label="{value}"); drive_s=ft.Slider(min=1,max=5,divisions=4,value=int(initial[2] or 3),label="{value}"); diet_s=ft.Slider(min=1,max=5,divisions=4,value=int(initial[3] or 3),label="{value}")
+        preview=ft.Text("",size=10,color="cyan200",weight="bold")
+        note_field=ft.TextField(label="Workout note",value=note,hint_text="Context, limitations, cues, or session observations",multiline=True,min_lines=1,max_lines=2,text_size=11)
+        tag_checks=[]
+        def selected_tag_names(): return [c.label for c in tag_checks if c.value]
+        def save_context(e=None): self.save_workout_context(note_field.value,selected_tag_names())
+        def update_preview(e=None):
+            score=int(sleep_s.value)+int(joint_s.value)+int(drive_s.value); compound=get_readiness_adjustment(score,int(joint_s.value),"Compound"); isolation=get_readiness_adjustment(score,int(joint_s.value),"Isolation")
+            preview.value="Projected: normal progression remains active." if max(compound["reduction_pct"],isolation["reduction_pct"])<=0 else f"Projected: Compound -{compound['reduction_pct']*100:g}%/-{compound['rep_drop']} reps • Isolation -{isolation['reduction_pct']*100:g}%/-{isolation['rep_drop']} reps"
+            try: preview.update()
+            except Exception: pass
+        def save_readiness(e=None):
+            with get_db() as conn:
+                conn.execute("DELETE FROM readiness_logs WHERE meso_number=? AND week=? AND day_of_week=?",(self.current_meso,self.current_week,self.current_day)); conn.execute("INSERT INTO readiness_logs(date,sleep,joints,drive,diet,meso_number,week,day_of_week) VALUES(?,?,?,?,?,?,?,?)",(datetime.now().strftime("%Y-%m-%d"),int(sleep_s.value),int(joint_s.value),int(drive_s.value),int(diet_s.value),self.current_meso,self.current_week,self.current_day)); conn.commit()
+            save_context(); self.show_snackbar("Readiness updated. Pending targets recalculated; completed sets preserved.",COLOR_SUCCESS); self.rebuild_entire_display()
+        for slider in (sleep_s,joint_s,drive_s,diet_s): slider.on_change=update_preview
+        note_field.on_blur=save_context; tag_checks=build_tag_controls(ft,SESSION_TAG_OPTIONS,selected_tags,save_context); update_preview()
+        sliders=ft.Column([ft.Row([ft.Column([ft.Text("Sleep",size=10),sleep_s],expand=True),ft.Column([ft.Text("Joints",size=10),joint_s],expand=True)]),ft.Row([ft.Column([ft.Text("Drive",size=10),drive_s],expand=True),ft.Column([ft.Text("Diet",size=10),diet_s],expand=True)])],spacing=2)
+        return ft.Container(content=ft.Column([header,preview,sliders,ft.Row(tag_checks,spacing=2,wrap=True),note_field,ft.ElevatedButton("Update Readiness" if readiness_logged else "Log Readiness",on_click=save_readiness,width=float("inf"),height=36,style=ft.ButtonStyle(bgcolor="blue700",color="white")),ft.Text("Readiness edits affect pending, incomplete targets only. Completed sets remain unchanged.",size=9,color=COLOR_MUTED,italic=True)],spacing=4,tight=True),bgcolor="white5",border_radius=8,padding=4)
 
     def toggle_navigation_rows(self, e=None):
         self.nav_collapsed = not self.nav_collapsed
@@ -5342,58 +5408,6 @@ class WorkoutTrackerApp:
 
     def rebuild_readiness_survey_layer(self):
         self.survey_panel.content = None
-        if self.current_day not in self.current_week_days(): return
-        
-        with get_db() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT COUNT(*) FROM workout_sessions WHERE meso_number=? AND week=? AND day_of_week=? AND status='Pending'", (self.current_meso, self.current_week, self.current_day))
-            if cursor.fetchone()[0] == 0: return
-            cursor.execute("SELECT COUNT(*) FROM readiness_logs WHERE meso_number=? AND week=? AND day_of_week=?", (self.current_meso, self.current_week, self.current_day))
-            if cursor.fetchone()[0] > 0: return
-
-        def save_survey(e):
-            with get_db() as conn:
-                # Safely inserts Sleep, Joints, Drive, and our new Diet Discipline metric
-                conn.cursor().execute(
-                    "INSERT OR REPLACE INTO readiness_logs (date, sleep, joints, drive, diet, meso_number, week, day_of_week) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", 
-                    (datetime.now().strftime("%Y-%m-%d"), int(sleep_s.value), int(joint_s.value), int(drive_s.value), int(diet_s.value), self.current_meso, self.current_week, self.current_day)
-                )
-                conn.commit()
-            self.rebuild_entire_display()
-
-        # Cleaned up labels since the titles are now floating above them
-        sleep_s = ft.Slider(min=1, max=5, divisions=4, value=3, label="{value}")
-        joint_s = ft.Slider(min=1, max=5, divisions=4, value=3, label="{value}")
-        drive_s = ft.Slider(min=1, max=5, divisions=4, value=3, label="{value}")
-        diet_s = ft.Slider(min=1, max=5, divisions=4, value=3, label="{value}")
-        
-        self.survey_panel.content = ft.Card(
-            content=ft.Container(
-                padding=15, 
-                content=ft.Column([
-                    ft.Text("☀️ Daily Readiness Check", weight="bold", color="amber300", size=14),
-                    ft.Text("Normal targets remain active until this check is logged. No readiness reduction is currently applied.", size=10, color="cyan200"),
-                    ft.Divider(height=1, color="white10"),
-                    
-                    # Row 1: Sleep & Joints
-                    ft.Row([
-                        ft.Column([ft.Text("Sleep", size=11, color="white70", weight="bold"), sleep_s], expand=True, horizontal_alignment="center", spacing=0),
-                        ft.Column([ft.Text("Joints", size=11, color="white70", weight="bold"), joint_s], expand=True, horizontal_alignment="center", spacing=0),
-                    ], alignment="spaceBetween"),
-                    
-                    # Row 2: Drive & Diet
-                    ft.Row([
-                        ft.Column([ft.Text("Drive", size=11, color="white70", weight="bold"), drive_s], expand=True, horizontal_alignment="center", spacing=0),
-                        ft.Column([ft.Text("Diet Discipline", size=11, color="cyan300", weight="bold"), diet_s], expand=True, horizontal_alignment="center", spacing=0),
-                    ], alignment="spaceBetween"),
-                    
-                    ft.Container(height=2), # Tiny spacer
-                    
-                    # Full-width action button
-                    ft.ElevatedButton("Log Readiness", on_click=save_survey, width=float('inf'), height=35, style=ft.ButtonStyle(bgcolor="blue700", color="white"))
-                ], spacing=8, tight=True)
-            )
-        )
 
     def save_active_rename(self, e):
         new_name = self.input_rename_field.value.strip()
@@ -5724,6 +5738,13 @@ class WorkoutTrackerApp:
                     (self.current_day, self.current_week, self.current_meso)
                 )
                 current_rows = cursor.fetchall()
+
+            progress = workout_progress(current_rows, self.sets)
+            exercise_done = progress["completed_exercises"] + progress["skipped_exercises"]
+            progress_ratio = exercise_done / progress["total_exercises"] if progress["total_exercises"] else 0
+            self.main_canvas.controls.append(ft.Container(content=ft.Column([
+                ft.Row([ft.Text("WORKOUT PROGRESS",size=9,weight="bold",color=COLOR_INFO),ft.Text(f"Exercises {exercise_done}/{progress['total_exercises']} • Sets {progress['completed_sets']}/{progress['total_sets']} • Groups {progress['completed_categories']}/{progress['total_categories']}",size=10,color="white70")],alignment="spaceBetween"),
+                ft.ProgressBar(value=progress_ratio,color="cyan400",bgcolor="white10",height=5)],spacing=3),bgcolor="white5",border_radius=8,padding=7))
                 
             # --- START DATA BATCHING ENGINE ---
             with get_db() as conn:
@@ -5897,16 +5918,50 @@ class WorkoutTrackerApp:
             self.page.update()
 
 # --- APP EXECUTION ---
-def main(page: ft.Page):
+def build_startup_splash():
+    """Build a compatibility-first animated splash with a static fallback."""
+    try:
+        splash_image = ft.Image(
+            src="ironcycle_splash_animation.webp",
+            width=640,
+            height=360,
+            fit=ft.BoxFit.CONTAIN,
+            error_content=ft.Image(src="icon.png", width=520, height=320, fit=ft.BoxFit.CONTAIN),
+        )
+    except (TypeError, AttributeError):
+        # Older packaged Flet versions may not expose error_content. The static
+        # icon keeps startup functional rather than blocking the application.
+        splash_image = ft.Image(src="icon.png", width=520, height=320, fit=ft.BoxFit.CONTAIN)
+    return ft.Container(
+        expand=True,
+        bgcolor="#121212",
+        alignment=ft.alignment.center,
+        content=ft.Column(
+            [splash_image, ft.Text("IRONCYCLE", size=24, weight="bold", color="cyan300"), ft.Text("TRAIN • TRACK • PROGRESS", size=10, color="white54")],
+            alignment=ft.MainAxisAlignment.CENTER,
+            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+            spacing=8,
+        ),
+    )
+
+async def main(page: ft.Page):
     page.theme_mode = "dark"
-    
-    try: 
+    page.bgcolor = "#121212"
+    page.padding = 0
+    try:
+        page.add(build_startup_splash())
+        page.update()
+        # The supplied animation is 36 frames at approximately 25 fps.
+        await asyncio.sleep(1.44)
+        page.clean()
+        page.padding = 6
         app = WorkoutTrackerApp(page)
         page.update()
     except Exception:
         err = traceback.format_exc()
         page.clean()
+        page.padding = 6
         page.add(ft.Text(f"CRASH:\n\n{err}", color="red", size=10))
         page.update()
 
-ft.app(target=main)
+ft.app(target=main, assets_dir="assets")
