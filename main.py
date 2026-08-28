@@ -22,6 +22,8 @@ from constants import *
 from database import *
 from app.compatibility import compatible_checkbox
 from components.session_context_panel import build_tag_controls
+from app.application import ApplicationFoundation
+from services.backup_service import BackupService
 
 # --- WIFI TRANSFER HARDENING ---
 # Threaded server prevents browser side-requests (favicon/retries) from blocking the
@@ -1164,6 +1166,9 @@ class WorkoutTrackerApp:
         
                                 
         self.set_active_position()
+        self.foundation = ApplicationFoundation()
+        self.foundation.sync(self)
+        self.backup_service = BackupService(MAX_BACKUP_TEXT_BYTES, MAX_DECOMPRESSED_DB_BYTES)
         self.build_ui_shell()
         self.rebuild_navigation_headers()
         self.rebuild_entire_display()
@@ -1999,16 +2004,27 @@ class WorkoutTrackerApp:
             mode=self.dict_progression_mode.value or "default"
             if mode == "default": values=(None,None,None,None,None,None)
             else:
-                step=float(self.dict_progression_step.value); reduction=int(self.dict_reduction_steps.value); ceiling=int(self.dict_rep_ceiling.value); threshold=float(self.dict_reduction_threshold.value)/100.0; maxrpe=float(self.dict_max_rpe.value)
-                cap_raw=(self.dict_max_progression_weight.value or "").strip(); maxweight=float(cap_raw) if cap_raw else None
-                if step<=0 or not 1<=reduction<=3 or not 2<=ceiling<=50 or not .50<=threshold<=.85 or not 6<=maxrpe<=10 or (maxweight is not None and maxweight<=0): raise ValueError
+                step_raw=(self.dict_progression_step.value or "").strip()
+                reduction_raw=str(self.dict_reduction_steps.value or "").strip()
+                ceiling_raw=(self.dict_rep_ceiling.value or "").strip()
+                threshold_raw=(self.dict_reduction_threshold.value or "").strip()
+                maxrpe_raw=str(self.dict_max_rpe.value or "").strip()
+                cap_raw=(self.dict_max_progression_weight.value or "").strip()
+                step=float(step_raw) if step_raw else None
+                reduction=int(reduction_raw) if reduction_raw else None
+                ceiling=int(ceiling_raw) if ceiling_raw else None
+                threshold=float(threshold_raw)/100.0 if threshold_raw else None
+                maxrpe=float(maxrpe_raw) if maxrpe_raw else None
+                maxweight=float(cap_raw) if cap_raw else None
+                if (step is not None and step<=0) or (reduction is not None and not 1<=reduction<=3) or (ceiling is not None and not 2<=ceiling<=50) or (threshold is not None and not .50<=threshold<=.85) or (maxrpe is not None and not 6<=maxrpe<=10) or (maxweight is not None and maxweight<=0): raise ValueError
+                if all(value is None for value in (step,reduction,ceiling,threshold,maxrpe,maxweight)): raise ValueError
                 values=(step,reduction,ceiling,threshold,maxrpe,maxweight)
             with get_db() as conn:
                 conn.execute("UPDATE exercise_dict SET progression_mode=?, progression_step=?, reduction_steps=?, rep_ceiling=?, reduction_threshold=?, max_progress_rpe=?, max_progression_weight=? WHERE name=?", (mode,*values,ex)); conn.commit()
             invalidate_progression_settings_cache(ex)
             self.show_snackbar(f"Progression settings saved for {ex}.", COLOR_SUCCESS)
             self.on_dict_ex_change(None)
-        except Exception: self.show_snackbar("Use valid custom values: step >0, reduction 1-3, ceiling 2-50, threshold 50-85%, RPE 6-10.", "red300")
+        except Exception: self.show_snackbar("Custom fields may be blank to inherit defaults. Enter positive step/max weight, reduction 1-3, ceiling 2-50, threshold 50-85%, and RPE 6-10.", "red300")
 
     def reset_dictionary_progression(self, e=None):
         ex=self.dict_dropdown.value
@@ -2598,29 +2614,10 @@ class WorkoutTrackerApp:
         return backup_dir
 
     def create_backup_string(self):
-        snapshot_path = DB_PATH + ".snapshot"
-        try:
-            with sqlite3.connect(DB_PATH, timeout=5.0) as src_conn:
-                with sqlite3.connect(snapshot_path) as dst_conn:
-                    src_conn.backup(dst_conn)
-
-            with sqlite3.connect(snapshot_path) as meta_conn:
-                meta_conn.executemany(
-                    "INSERT OR REPLACE INTO user_settings (setting_key, setting_value) VALUES (?, ?)",
-                    (("backup_app_version", APP_VERSION), ("backup_schema_version", str(DATABASE_SCHEMA_VERSION)), ("backup_created_at", datetime.now().isoformat(timespec="seconds"))),
-                )
-                meta_conn.commit()
-            with open(snapshot_path, "rb") as f:
-                db_data = f.read()
-
-            return base64.b64encode(zlib.compress(db_data, level=9)).decode("utf-8")
-        finally:
-            try:
-                if os.path.exists(snapshot_path):
-                    os.remove(snapshot_path)
-            except:
-                pass
-
+        return self.backup_service.create_backup_string(
+            DB_PATH, APP_VERSION, DATABASE_SCHEMA_VERSION,
+            datetime.now().isoformat(timespec="seconds")
+        )
     def handle_local_backup_click(self, e=None):
         self.close_actions_menu()
         try:
@@ -3130,31 +3127,10 @@ class WorkoutTrackerApp:
 
         temp_db_path = DB_PATH + ".tmp"
         try:
-            decoded_bytes = base64.b64decode(backup_str, validate=True)
-            decompressed_db = zlib.decompress(decoded_bytes)
-            if len(decompressed_db) > MAX_DECOMPRESSED_DB_BYTES:
-                raise ValueError("Backup expands to an unexpectedly large database.")
-
+            decompressed_db = self.backup_service.decode(backup_str)
             with open(temp_db_path, "wb") as f:
                 f.write(decompressed_db)
-
-            # --- NEW: INTEGRITY AND STRICT SCHEMA VALIDATION ---
-            required_tables = {
-                "workout_sessions", "workout_sets", "exercise_dict",
-                "readiness_logs", "meso_configs", "meso_names", "user_settings"
-            }
-
-            with sqlite3.connect(temp_db_path) as test_conn:
-                result = test_conn.execute("PRAGMA integrity_check;").fetchone()[0]
-                if result.lower() != "ok":
-                    raise ValueError(f"Integrity check failed: {result}")
-                    
-                rows = test_conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
-                found_tables = {r[0] for r in rows}
-                missing = required_tables - found_tables
-                if missing:
-                    # --- UPDATED: Sorted missing tables for cleaner errors ---
-                    raise ValueError(f"Not a valid workout backup. Missing tables: {', '.join(sorted(missing))}")
+            self.backup_service.validate_database(temp_db_path)
 
             # --- NEW: AUTOMATIC PRE-RESTORE SNAPSHOT (THE UNDO BUTTON) ---
             try:
@@ -5528,6 +5504,8 @@ class WorkoutTrackerApp:
         self.show_snackbar(f"Advanced to Week {next_w}!", "green300")
 
     def rebuild_entire_display(self):
+        if hasattr(self, "foundation"):
+            self.foundation.sync(self)
         rebuild_started_at = time.perf_counter()
         try:
             if self.remount_main_canvas_on_rebuild:

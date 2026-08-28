@@ -1,1 +1,1 @@
-"""Application coordination boundaries."""
+"""IronCycle application coordination package."""
