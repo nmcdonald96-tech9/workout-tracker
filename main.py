@@ -4,6 +4,7 @@ import sqlite3
 import traceback
 import json
 import time
+import asyncio
 from datetime import datetime
 import csv
 from io import StringIO
@@ -5919,49 +5920,18 @@ class WorkoutTrackerApp:
 
 # --- APP EXECUTION ---
 def build_startup_splash():
-    """Build a compatibility-first animated splash with a static fallback."""
     try:
-        splash_image = ft.Image(
-            src="ironcycle_splash_animation.webp",
-            width=640,
-            height=360,
-            fit=ft.BoxFit.CONTAIN,
-            error_content=ft.Image(src="icon.png", width=520, height=320, fit=ft.BoxFit.CONTAIN),
-        )
+        image = ft.Image(src="ironcycle_splash_animation.webp", width=640, height=360, fit=ft.BoxFit.CONTAIN, error_content=ft.Image(src="icon.png", width=520, height=320, fit=ft.BoxFit.CONTAIN))
     except (TypeError, AttributeError):
-        # Older packaged Flet versions may not expose error_content. The static
-        # icon keeps startup functional rather than blocking the application.
-        splash_image = ft.Image(src="icon.png", width=520, height=320, fit=ft.BoxFit.CONTAIN)
-    return ft.Container(
-        expand=True,
-        bgcolor="#121212",
-        alignment=ft.alignment.center,
-        content=ft.Column(
-            [splash_image, ft.Text("IRONCYCLE", size=24, weight="bold", color="cyan300"), ft.Text("TRAIN • TRACK • PROGRESS", size=10, color="white54")],
-            alignment=ft.MainAxisAlignment.CENTER,
-            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-            spacing=8,
-        ),
-    )
+        image = ft.Image(src="icon.png", width=520, height=320, fit=ft.BoxFit.CONTAIN)
+    return ft.Container(expand=True, bgcolor="#121212", alignment=ft.alignment.center, content=ft.Column([image, ft.Text("IRONCYCLE", size=24, weight="bold", color="cyan300"), ft.Text("TRAIN • TRACK • PROGRESS", size=10, color="white54")], alignment=ft.MainAxisAlignment.CENTER, horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=8))
 
 async def main(page: ft.Page):
-    page.theme_mode = "dark"
-    page.bgcolor = "#121212"
-    page.padding = 0
+    page.theme_mode="dark"; page.bgcolor="#121212"; page.padding=0
     try:
-        page.add(build_startup_splash())
-        page.update()
-        # The supplied animation is 36 frames at approximately 25 fps.
-        await asyncio.sleep(1.44)
-        page.clean()
-        page.padding = 6
-        app = WorkoutTrackerApp(page)
-        page.update()
+        page.add(build_startup_splash()); page.update(); await asyncio.sleep(1.44)
+        page.clean(); page.padding=6; app=WorkoutTrackerApp(page); page.update()
     except Exception:
-        err = traceback.format_exc()
-        page.clean()
-        page.padding = 6
-        page.add(ft.Text(f"CRASH:\n\n{err}", color="red", size=10))
-        page.update()
+        err=traceback.format_exc(); page.clean(); page.padding=6; page.add(ft.Text(f"CRASH:\n\n{err}", color="red", size=10)); page.update()
 
 ft.app(target=main, assets_dir="assets")
