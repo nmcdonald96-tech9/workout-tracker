@@ -732,13 +732,118 @@ def calculate_session_progression(completed_sets, target_weight, target_reps, mo
     return next_weight, next_reps, metrics
 
 
-# Compatibility exports: production policy lives in services.progression_service.
-from services.progression_service import (
-    invalidate_progression_settings_cache,
-    get_effective_progression_settings,
-    classify_set_progression,
-    calculate_set_specific_progression,
-)
+# Android self-contained progression policy.
+# Kept in database.py to avoid stale packaged service bytecode mismatches.
+_PROGRESSION_SETTINGS_CACHE = {}
+
+def invalidate_progression_settings_cache(exercise_name=None):
+    if exercise_name is None:
+        _PROGRESSION_SETTINGS_CACHE.clear()
+    else:
+        for key in list(_PROGRESSION_SETTINGS_CACHE):
+            if key[0] == exercise_name:
+                _PROGRESSION_SETTINGS_CACHE.pop(key, None)
+
+def get_effective_progression_settings(exercise_name, movement_type, equipment_type, age=43, profile=0):
+    key = (exercise_name, movement_type, equipment_type, int(age or 43), int(profile or 0))
+    if key in _PROGRESSION_SETTINGS_CACHE:
+        return dict(_PROGRESSION_SETTINGS_CACHE[key])
+    effective = int(profile or 0) or (3 if int(age or 43) < 35 else 2 if int(age or 43) < 45 else 1)
+    settings = {
+        "progression_step": float(COMPOUND_JUMP_STANDARD if movement_type == "Compound" else ISOLATION_JUMP_STANDARD),
+        "reduction_steps": 1,
+        "rep_ceiling": 12 if effective == 3 else 15 if effective == 2 else 18,
+        "reduction_threshold": 0.70,
+        "max_progress_rpe": 9.5,
+        "max_progression_weight": None,
+    }
+    try:
+        with get_db() as conn:
+            row = conn.execute("SELECT progression_mode,progression_step,reduction_steps,rep_ceiling,reduction_threshold,max_progress_rpe,max_progression_weight FROM exercise_dict WHERE name=?", (exercise_name,)).fetchone()
+        if row and row[0] == "custom":
+            for name, value in zip(("progression_step","reduction_steps","rep_ceiling","reduction_threshold","max_progress_rpe","max_progression_weight"), row[1:]):
+                if value is not None:
+                    settings[name] = value
+    except Exception:
+        pass
+    _PROGRESSION_SETTINGS_CACHE[key] = dict(settings)
+    return settings
+
+def classify_set_progression(actual_weight, actual_reps, rpe, target_weight, target_reps, normal_weight, normal_reps, settings):
+    reps = int(actual_reps or 0)
+    target_reps = max(1, int(target_reps or 10))
+    effort = float(rpe if rpe is not None else 8.0)
+    if float(target_weight or 0) < float(normal_weight if normal_weight is not None else target_weight) or target_reps < int(normal_reps if normal_reps is not None else target_reps):
+        return {"decision":"resume_normal","reason_code":"READINESS_RECOVERY","reason":"Temporary readiness reduction completed; resume the normal trajectory."}
+    if reps / target_reps < float(settings.get("reduction_threshold", 0.70)):
+        return {"decision":"reduce","reason_code":"SIGNIFICANT_MISS","reason":"Performance was below the reduction threshold."}
+    if effort > float(settings.get("max_progress_rpe", 9.5)):
+        return {"decision":"hold","reason_code":"RPE_CEILING","reason":"Effort exceeded the progression RPE ceiling."}
+    if reps >= target_reps:
+        return {"decision":"progress","reason_code":"TARGET_MET","reason":"Target reps were completed within the progression RPE ceiling."}
+    return {"decision":"hold","reason_code":"BUILD_REPS","reason":"Keep the load and continue building reps."}
+
+def _custom_progression_weight_step(weight, equipment_type, step, direction=1):
+    if equipment_type == "Dumbbell":
+        return get_next_dumbbell(weight) if direction > 0 else get_prev_dumbbell(weight)
+    return max(0.0, float(weight or 0) + float(step) * direction)
+
+def calculate_set_specific_progression(completed_sets, default_target_weight, default_target_reps, movement_type, readiness_score=15, joint_score=5, equipment_type="Barbell", is_bodyweight=False, bodyweight=0, age=43, profile=0, exercise_name=None):
+    settings = get_effective_progression_settings(exercise_name, movement_type, equipment_type, age, profile)
+    rows = completed_sets or [(default_target_weight, default_target_reps, 8.0, default_target_weight, default_target_reps, default_target_weight, default_target_reps)]
+    targets, diagnostics = [], []
+    for index, row in enumerate(rows):
+        weight = float(row[0] if row[0] is not None else default_target_weight)
+        reps = int(row[1] if row[1] is not None else default_target_reps)
+        effort = float(row[2] if len(row) > 2 and row[2] is not None else 8.0)
+        target_w = float(row[3] if len(row) > 3 and row[3] is not None else default_target_weight)
+        target_r = int(row[4] if len(row) > 4 and row[4] is not None else default_target_reps)
+        normal_w = float(row[5] if len(row) > 5 and row[5] is not None else target_w)
+        normal_r = int(row[6] if len(row) > 6 and row[6] is not None else target_r)
+        result = classify_set_progression(weight, reps, effort, target_w, target_r, normal_w, normal_r, settings)
+        decision = result["decision"]
+        next_weight, next_reps = weight, target_r
+        if decision == "reduce" and not is_bodyweight:
+            for _ in range(int(settings.get("reduction_steps", 1))):
+                next_weight = _custom_progression_weight_step(next_weight, equipment_type, settings["progression_step"], -1)
+        elif decision == "progress":
+            if equipment_type == "Dumbbell" or is_bodyweight:
+                if reps >= int(settings["rep_ceiling"]):
+                    next_weight = weight if is_bodyweight else _custom_progression_weight_step(weight, equipment_type, settings["progression_step"])
+                    next_reps = max(1, int(default_target_reps or 10))
+                else:
+                    next_reps = reps + (2 if effort <= 8 else 1)
+            else:
+                next_weight = _custom_progression_weight_step(weight, equipment_type, settings["progression_step"])
+        elif decision == "resume_normal":
+            next_weight, next_reps = normal_w, normal_r
+        cap = settings.get("max_progression_weight")
+        if cap is not None and next_weight >= float(cap):
+            next_weight = min(next_weight, float(cap))
+            if decision == "progress" and reps < int(settings["rep_ceiling"]):
+                next_reps = max(next_reps, reps + 1)
+            result = {"decision":"progress" if next_reps > reps else "hold","reason_code":"LOAD_CEILING_REACHED","reason":f"Load held at {float(cap):g} lb; rep progression remains available."}
+        next_reps = max(1, int(next_reps))
+        targets.append({"w":next_weight,"r":next_reps})
+        diagnostics.append({"set_number":index+1,"next_weight":next_weight,"next_reps":next_reps,**result})
+    return targets, diagnostics
+
+def progression_clarity(settings, current_weight, current_reps, next_weight, next_reps, reason_code=None):
+    cw, nw = float(current_weight or 0), float(next_weight or 0)
+    cr, nr = int(current_reps or 0), int(next_reps or 0)
+    cap = settings.get("max_progression_weight")
+    return {"load":f"{'Load held' if nw == cw else 'Load increases' if nw > cw else 'Load reduces'}: {nw:g} lb","reps":f"{'Reps held' if nr == cr else 'Reps increase' if nr > cr else 'Reps reset'}: {nr}","at_cap":cap is not None and nw >= float(cap),"reason_code":reason_code}
+
+def simulate_progression(settings, current_weight, current_reps, equipment_type="Barbell"):
+    weight, reps = float(current_weight or 0), int(current_reps or 0)
+    ceiling = int(settings["rep_ceiling"])
+    if reps < ceiling:
+        return {"next_weight":weight,"next_reps":reps+1,"summary":f"Build reps: {weight:g} x {reps+1}"}
+    candidate = _custom_progression_weight_step(weight, equipment_type, settings["progression_step"])
+    cap = settings.get("max_progression_weight")
+    if cap is not None and candidate > float(cap):
+        return {"next_weight":float(cap),"next_reps":ceiling,"summary":f"Load cap: hold {float(cap):g} lb and maintain up to {ceiling} reps"}
+    return {"next_weight":candidate,"next_reps":8,"summary":f"Graduate load: {candidate:g} lb, reps reset for the next climb"}
 
 def get_exercise_smart_defaults(exercise_name, meso_number):
     with get_db() as conn:
