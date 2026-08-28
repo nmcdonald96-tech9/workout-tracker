@@ -1,8 +1,7 @@
 name: Build APK
 
 on:
-  push:
-    branches: [ "main", "refactor-v1" ]
+  workflow_dispatch:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
