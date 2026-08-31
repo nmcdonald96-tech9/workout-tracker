@@ -1008,3 +1008,55 @@ def exercise_exists(exercise_name):
     if not name:return False
     with get_db() as conn:
         return conn.execute("SELECT 1 FROM exercise_dict WHERE name=? LIMIT 1",(name,)).fetchone() is not None
+
+
+def get_library_entries(include_reviewed=False):
+    with get_db() as conn:
+        rows=conn.execute("SELECT name,category,COALESCE(movement_family,''),COALESCE(movement_type,'Isolation'),COALESCE(equipment,'Other'),COALESCE(angle,'Not specified'),catalog_id,COALESCE(is_custom,0) FROM exercise_dict ORDER BY category,name").fetchall()
+        reviewed={r[0].split('catalog_reviewed:',1)[1] for r in conn.execute("SELECT setting_key FROM user_settings WHERE setting_key LIKE 'catalog_reviewed:%' AND setting_value='1'").fetchall()}
+    out=[]
+    for r in rows:
+        if not include_reviewed and r[0] in reviewed:continue
+        out.append({"name":r[0],"category":r[1] or "General","family":r[2],"movement_type":r[3],"equipment":r[4],"angle":r[5],"catalog_id":r[6],"is_custom":bool(r[7]),"reviewed":r[0] in reviewed})
+    return out
+
+def get_catalog_review_items():
+    out=[]
+    for ex in get_library_entries(False):
+        if ex["catalog_id"]:continue
+        exact=catalog_match(ex["name"])
+        if exact:
+            out.append({"exercise":ex,"candidate":exact["item"],"kind":"Exact name" if exact["source"]=="canonical" else "Known alias","score":100,"reasons":[exact["source"]]})
+            continue
+        ranked=rank_catalog_candidates(ex["name"],ex["category"],ex["family"] or None,ex["equipment"] or None,ex["angle"],1)
+        candidate=ranked[0] if ranked and ranked[0]["score"]>=35 else None
+        out.append({"exercise":ex,"candidate":candidate["item"] if candidate else None,"kind":"Possible match" if candidate else "No suggested match","score":candidate["score"] if candidate else 0,"reasons":candidate["reasons"] if candidate else []})
+    order={"Exact name":0,"Known alias":1,"Possible match":2,"No suggested match":3}
+    return sorted(out,key=lambda x:(order[x["kind"]],x["exercise"]["name"]))
+
+def mark_catalog_reviewed_custom(name):
+    with get_db() as conn:
+        conn.execute("INSERT OR REPLACE INTO user_settings(setting_key,setting_value) VALUES(?, '1')",(f"catalog_reviewed:{name}",));conn.commit()
+
+def safe_link_catalog_definition(name,catalog_id):
+    item=CATALOG_BY_ID.get(catalog_id)
+    if not item:raise ValueError("Unknown catalog definition.")
+    with get_db() as conn:
+        collision=conn.execute("SELECT name FROM exercise_dict WHERE catalog_id=? AND name<>?",(catalog_id,name)).fetchone()
+        if collision:raise ValueError(f"Already linked to {collision[0]}.")
+        conn.execute("UPDATE exercise_dict SET catalog_id=?,movement_family=?,movement_type=?,equipment=?,angle=? WHERE name=?",(catalog_id,item["family"],item["movement_type"],item["equipment"],item.get("angle","Not specified"),name))
+        conn.execute("DELETE FROM user_settings WHERE setting_key=?",(f"catalog_reviewed:{name}",))
+        conn.execute("INSERT OR REPLACE INTO exercise_aliases(alias,catalog_id,exercise_name,source,confirmed) VALUES(?,?,?,?,1)",(name,catalog_id,name,"user"));conn.commit()
+
+def add_catalog_definition(catalog_id,display_name=None):
+    item=CATALOG_BY_ID.get(catalog_id)
+    if not item:raise ValueError("Unknown catalog definition.")
+    name=str(display_name or item["name"]).strip()
+    if not name:raise ValueError("Name is required.")
+    with get_db() as conn:
+        linked=conn.execute("SELECT name FROM exercise_dict WHERE catalog_id=?",(catalog_id,)).fetchone()
+        if linked:raise ValueError(f"Already in My Exercises as {linked[0]}.")
+        if conn.execute("SELECT 1 FROM exercise_dict WHERE name=?",(name,)).fetchone():raise ValueError("That name already exists. Use Review Matches to link it.")
+        conn.execute("INSERT INTO exercise_dict(name,category,movement_pattern,setup_notes,catalog_id,display_name,movement_family,movement_type,equipment,angle,is_custom) VALUES(?,?,?,'',?,?,?,?,?,?,0)",(name,item["category"],item["pattern"],catalog_id,name,item["family"],item["movement_type"],item["equipment"],item.get("angle","Not specified")))
+        conn.execute("INSERT OR REPLACE INTO exercise_aliases(alias,catalog_id,exercise_name,source,confirmed) VALUES(?,?,?,?,1)",(name,catalog_id,name,"user"));conn.commit()
+    return name
