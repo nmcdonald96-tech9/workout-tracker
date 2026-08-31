@@ -816,7 +816,6 @@ class ExerciseCard(ft.Card):
                 ft.TextButton("Why this target?", on_click=lambda ev: [self.app.safe_close(dialog), self.open_target_explanation()]),
                 ft.TextButton("Repeat previous set", on_click=lambda ev: [self.app.safe_close(dialog), self.repeat_previous_set()]),
                 ft.TextButton("Progression history", on_click=lambda ev: [self.app.safe_close(dialog), self.open_progression_history()]),
-                ft.TextButton("Edit future plan", on_click=lambda ev: [self.app.safe_close(dialog), self.app.open_future_plan_replacement(self.exercise, (self.context or {}).get("category") and self.app.current_day or self.app.current_day)]),
                 ft.TextButton("Swap exercise", on_click=lambda ev: [self.app.safe_close(dialog), self.open_swap_dialog(ev)]),
                 ft.TextButton("Add set", on_click=lambda ev: [self.app.safe_close(dialog), self.on_add_set(ev)]),
                 ft.TextButton("Remove last set", on_click=lambda ev: [self.app.safe_close(dialog), self.on_remove_set(ev)]),
@@ -1545,6 +1544,7 @@ class WorkoutTrackerApp:
                     ft.Row([
                         ft.ElevatedButton("👤 Profile Settings", on_click=self.open_settings_dialog, expand=True, style=btn_style),
                         ft.ElevatedButton("📖 Dictionary", on_click=self.menu_manage_dict, expand=True, style=btn_style),
+                        ft.ElevatedButton("Catalog", on_click=self.open_catalog_browser, expand=True, style=btn_style),
                     ], spacing=6),
                     ft.Row([
                         ft.ElevatedButton("🎯 Toggle Focus", on_click=self.toggle_workout_focus_mode, expand=True, style=btn_style),
@@ -5075,7 +5075,7 @@ class WorkoutTrackerApp:
         self.generator_canvas.controls.append(
             ft.Row([
                 ft.TextButton("Cancel", on_click=self.cancel_generator_view),
-                ft.ElevatedButton("Review Mesocycle", style=ft.ButtonStyle(bgcolor="orange600", color="white"), on_click=self.open_blueprint_review)
+                ft.ElevatedButton("Stamp Custom Meso", style=ft.ButtonStyle(bgcolor="orange600", color="white"), on_click=self.generate_and_stamp_blueprint)
             ], alignment="spaceBetween")
         )
         self.generator_canvas.controls.append(ft.Container(height=80))
@@ -5108,7 +5108,6 @@ class WorkoutTrackerApp:
             ex_list_col = ft.Column(spacing=2)
             for i, ex_name in enumerate(self.gen_blueprint.get(day, [])):
                 controls_row = ft.Row([
-                    ft.TextButton(content=ft.Text("⇄", color="cyan300", size=16), style=ft.ButtonStyle(padding=2), width=35, on_click=lambda e, d=day, idx=i: self.open_blueprint_replacement_suggestions(d, idx)),
                     ft.TextButton(content=ft.Text("✎", color="blue400", size=16), style=ft.ButtonStyle(padding=2), width=35, on_click=lambda e, d=day, idx=i: self.open_edit_blueprint_ex_dialog(d, idx)),
                     ft.TextButton(content=ft.Text("↑", color="white54", size=16), style=ft.ButtonStyle(padding=2), width=35, on_click=lambda e, d=day, idx=i: self.move_ex_up(d, idx)),
                     ft.TextButton(content=ft.Text("↓", color="white54", size=16), style=ft.ButtonStyle(padding=2), width=35, on_click=lambda e, d=day, idx=i: self.move_ex_down(d, idx)),
@@ -5232,184 +5231,6 @@ class WorkoutTrackerApp:
         self.render_blueprint_day_cards()
         self.main_canvas.update()
 
-    def _selected_generator_days(self):
-        return [day for day, active in self.gen_days.items() if active]
-
-    def open_blueprint_review(self, e=None):
-        selected_days = self._selected_generator_days()
-        result = validate_meso_blueprint(
-            self.gen_blueprint, selected_days, self.gen_length, daily_exercise_cap=0
-        )
-        self.blueprint_review_result = result
-        controls = [
-            ft.Text(
-                f"{self.gen_length} weeks • {len(selected_days)} selected days • "
-                f"{sum(len(self.gen_blueprint.get(day, [])) for day in selected_days)} exercises • "
-                f"{result['estimated_weekly_sets']} estimated sets",
-                size=11, color="white70",
-            ),
-            ft.Row([
-                make_helper_chip(f"ERRORS {len(result['errors'])}", "red900", "red100"),
-                make_helper_chip(f"WARNINGS {len(result['warnings'])}", "amber900", "amber100"),
-                make_helper_chip(f"NOTICES {len(result['notices'])}", "blue900", "blue100"),
-            ], spacing=6, wrap=True),
-            ft.Text(result["set_estimate_assumption"], size=9, color="white38", italic=True),
-        ]
-        for day in selected_days:
-            summary=result["day_summaries"].get(day,{})
-            category_text=" • ".join(f"{cat} {sets} sets" for cat,sets in summary.get("categories",{}).items())
-            if summary.get("planned_rest_day"):
-                category_text="Planned rest day"
-            controls.append(ft.Container(
-                content=ft.Column([
-                    ft.Text(day.upper(), size=12, weight="bold", color="cyan200"),
-                    ft.Text(f"{summary.get('exercise_count',0)} exercises • {summary.get('estimated_sets',0)} estimated sets", size=10),
-                    ft.Text(category_text or "No category volume", size=9, color="white54"),
-                ],spacing=2), bgcolor="white10", border_radius=8, padding=8
-            ))
-        if result["weekly_summary"]:
-            controls.append(ft.Text("WEEKLY DISTRIBUTION",size=11,weight="bold",color="cyan300"))
-            for category,data in sorted(result["weekly_summary"].items()):
-                controls.append(ft.Text(f"{category}: {data['planned_sets']} sets across {len(data['days'])} day(s)",size=10,color="white70"))
-        for label,key,color in (("BLOCKING ERRORS","errors","red300"),("WARNINGS","warnings","amber300"),("NOTICES","notices","cyan200")):
-            if result[key]:
-                controls.append(ft.Text(label,size=11,weight="bold",color=color))
-                controls.extend(ft.Text("• "+item["message"],size=10,color="white70") for item in result[key])
-        self.blueprint_warning_ack = ft.Checkbox(
-            label="I reviewed the warnings and want to create this mesocycle.",
-            value=False,
-            visible=bool(result["warnings"]),
-            on_change=lambda ev: self._refresh_blueprint_create_button(),
-        )
-        controls.append(self.blueprint_warning_ack)
-        self.blueprint_create_button=ft.ElevatedButton(
-            "Create Mesocycle", on_click=self._confirm_blueprint_creation,
-            disabled=bool(result["errors"] or result["warnings"]),
-            style=ft.ButtonStyle(bgcolor="green700",color="white")
-        )
-        self.blueprint_review_dialog=ft.AlertDialog(
-            title=ft.Text("Review Mesocycle",weight="bold"),
-            content=ft.Container(width=390,height=500,content=ft.Column(controls,scroll="auto",spacing=7)),
-            actions=[
-                ft.TextButton("Back to Edit",on_click=lambda ev:self.safe_close(self.blueprint_review_dialog)),
-                self.blueprint_create_button,
-            ], actions_alignment="spaceBetween"
-        )
-        self.safe_open(self.blueprint_review_dialog)
-
-    def _refresh_blueprint_create_button(self):
-        result=getattr(self,"blueprint_review_result",{})
-        blocked=bool(result.get("errors"))
-        warnings=bool(result.get("warnings"))
-        acknowledged=bool(getattr(getattr(self,"blueprint_warning_ack",None),"value",False))
-        self.blueprint_create_button.disabled=blocked or (warnings and not acknowledged)
-        try:self.blueprint_create_button.update()
-        except Exception:pass
-
-    def _confirm_blueprint_creation(self, e=None):
-        result=getattr(self,"blueprint_review_result",{})
-        if result.get("errors"):
-            self.show_snackbar("Resolve the blocking blueprint errors before creating the mesocycle.","red300")
-            return
-        if result.get("warnings") and not bool(self.blueprint_warning_ack.value):
-            self.show_snackbar("Review and acknowledge the warnings first.","amber300")
-            return
-        self.safe_close(self.blueprint_review_dialog)
-        self.generate_and_stamp_blueprint(e)
-
-    def open_blueprint_replacement_suggestions(self, day, idx):
-        current=self.gen_blueprint[day][idx]
-        candidates=get_replacement_candidates(current,available_only=False,limit=8)
-        rows=[]
-        for candidate in candidates:
-            label="Use" if candidate["in_user_dictionary"] else "Add and Use"
-            reason=" • ".join(candidate.get("reasons",[]))
-            rows.append(ft.Container(content=ft.Row([
-                ft.Column([
-                    ft.Text(candidate["name"],size=11,weight="bold"),
-                    ft.Text(reason,size=9,color="white54"),
-                ],spacing=2,expand=True),
-                ft.ElevatedButton(label,on_click=lambda ev,c=candidate:self.apply_blueprint_catalog_replacement(day,idx,c),height=34),
-            ],spacing=6),bgcolor="white10",border_radius=7,padding=7))
-        if not rows:
-            rows=[ft.Text("No catalog suggestions are available for this exercise yet.",size=10,color="white54")]
-        self.blueprint_suggestion_dialog=ft.AlertDialog(
-            title=ft.Text(f"Replace: {current}",size=14,weight="bold"),
-            content=ft.Container(width=380,height=420,content=ft.Column(rows,scroll="auto",spacing=6)),
-            actions=[ft.TextButton("Close",on_click=lambda ev:self.safe_close(self.blueprint_suggestion_dialog))]
-        )
-        self.safe_open(self.blueprint_suggestion_dialog)
-
-    def apply_blueprint_catalog_replacement(self, day, idx, candidate):
-        if candidate["in_user_dictionary"]:
-            self._commit_blueprint_catalog_replacement(day,idx,candidate)
-            return
-        item=CATALOG_BY_ID.get(candidate["catalog_id"],{})
-        details=f"{item.get('category','General')} • {item.get('pattern','General')} • {item.get('movement_type','Isolation')} • {item.get('equipment','Other')} • Angle: {item.get('angle','Not specified')}"
-        self.catalog_add_confirm_dialog=ft.AlertDialog(
-            title=ft.Text("Add Catalog Exercise",weight="bold"),
-            content=ft.Column([ft.Text(candidate["name"],size=15,weight="bold",color="cyan200"),ft.Text(details,size=10,color="white70"),ft.Text("This exercise will be added to the Exercise Dictionary and used in the proposed blueprint.",size=10,color="white54")],tight=True,spacing=7),
-            actions=[ft.TextButton("Cancel",on_click=lambda ev:self.safe_close(self.catalog_add_confirm_dialog)),ft.ElevatedButton("Add and Use",on_click=lambda ev:self._commit_blueprint_catalog_replacement(day,idx,candidate),style=ft.ButtonStyle(bgcolor="green700",color="white"))]
-        )
-        self.safe_open(self.catalog_add_confirm_dialog)
-
-    def _commit_blueprint_catalog_replacement(self,day,idx,candidate):
-        try:
-            if not candidate["in_user_dictionary"]:add_catalog_exercise_to_dictionary(candidate["catalog_id"])
-            self.gen_blueprint[day][idx]=candidate["name"]
-            if hasattr(self,"catalog_add_confirm_dialog"):self.safe_close(self.catalog_add_confirm_dialog)
-            self.safe_close(self.blueprint_suggestion_dialog);self.render_blueprint_day_cards();self.main_canvas.update();self.show_snackbar(f"Replaced with {candidate['name']}.","green300")
-        except Exception as err:self.show_snackbar(f"Replacement failed: {err}","red300")
-
-    def open_guided_custom_exercise(self, proposed_name="", on_created=None):
-        families=sorted({item["family"] for item in BUILTIN_EXERCISE_CATALOG})
-        categories=sorted({item["category"] for item in BUILTIN_EXERCISE_CATALOG}|{"General","Custom"})
-        equipment=["Barbell","Dumbbell","Cable","Machine","Bodyweight","Plate","Other"]
-        name_field=ft.TextField(label="Exercise name",value=proposed_name,text_size=12)
-        category_field=ft.Dropdown(label="Category",options=[ft.dropdown.Option(x) for x in categories],value="Custom")
-        family_field=ft.Dropdown(label="Movement family",options=[ft.dropdown.Option(x) for x in families])
-        equipment_field=ft.Dropdown(label="Equipment",options=[ft.dropdown.Option(x) for x in equipment],value="Other")
-        angle_field=ft.Dropdown(label="Angle",options=[ft.dropdown.Option("Not specified")],value="Not specified",visible=False)
-        match_text=ft.Text("Choose a movement family to see possible catalog definitions.",size=9,color="white54")
-        def refresh(ev=None):
-            opts=get_angle_options(family_field.value)
-            angle_field.visible=bool(opts);angle_field.options=[ft.dropdown.Option(x) for x in (opts or ["Not specified"])];angle_field.value="Not specified"
-            candidates=rank_catalog_candidates(name_field.value,category_field.value,family_field.value,equipment_field.value,angle_field.value,limit=3) if family_field.value else []
-            match_text.value="Possible definitions: "+", ".join(x["name"] for x in candidates) if candidates else "No exact definition required; this can remain a distinct custom exercise."
-            try:angle_field.update();match_text.update()
-            except Exception:pass
-        family_field.on_select=refresh;category_field.on_select=refresh;equipment_field.on_select=refresh
-        def create(ev=None):
-            try:
-                result=create_custom_exercise(name_field.value,category_field.value,family_field.value,equipment_field.value,angle_field.value)
-                self.safe_close(dialog);self.show_snackbar(f"Created {result['name']}.","green300")
-                if on_created:on_created(result["name"])
-            except Exception as err:self.show_snackbar(f"Could not create exercise: {err}","red300")
-        dialog=ft.AlertDialog(title=ft.Text("Create Exercise",weight="bold"),content=ft.Container(width=360,content=ft.Column([name_field,category_field,family_field,equipment_field,angle_field,match_text,ft.Text("Angle appears only when meaningful. Not specified is always valid.",size=9,color="white38",italic=True)],tight=True,spacing=7)),actions=[ft.TextButton("Cancel",on_click=lambda ev:self.safe_close(dialog)),ft.ElevatedButton("Create Exercise",on_click=create,style=ft.ButtonStyle(bgcolor="blue700",color="white"))])
-        self.safe_open(dialog)
-
-    def open_future_plan_replacement(self, exercise_name, day):
-        candidates=get_replacement_candidates(exercise_name,available_only=False,limit=8)
-        replacement=ft.Dropdown(label="Replacement",options=[ft.dropdown.Option(key=x["name"],text=("Add and Use: " if not x["in_user_dictionary"] else "Use: ")+x["name"]) for x in candidates])
-        scope=ft.Dropdown(label="Apply to",value="this_week",options=[ft.dropdown.Option(key="this_week",text="This pending week only"),ft.dropdown.Option(key="this_and_later",text="This and later pending weeks"),ft.dropdown.Option(key="all_future",text="All future pending weeks and reusable blueprint")])
-        preview_text=ft.Text("Choose a replacement and scope.",size=10,color="white70")
-        def preview(ev=None):
-            if not replacement.value:return
-            data=preview_future_exercise_replacement(self.current_meso,self.current_week,day,exercise_name,replacement.value,scope.value)
-            preview_text.value=f"Affected pending sessions: {data['pending_count']} • Completed sessions affected: {data['completed_count']} • Blueprint update: {'Yes' if data['updates_blueprint'] else 'No'}"
-            try:preview_text.update()
-            except Exception:pass
-        replacement.on_select=preview;scope.on_select=preview
-        def apply(ev=None):
-            if not replacement.value:return
-            candidate=next((x for x in candidates if x["name"]==replacement.value),None)
-            try:
-                apply_future_exercise_replacement(self.current_meso,self.current_week,day,exercise_name,replacement.value,scope.value,catalog_id=None if candidate and candidate["in_user_dictionary"] else (candidate or {}).get("catalog_id"))
-                self.safe_close(dialog);self.show_snackbar("Future pending plan updated. Completed history was preserved.","green300");self.sets.clear();self.rebuild_entire_display()
-            except Exception as err:self.show_snackbar(f"Future edit failed: {err}","red300")
-        dialog=ft.AlertDialog(title=ft.Text(f"Future Plan: {exercise_name}",weight="bold"),content=ft.Column([replacement,scope,preview_text,ft.Text("Completed sessions and sets are never edited.",size=9,color="amber200")],tight=True,spacing=8),actions=[ft.TextButton("Cancel",on_click=lambda ev:self.safe_close(dialog)),ft.ElevatedButton("Apply Change",on_click=apply,style=ft.ButtonStyle(bgcolor="purple700",color="white"))])
-        self.safe_open(dialog)
-
     def generate_and_stamp_blueprint(self, e):
         active_days = [day for day, active in self.gen_days.items() if active]
         
@@ -5473,6 +5294,46 @@ class WorkoutTrackerApp:
         self.rebuild_entire_display()
         self.show_snackbar(f"Custom Meso {new_meso_num} Stamped Successfully!", "green300")
 
+    def open_catalog_browser(self, e=None):
+        try: self.close_actions_menu()
+        except Exception: pass
+        search=ft.TextField(label="Search catalog",hint_text="Name, category, family, or equipment",text_size=12)
+        results=ft.Column(scroll="auto",spacing=5)
+        coverage=get_catalog_coverage()
+        def render(ev=None):
+            q=str(search.value or "").strip().lower();results.controls.clear()
+            items=[x for x in BUILTIN_EXERCISE_CATALOG if not q or q in (x["name"]+" "+x["category"]+" "+movement_family_label(x["family"])+" "+x["equipment"]).lower()]
+            for x in items[:80]:
+                results.controls.append(ft.Container(content=ft.Column([ft.Text(x["name"],size=11,weight="bold"),ft.Text(f"{x['category']} • {movement_family_label(x['family'])} • {x['equipment']} • {x.get('angle','Not specified')}",size=9,color="white54")],spacing=2),bgcolor="white10",padding=7,border_radius=7))
+            try: results.update()
+            except Exception: pass
+        search.on_change=render;render()
+        dialog=ft.AlertDialog(title=ft.Text("Exercise Catalog",weight="bold"),content=ft.Container(width=390,height=500,content=ft.Column([ft.Text(f"{len(BUILTIN_EXERCISE_CATALOG)} built-in definitions • {coverage['linked']} linked • {coverage['unlinked']} unlinked dictionary entries",size=9,color="cyan200"),search,results],expand=True)),actions=[ft.TextButton("Close",on_click=lambda ev:self.safe_close(dialog))])
+        self.safe_open(dialog)
+
+    def open_guided_exercise_creation(self,name,category,movement_type,on_created):
+        families=sorted({x["family"] for x in BUILTIN_EXERCISE_CATALOG});equipment=["Barbell","Dumbbell","Cable","Machine","Bodyweight","Plate","Other"]
+        nf=ft.TextField(label="Exercise name",value=name)
+        cf=ft.Dropdown(label="Category",value=category,options=[ft.dropdown.Option(x) for x in sorted({x["category"] for x in BUILTIN_EXERCISE_CATALOG}|{"General","Custom"})])
+        ff=ft.Dropdown(label="Movement family",options=[ft.dropdown.Option(key=x,text=movement_family_label(x)) for x in families])
+        ef=ft.Dropdown(label="Equipment",value="Other",options=[ft.dropdown.Option(x) for x in equipment])
+        af=ft.Dropdown(label="Angle",value="Not specified",options=[ft.dropdown.Option("Not specified")],visible=False)
+        matches=ft.Text("Choose a movement family.",size=9,color="cyan200")
+        def refresh(ev=None):
+            opts=get_angle_options(ff.value);af.visible=bool(opts);af.options=[ft.dropdown.Option(x) for x in (opts or ["Not specified"])];af.value="Not specified"
+            cands=rank_catalog_candidates(nf.value,cf.value,ff.value,ef.value,af.value,3) if ff.value else []
+            matches.value="Possible matches: "+", ".join(x["item"]["name"] for x in cands) if cands else "No exact match required. This can remain custom."
+            try: af.update();matches.update()
+            except Exception: pass
+        ff.on_select=refresh;ef.on_select=refresh;cf.on_select=refresh
+        def create(ev=None):
+            try:
+                new=create_classified_exercise(nf.value,cf.value,ff.value,ef.value,af.value,movement_type)
+                self.safe_close(dialog);on_created(new)
+            except Exception as err:self.show_snackbar(f"Could not create exercise: {err}","red300")
+        dialog=ft.AlertDialog(title=ft.Text("Create Exercise",weight="bold"),content=ft.Container(width=360,content=ft.Column([nf,cf,ff,ef,af,matches,ft.Text("Angle appears only when meaningful. Not specified is always valid.",size=9,color="white38",italic=True)],tight=True,spacing=7)),actions=[ft.TextButton("Cancel",on_click=lambda ev:self.safe_close(dialog)),ft.ElevatedButton("Create Exercise",on_click=create)])
+        self.safe_open(dialog)
+
     def save_wizard_addition(self, e):
         ex_name = self.wizard_custom_input.value.strip() or self.wizard_exercise_dropdown.value
         if not ex_name:
@@ -5491,10 +5352,10 @@ class WorkoutTrackerApp:
         today_str = datetime.now().strftime("%Y-%m-%d")
         
         if self.wizard_custom_input.value.strip() and not exercise_exists(ex_name):
-            def after_custom_created(created_name):
-                self.wizard_custom_input.value = created_name
+            def after_created(created_name):
+                self.wizard_custom_input.value=created_name
                 self.save_wizard_addition(None)
-            self.open_guided_custom_exercise(ex_name, after_custom_created)
+            self.open_guided_exercise_creation(ex_name,cat,m_type,after_created)
             return
         with get_db() as conn:
             cursor = conn.cursor()

@@ -66,35 +66,12 @@ def init_and_seed_db():
             if column_name not in columns:
                 cursor.execute(f"ALTER TABLE exercise_dict ADD COLUMN {column_name} {column_type}")
                 conn.commit()
-        # --- SCHEMA 11: PERSISTENT EXERCISE IDENTITY AND CLASSIFICATION ---
         cursor.execute("PRAGMA table_info(exercise_dict)")
-        columns = [info[1] for info in cursor.fetchall()]
-        identity_columns = {
-            "catalog_id": "TEXT",
-            "display_name": "TEXT",
-            "movement_family": "TEXT",
-            "movement_type": "TEXT DEFAULT 'Isolation'",
-            "equipment": "TEXT DEFAULT 'Other'",
-            "angle": "TEXT DEFAULT 'Not specified'",
-            "is_custom": "INTEGER DEFAULT 0",
-        }
-        for column_name, column_type in identity_columns.items():
-            if column_name not in columns:
-                cursor.execute(f"ALTER TABLE exercise_dict ADD COLUMN {column_name} {column_type}")
-                conn.commit()
+        columns=[x[1] for x in cursor.fetchall()]
+        for n,t in {"catalog_id":"TEXT","display_name":"TEXT","movement_family":"TEXT","movement_type":"TEXT DEFAULT 'Isolation'","equipment":"TEXT DEFAULT 'Other'","angle":"TEXT DEFAULT 'Not specified'","is_custom":"INTEGER DEFAULT 0"}.items():
+            if n not in columns: cursor.execute(f"ALTER TABLE exercise_dict ADD COLUMN {n} {t}")
         cursor.execute("UPDATE exercise_dict SET display_name=name WHERE display_name IS NULL OR TRIM(display_name)='' ")
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS exercise_aliases (
-                alias TEXT PRIMARY KEY,
-                catalog_id TEXT,
-                exercise_name TEXT,
-                source TEXT DEFAULT 'user',
-                confirmed INTEGER DEFAULT 0,
-                FOREIGN KEY(exercise_name) REFERENCES exercise_dict(name) ON DELETE CASCADE
-            )
-        """)
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_exercise_dict_catalog_id ON exercise_dict(catalog_id)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_exercise_aliases_exercise ON exercise_aliases(exercise_name)")
+        cursor.execute("CREATE TABLE IF NOT EXISTS exercise_aliases(alias TEXT PRIMARY KEY,catalog_id TEXT,exercise_name TEXT,source TEXT,confirmed INTEGER DEFAULT 0)")
         conn.commit()
         
         cursor.execute(
@@ -997,221 +974,30 @@ def calculate_plates_per_side(exercise_name, total_weight_str):
     except:
         return ""
 
-
-# =======================================
-# --- MESOCYCLE PLANNING FOUNDATION ---
-# =======================================
-from exercise_catalog import (
-    BUILTIN_EXERCISE_CATALOG, CATALOG_BY_ID, ANGLE_NOT_SPECIFIED,
-    get_angle_options, angle_response_required, find_catalog_match,
-    rank_catalog_candidates,
-)
-
-
-def exercise_exists(exercise_name):
-    with get_db() as conn:
-        return conn.execute("SELECT 1 FROM exercise_dict WHERE name=?", (exercise_name,)).fetchone() is not None
-
-
-def get_recent_exercise_set_count(exercise_name, fallback=2):
-    with get_db() as conn:
-        row=conn.execute("""
-            SELECT COUNT(s.id) FROM workout_sessions ws
-            JOIN workout_sets s ON s.session_id=ws.id
-            WHERE ws.exercise=? AND ws.status='Completed' AND s.is_complete=1
-              AND ws.id=(SELECT id FROM workout_sessions WHERE exercise=? AND status='Completed' ORDER BY COALESCE(date,'') DESC,id DESC LIMIT 1)
-        """,(exercise_name,exercise_name)).fetchone()
-    count=int(row[0] or 0) if row else 0
-    return count if count>0 else max(1,int(fallback or 2))
-
-
-def _planner_exercise_details(name):
-    match=find_catalog_match(name)
-    if match:
-        c=match["catalog"]
-        return {"name":name,"category":c["category"],"family":c["family"],"pattern":c["pattern"],"movement_type":c["movement_type"],"equipment":c["equipment"],"angle":c.get("angle",ANGLE_NOT_SPECIFIED),"catalog_id":c["id"]}
-    with get_db() as conn:
-        row=conn.execute("SELECT category,movement_pattern FROM exercise_dict WHERE name=?",(name,)).fetchone()
-    meta=EXERCISE_METADATA.get(name,{})
-    if not row and not meta:
-        return None
-    return {"name":name,"category":row[0] if row else meta.get("category","General"),"family":None,"pattern":row[1] if row else meta.get("pattern","General"),"movement_type":meta.get("movement_type","Isolation"),"equipment":meta.get("equipment","Other"),"angle":ANGLE_NOT_SPECIFIED,"catalog_id":None}
-
-
-def validate_custom_exercise_definition(name, category, family, equipment, angle=ANGLE_NOT_SPECIFIED):
-    errors=[]
-    if not str(name or '').strip(): errors.append("Exercise name is required.")
-    if not str(category or '').strip(): errors.append("Category is required.")
-    if not str(family or '').strip(): errors.append("Movement family is required.")
-    if not str(equipment or '').strip(): errors.append("Equipment is required.")
-    options=get_angle_options(family)
-    if options and angle not in options: errors.append("Choose an angle option, including Not specified.")
-    return {"valid":not errors,"errors":errors,"angle_required_response":bool(options),"angle":angle if options else ANGLE_NOT_SPECIFIED}
-
-
-def estimate_blueprint_sets(blueprint, selected_days, fallback_sets=2):
-    day_summaries={}; category_summary={}
-    for day in selected_days:
-        exercises=list((blueprint or {}).get(day,[]) or [])
-        day={"day":day,"exercise_count":len(exercises),"estimated_sets":0,"categories":{},"patterns":{},"planned_rest_day":not exercises}
-        for name in exercises:
-            details=_planner_exercise_details(name) or {"category":"General","pattern":"Unknown"}
-            sets=get_recent_exercise_set_count(name,fallback_sets)
-            day["estimated_sets"]+=sets
-            day["categories"][details["category"]]=day["categories"].get(details["category"],0)+sets
-            day["patterns"][details["pattern"]]=day["patterns"].get(details["pattern"],0)+1
-            cat=category_summary.setdefault(details["category"],{"planned_sets":0,"exercise_occurrences":0,"days":[]})
-            cat["planned_sets"]+=sets;cat["exercise_occurrences"]+=1
-            if day["day"] not in cat["days"]:cat["days"].append(day["day"])
-        day_summaries[day["day"]]=day
-    return {"day_summaries":day_summaries,"category_summary":category_summary,"estimated_weekly_sets":sum(x["estimated_sets"] for x in day_summaries.values()),"assumption":"Most recent completed set count; exercises without history use 2 estimated sets."}
-
-
-def validate_meso_blueprint(blueprint, selected_days, meso_length, daily_exercise_cap=0):
-    errors=[];warnings=[];notices=[]
-    selected=list(selected_days or [])
-    if not selected: errors.append({"code":"NO_SELECTED_DAYS","message":"Select at least one day before creating the mesocycle."})
-    try:
-        length=int(meso_length)
-        if not 3<=length<=8: errors.append({"code":"INVALID_LENGTH","message":"Mesocycle length must be between 3 and 8 weeks."})
-    except Exception: errors.append({"code":"INVALID_LENGTH","message":"Mesocycle length must be between 3 and 8 weeks."})
-    total=0; occurrences={}; previous_day=None; previous_compounds=set()
-    for day in selected:
-        exercises=list((blueprint or {}).get(day,[]) or []);total+=len(exercises)
-        if not exercises: notices.append({"code":"PLANNED_REST_DAY","day":day,"message":f"{day} is selected and empty; it will be treated as a planned rest day."})
-        if daily_exercise_cap and len(exercises)>int(daily_exercise_cap): errors.append({"code":"DAILY_CAP","day":day,"message":f"{day} contains {len(exercises)} exercises, exceeding the configured limit of {int(daily_exercise_cap)}."})
-        if len(exercises)>=9: warnings.append({"code":"HIGH_EXERCISE_COUNT","day":day,"message":f"{day} contains {len(exercises)} exercises."})
-        seen=set();patterns={};compounds=set()
-        for name in exercises:
-            if name in seen: errors.append({"code":"DUPLICATE_SAME_DAY","day":day,"exercise":name,"message":f"{day} contains {name} more than once."})
-            seen.add(name);occurrences.setdefault(name,[]).append(day)
-            details=_planner_exercise_details(name)
-            if details is None: errors.append({"code":"UNKNOWN_EXERCISE","day":day,"exercise":name,"message":f"{name} is not available in the dictionary or built-in catalog."});continue
-            patterns[details["pattern"]]=patterns.get(details["pattern"],0)+1
-            if details["movement_type"]=="Compound":compounds.add(details["pattern"])
-        for pattern,count in patterns.items():
-            if count>=4:warnings.append({"code":"PATTERN_CONCENTRATION","day":day,"pattern":pattern,"message":f"{day} contains {count} {pattern} movements."})
-            elif count==3:notices.append({"code":"PATTERN_FOCUS","day":day,"pattern":pattern,"message":f"{day} contains 3 {pattern} movements."})
-        if previous_day:
-            for pattern in sorted(previous_compounds & compounds): warnings.append({"code":"CONSECUTIVE_COMPOUND_PATTERN","days":[previous_day,day],"pattern":pattern,"message":f"{pattern} compound work appears on consecutive selected days: {previous_day} and {day}."})
-        previous_day=day;previous_compounds=compounds
-    if total==0: errors.append({"code":"NO_EXERCISES","message":"Add at least one exercise to the mesocycle."})
-    for exercise,days in occurrences.items():
-        if len(days)>1:notices.append({"code":"REPEATED_WEEKLY_EXERCISE","exercise":exercise,"days":days,"message":f"{exercise} appears on {', '.join(days)}; repeated frequency may be intentional."})
-    volume=estimate_blueprint_sets(blueprint,selected)
-    return {"can_stamp":not errors,"errors":errors,"warnings":warnings,"notices":notices,"weekly_summary":volume["category_summary"],"day_summaries":volume["day_summaries"],"estimated_weekly_sets":volume["estimated_weekly_sets"],"set_estimate_assumption":volume["assumption"],"exercise_occurrences":occurrences}
-
-
-def get_replacement_candidates(exercise_name, available_only=False, category=None, family=None, equipment=None, angle=ANGLE_NOT_SPECIFIED, limit=8):
-    details=_planner_exercise_details(exercise_name) or {}
-    category=category or details.get("category");family=family or details.get("family");equipment=equipment or details.get("equipment")
-    ranked=rank_catalog_candidates(exercise_name,category,family,equipment,angle,limit=50)
-    results=[]
-    for item in ranked:
-        if item["name"]==exercise_name:continue
-        exists=exercise_exists(item["name"])
-        if available_only and not exists:continue
-        item=dict(item);item["in_user_dictionary"]=exists;item["action"]="Use" if exists else "Add and Use";item["requires_user_confirmation"]=True
-        results.append(item)
-        if len(results)>=max(1,int(limit or 8)):break
-    return results
-
-
-
-def add_catalog_exercise_to_dictionary(catalog_id, display_name=None):
-    """Persist a known catalog exercise and its identity metadata."""
-    item=CATALOG_BY_ID.get(catalog_id)
-    if not item:
-        raise ValueError("Unknown catalog exercise.")
-    name=str(display_name or item["name"]).strip()
-    if not name:
-        raise ValueError("Exercise name is required.")
-    with get_db() as conn:
-        existing=conn.execute("SELECT name FROM exercise_dict WHERE name=?",(name,)).fetchone()
-        if existing:
-            conn.execute("""UPDATE exercise_dict SET catalog_id=?,display_name=?,movement_family=?,movement_type=?,equipment=?,angle=?,is_custom=0 WHERE name=?""",
-                         (catalog_id,name,item["family"],item["movement_type"],item["equipment"],item.get("angle",ANGLE_NOT_SPECIFIED),name))
-            conn.commit()
-            return {"name":name,"created":False,"catalog_id":catalog_id}
-        conn.execute("""INSERT INTO exercise_dict
-            (name,category,movement_pattern,setup_notes,catalog_id,display_name,movement_family,movement_type,equipment,angle,is_custom)
-            VALUES (?,?,?,'',?,?,?,?,?,?,0)""",
-            (name,item["category"],item["pattern"],catalog_id,name,item["family"],item["movement_type"],item["equipment"],item.get("angle",ANGLE_NOT_SPECIFIED)))
-        for alias in item.get("aliases",[]):
-            conn.execute("INSERT OR IGNORE INTO exercise_aliases(alias,catalog_id,exercise_name,source,confirmed) VALUES(?,?,?,?,1)",(alias,catalog_id,name,"builtin"))
-        conn.commit()
-    return {"name":name,"created":True,"catalog_id":catalog_id}
-
-
-def create_custom_exercise(name,category,family,equipment,angle=ANGLE_NOT_SPECIFIED,movement_type=None,catalog_id=None):
-    validation=validate_custom_exercise_definition(name,category,family,equipment,angle)
-    if not validation["valid"]:
-        raise ValueError(" ".join(validation["errors"]))
-    name=str(name).strip()
-    catalog=CATALOG_BY_ID.get(catalog_id) if catalog_id else None
-    if catalog and catalog["family"] != family:
-        raise ValueError("Catalog match does not use the selected movement family.")
-    inferred=movement_type or (catalog["movement_type"] if catalog else "Isolation")
-    pattern=catalog["pattern"] if catalog else family.replace("_"," ").title()
-    with get_db() as conn:
-        if conn.execute("SELECT 1 FROM exercise_dict WHERE name=?",(name,)).fetchone():
-            raise ValueError("An exercise with this name already exists.")
-        conn.execute("""INSERT INTO exercise_dict
-            (name,category,movement_pattern,setup_notes,catalog_id,display_name,movement_family,movement_type,equipment,angle,is_custom)
-            VALUES (?,?,?,'',?,?,?,?,?,?,1)""",
-            (name,category,pattern,catalog_id,name,family,inferred,equipment,angle))
-        if catalog_id:
-            conn.execute("INSERT OR REPLACE INTO exercise_aliases(alias,catalog_id,exercise_name,source,confirmed) VALUES(?,?,?,?,1)",(name,catalog_id,name,"user"))
-        conn.commit()
-    return {"name":name,"catalog_id":catalog_id,"is_custom":True}
-
-
-def preview_future_exercise_replacement(meso_number,current_week,day,old_name,new_name,scope="this_week"):
-    with get_db() as conn:
-        rows=conn.execute("""SELECT id,week,day_of_week,status FROM workout_sessions
-            WHERE meso_number=? AND exercise=? AND day_of_week=? ORDER BY CASE WHEN week='Deload' THEN 999 ELSE CAST(week AS INTEGER) END,id""",
-            (meso_number,old_name,day)).fetchall()
-    current_num=int(current_week) if str(current_week).isdigit() else 999
-    affected=[];completed=[]
-    for sid,week,day_name,status in rows:
-        week_num=int(week) if str(week).isdigit() else 999
-        include=(scope=="this_week" and str(week)==str(current_week)) or (scope in ("this_and_later","all_future") and week_num>=current_num)
-        if not include: continue
-        item={"session_id":sid,"week":week,"day":day_name,"status":status}
-        (affected if status==STATUS_PENDING else completed).append(item)
-    return {"old_name":old_name,"new_name":new_name,"scope":scope,"pending_sessions":affected,"completed_sessions":completed,"pending_count":len(affected),"completed_count":len(completed),"updates_blueprint":scope=="all_future"}
-
-
-def apply_future_exercise_replacement(meso_number,current_week,day,old_name,new_name,scope="this_week",catalog_id=None,custom_definition=None):
-    preview=preview_future_exercise_replacement(meso_number,current_week,day,old_name,new_name,scope)
-    if preview["completed_count"]:
-        raise ValueError("Completed sessions entered the proposed change scope; no changes were applied.")
-    with get_db() as conn:
-        try:
-            conn.execute("BEGIN")
-            if not conn.execute("SELECT 1 FROM exercise_dict WHERE name=?",(new_name,)).fetchone():
-                if catalog_id:
-                    item=CATALOG_BY_ID.get(catalog_id)
-                    if not item: raise ValueError("Unknown catalog exercise.")
-                    conn.execute("""INSERT INTO exercise_dict(name,category,movement_pattern,setup_notes,catalog_id,display_name,movement_family,movement_type,equipment,angle,is_custom)
-                        VALUES(?,?,?,'',?,?,?,?,?,?,0)""",(new_name,item["category"],item["pattern"],catalog_id,new_name,item["family"],item["movement_type"],item["equipment"],item.get("angle",ANGLE_NOT_SPECIFIED)))
-                elif custom_definition:
-                    valid=validate_custom_exercise_definition(new_name,custom_definition.get("category"),custom_definition.get("family"),custom_definition.get("equipment"),custom_definition.get("angle",ANGLE_NOT_SPECIFIED))
-                    if not valid["valid"]: raise ValueError(" ".join(valid["errors"]))
-                    conn.execute("""INSERT INTO exercise_dict(name,category,movement_pattern,setup_notes,catalog_id,display_name,movement_family,movement_type,equipment,angle,is_custom)
-                        VALUES(?,?,?,'',NULL,?,?,?,?,?,1)""",(new_name,custom_definition["category"],custom_definition["family"].replace('_',' ').title(),new_name,custom_definition["family"],custom_definition.get("movement_type","Isolation"),custom_definition["equipment"],custom_definition.get("angle",ANGLE_NOT_SPECIFIED)))
-                else: raise ValueError("The replacement exercise does not exist.")
-            ids=[x["session_id"] for x in preview["pending_sessions"]]
-            if ids:
-                placeholders=",".join("?" for _ in ids)
-                meta=conn.execute("SELECT category,movement_type FROM exercise_dict WHERE name=?",(new_name,)).fetchone()
-                conn.execute(f"UPDATE workout_sessions SET exercise=?,category=?,movement_type=? WHERE id IN ({placeholders}) AND status=?",(new_name,meta[0] or "General",meta[1] or "Isolation",*ids,STATUS_PENDING))
-            if scope=="all_future":
-                row=conn.execute("SELECT blueprint_json FROM meso_configs WHERE meso_number=?",(meso_number,)).fetchone()
-                if row and row[0]:
-                    bp=json.loads(row[0]);bp[day]=[new_name if x==old_name else x for x in bp.get(day,[])]
-                    conn.execute("UPDATE meso_configs SET blueprint_json=? WHERE meso_number=?",(json.dumps(bp),meso_number))
-            conn.commit()
-        except Exception:
-            conn.rollback();raise
-    return preview
+from exercise_catalog import *
+def get_catalog_coverage():
+ with get_db() as c:
+  total=c.execute("SELECT COUNT(*) FROM exercise_dict").fetchone()[0];linked=c.execute("SELECT COUNT(*) FROM exercise_dict WHERE catalog_id IS NOT NULL").fetchone()[0];custom=c.execute("SELECT COUNT(*) FROM exercise_dict WHERE COALESCE(is_custom,0)=1").fetchone()[0]
+ return {"total":total,"linked":linked,"custom":custom,"unlinked":total-linked}
+def create_classified_exercise(name,category,family,equipment,angle="Not specified",movement_type="Isolation",catalog_id=None):
+ name=str(name or "").strip()
+ if not all((name,category,family,equipment)):raise ValueError("Name, category, movement family, and equipment are required.")
+ if get_angle_options(family) and angle not in get_angle_options(family):raise ValueError("Choose an angle, including Not specified.")
+ item=CATALOG_BY_ID.get(catalog_id) if catalog_id else None;pattern=item["pattern"] if item else movement_family_label(family)
+ with get_db() as c:
+  if c.execute("SELECT 1 FROM exercise_dict WHERE name=?",(name,)).fetchone():raise ValueError("Exercise already exists.")
+  c.execute("INSERT INTO exercise_dict(name,category,movement_pattern,setup_notes,catalog_id,display_name,movement_family,movement_type,equipment,angle,is_custom) VALUES(?,?,?,'',?,?,?,?,?,?,?)",(name,category,pattern,catalog_id,name,family,movement_type,equipment,angle,0 if catalog_id else 1));c.commit()
+ return name
+def link_exercise_to_catalog(name,catalog_id):
+ item=CATALOG_BY_ID.get(catalog_id)
+ if not item:raise ValueError("Unknown catalog exercise.")
+ with get_db() as c:c.execute("UPDATE exercise_dict SET catalog_id=?,movement_family=?,movement_type=?,equipment=?,angle=? WHERE name=?",(catalog_id,item["family"],item["movement_type"],item["equipment"],item.get("angle","Not specified"),name));c.execute("INSERT OR REPLACE INTO exercise_aliases(alias,catalog_id,exercise_name,source,confirmed) VALUES(?,?,?,?,1)",(name,catalog_id,name,"user"));c.commit()
+def unlink_exercise_from_catalog(name):
+ with get_db() as c:c.execute("UPDATE exercise_dict SET catalog_id=NULL WHERE name=?",(name,));c.execute("DELETE FROM exercise_aliases WHERE exercise_name=? AND source='user'",(name,));c.commit()
+def probable_dictionary_duplicates():
+ with get_db() as c:rows=c.execute("SELECT name,catalog_id,movement_family,equipment FROM exercise_dict ORDER BY name").fetchall()
+ out=[]
+ for i,a in enumerate(rows):
+  for b in rows[i+1:]:
+   if a[1] and a[1]==b[1] or (normalize_exercise_name(a[0])==normalize_exercise_name(b[0]) and a[0]!=b[0]):out.append({"first":a[0],"second":b[0],"reason":"same catalog identity" if a[1] and a[1]==b[1] else "same normalized name"})
+ return out

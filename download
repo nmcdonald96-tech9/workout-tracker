@@ -1,9 +1,7 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
-.venv/
 workout_tracker.db*
-*.snapshot
 build/
 dist/
 .flet/
