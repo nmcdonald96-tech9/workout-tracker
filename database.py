@@ -1004,8 +1004,74 @@ def probable_dictionary_duplicates():
 
 
 def exercise_exists(exercise_name):
-    name = str(exercise_name or "").strip()
-    if not name:
-        return False
+    name=str(exercise_name or "").strip()
+    if not name:return False
     with get_db() as conn:
-        return conn.execute("SELECT 1 FROM exercise_dict WHERE name = ? LIMIT 1", (name,)).fetchone() is not None
+        return conn.execute("SELECT 1 FROM exercise_dict WHERE name=? LIMIT 1",(name,)).fetchone() is not None
+
+
+def get_library_exercises(search_text=""):
+    query="""SELECT name,category,COALESCE(movement_family,''),COALESCE(movement_type,'Isolation'),COALESCE(equipment,'Other'),COALESCE(angle,'Not specified'),catalog_id,COALESCE(is_custom,0),COALESCE(setup_notes,'') FROM exercise_dict"""
+    args=[]
+    term=str(search_text or "").strip()
+    if term:
+        query += " WHERE name LIKE ? OR category LIKE ? OR movement_family LIKE ? OR equipment LIKE ?"
+        like=f"%{term}%";args=[like,like,like,like]
+    query += " ORDER BY category,name"
+    with get_db() as conn:rows=conn.execute(query,args).fetchall()
+    return [{"name":r[0],"category":r[1] or "General","family":r[2],"movement_type":r[3],"equipment":r[4],"angle":r[5],"catalog_id":r[6],"is_custom":bool(r[7]),"setup_notes":r[8]} for r in rows]
+
+
+def get_library_entry(name):
+    rows=[x for x in get_library_exercises() if x["name"]==name]
+    return rows[0] if rows else None
+
+
+def add_catalog_to_library(catalog_id,display_name=None):
+    item=CATALOG_BY_ID.get(catalog_id)
+    if not item:raise ValueError("Unknown catalog definition.")
+    name=str(display_name or item["name"]).strip()
+    if not name:raise ValueError("Exercise name is required.")
+    with get_db() as conn:
+        by_id=conn.execute("SELECT name FROM exercise_dict WHERE catalog_id=?",(catalog_id,)).fetchone()
+        if by_id:raise ValueError(f"This catalog definition is already linked to {by_id[0]}.")
+        if conn.execute("SELECT 1 FROM exercise_dict WHERE name=?",(name,)).fetchone():raise ValueError("An exercise with this name already exists. Review the existing match instead.")
+        conn.execute("""INSERT INTO exercise_dict(name,category,movement_pattern,setup_notes,catalog_id,display_name,movement_family,movement_type,equipment,angle,is_custom)
+            VALUES(?,?,?,'',?,?,?,?,?,?,0)""",(name,item["category"],item["pattern"],catalog_id,name,item["family"],item["movement_type"],item["equipment"],item.get("angle","Not specified")))
+        conn.execute("INSERT OR REPLACE INTO exercise_aliases(alias,catalog_id,exercise_name,source,confirmed) VALUES(?,?,?,?,1)",(name,catalog_id,name,"user"));conn.commit()
+    return name
+
+
+def update_library_classification(name,category,family,movement_type,equipment,angle):
+    if not all((name,category,family,movement_type,equipment)):raise ValueError("Category, family, movement type, and equipment are required.")
+    with get_db() as conn:
+        conn.execute("UPDATE exercise_dict SET category=?,movement_family=?,movement_type=?,equipment=?,angle=? WHERE name=?",(category,family,movement_type,equipment,angle or "Not specified",name));conn.commit()
+
+
+def get_match_review_items():
+    items=[]
+    for entry in get_library_exercises():
+        if entry["catalog_id"]:continue
+        exact=catalog_match(entry["name"])
+        if exact:
+            items.append({"exercise":entry,"candidate":exact["item"],"kind":"Exact name" if exact["source"]=="canonical" else "Known alias","score":100})
+            continue
+        ranked=rank_catalog_candidates(entry["name"],entry["category"],entry["family"] or None,entry["equipment"] or None,entry["angle"],limit=1)
+        if ranked and ranked[0]["score"]>=40:items.append({"exercise":entry,"candidate":ranked[0]["item"],"kind":"Possible match","score":ranked[0]["score"]})
+        else:items.append({"exercise":entry,"candidate":None,"kind":"No suggested match","score":0})
+    return items
+
+
+def safe_link_library_exercise(name,catalog_id):
+    item=CATALOG_BY_ID.get(catalog_id)
+    if not item:raise ValueError("Unknown catalog definition.")
+    with get_db() as conn:
+        collision=conn.execute("SELECT name FROM exercise_dict WHERE catalog_id=? AND name<>?",(catalog_id,name)).fetchone()
+        if collision:raise ValueError(f"Catalog definition is already linked to {collision[0]}.")
+        conn.execute("UPDATE exercise_dict SET catalog_id=?,movement_family=?,movement_type=?,equipment=?,angle=? WHERE name=?",(catalog_id,item["family"],item["movement_type"],item["equipment"],item.get("angle","Not specified"),name))
+        conn.execute("INSERT OR REPLACE INTO exercise_aliases(alias,catalog_id,exercise_name,source,confirmed) VALUES(?,?,?,?,1)",(name,catalog_id,name,"user"));conn.commit()
+
+
+def safe_unlink_library_exercise(name):
+    with get_db() as conn:
+        conn.execute("UPDATE exercise_dict SET catalog_id=NULL,is_custom=1 WHERE name=?",(name,));conn.execute("DELETE FROM exercise_aliases WHERE exercise_name=? AND source='user'",(name,));conn.commit()
