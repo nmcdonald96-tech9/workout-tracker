@@ -1001,3 +1001,11 @@ def probable_dictionary_duplicates():
   for b in rows[i+1:]:
    if a[1] and a[1]==b[1] or (normalize_exercise_name(a[0])==normalize_exercise_name(b[0]) and a[0]!=b[0]):out.append({"first":a[0],"second":b[0],"reason":"same catalog identity" if a[1] and a[1]==b[1] else "same normalized name"})
  return out
+
+
+def exercise_exists(exercise_name):
+    name = str(exercise_name or "").strip()
+    if not name:
+        return False
+    with get_db() as conn:
+        return conn.execute("SELECT 1 FROM exercise_dict WHERE name = ? LIMIT 1", (name,)).fetchone() is not None

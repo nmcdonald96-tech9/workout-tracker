@@ -1208,7 +1208,7 @@ class WorkoutTrackerApp:
         self.gen_days = {"Monday": True, "Tuesday": True, "Wednesday": True, "Thursday": True, "Friday": True, "Saturday": False, "Sunday": False}
         self.gen_length = 4
 
-        required_symbols = {"init_and_seed_db": init_and_seed_db, "calculate_set_specific_progression": calculate_set_specific_progression, "classify_set_progression": classify_set_progression}
+        required_symbols = {"init_and_seed_db": init_and_seed_db, "calculate_set_specific_progression": calculate_set_specific_progression, "classify_set_progression": classify_set_progression, "create_classified_exercise": create_classified_exercise, "movement_family_label": movement_family_label}
         missing = [name for name, value in required_symbols.items() if not callable(value)]
         if missing:
             raise RuntimeError("Installation validation failed. Check matching main.py, database.py, and constants.py. Missing: " + ", ".join(missing))
@@ -5334,6 +5334,17 @@ class WorkoutTrackerApp:
         dialog=ft.AlertDialog(title=ft.Text("Create Exercise",weight="bold"),content=ft.Container(width=360,content=ft.Column([nf,cf,ff,ef,af,matches,ft.Text("Angle appears only when meaningful. Not specified is always valid.",size=9,color="white38",italic=True)],tight=True,spacing=7)),actions=[ft.TextButton("Cancel",on_click=lambda ev:self.safe_close(dialog)),ft.ElevatedButton("Create Exercise",on_click=create)])
         self.safe_open(dialog)
 
+    def exercise_exists_locally(self, exercise_name):
+        """Package-safe dictionary existence check used by Quick Add."""
+        name = str(exercise_name or "").strip()
+        if not name:
+            return False
+        with get_db() as conn:
+            return conn.execute(
+                "SELECT 1 FROM exercise_dict WHERE name = ? LIMIT 1",
+                (name,),
+            ).fetchone() is not None
+
     def save_wizard_addition(self, e):
         ex_name = self.wizard_custom_input.value.strip() or self.wizard_exercise_dropdown.value
         if not ex_name:
@@ -5351,7 +5362,7 @@ class WorkoutTrackerApp:
         m_type = self.wizard_type_dropdown.value
         today_str = datetime.now().strftime("%Y-%m-%d")
         
-        if self.wizard_custom_input.value.strip() and not exercise_exists(ex_name):
+        if self.wizard_custom_input.value.strip() and not self.exercise_exists_locally(ex_name):
             def after_created(created_name):
                 self.wizard_custom_input.value=created_name
                 self.save_wizard_addition(None)
