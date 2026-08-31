@@ -816,6 +816,7 @@ class ExerciseCard(ft.Card):
                 ft.TextButton("Why this target?", on_click=lambda ev: [self.app.safe_close(dialog), self.open_target_explanation()]),
                 ft.TextButton("Repeat previous set", on_click=lambda ev: [self.app.safe_close(dialog), self.repeat_previous_set()]),
                 ft.TextButton("Progression history", on_click=lambda ev: [self.app.safe_close(dialog), self.open_progression_history()]),
+                ft.TextButton("Modify progression", on_click=lambda ev: [self.app.safe_close(dialog), self.app.open_exercise_progression_editor(self.exercise, self)]),
                 ft.TextButton("Swap exercise", on_click=lambda ev: [self.app.safe_close(dialog), self.open_swap_dialog(ev)]),
                 ft.TextButton("Add set", on_click=lambda ev: [self.app.safe_close(dialog), self.on_add_set(ev)]),
                 ft.TextButton("Remove last set", on_click=lambda ev: [self.app.safe_close(dialog), self.on_remove_set(ev)]),
@@ -1208,7 +1209,7 @@ class WorkoutTrackerApp:
         self.gen_days = {"Monday": True, "Tuesday": True, "Wednesday": True, "Thursday": True, "Friday": True, "Saturday": False, "Sunday": False}
         self.gen_length = 4
 
-        required_symbols = {"init_and_seed_db": init_and_seed_db, "calculate_set_specific_progression": calculate_set_specific_progression, "classify_set_progression": classify_set_progression, "create_classified_exercise": create_classified_exercise, "get_library_exercises": get_library_exercises, "add_catalog_to_library": add_catalog_to_library}
+        required_symbols = {"init_and_seed_db": init_and_seed_db, "calculate_set_specific_progression": calculate_set_specific_progression, "classify_set_progression": classify_set_progression}
         missing = [name for name, value in required_symbols.items() if not callable(value)]
         if missing:
             raise RuntimeError("Installation validation failed. Check matching main.py, database.py, and constants.py. Missing: " + ", ".join(missing))
@@ -1503,7 +1504,7 @@ class WorkoutTrackerApp:
         self.actions_menu_dialog = ft.AlertDialog(
             title=ft.Text("Quick Actions", size=16, weight="bold"),
             content=ft.Container(
-                width=340, height=610,
+                width=320,
                 content=ft.Column([
                     ft.Text("NAVIGATION", size=10, weight="bold", color="cyan300"),
                     ft.Dropdown(
@@ -1542,7 +1543,7 @@ class WorkoutTrackerApp:
                     
                     ft.Text("SETTINGS & DATA", size=10, weight="bold", color="cyan300"),
                     ft.ElevatedButton("👤 Profile Settings", on_click=self.open_settings_dialog, width=float('inf'), style=btn_style),
-                    ft.ElevatedButton("📚 Exercise Library", on_click=self.open_exercise_library, width=float('inf'), style=btn_style),
+                    ft.ElevatedButton("📚 Exercise Library", on_click=self.menu_manage_dict, width=float('inf'), style=btn_style),
                     ft.Row([
                         ft.ElevatedButton("🎯 Toggle Focus", on_click=self.toggle_workout_focus_mode, expand=True, style=btn_style),
                         ft.ElevatedButton("🛠 Diagnostics", on_click=self.open_diagnostics_dialog, expand=True, style=btn_style),
@@ -1949,6 +1950,69 @@ class WorkoutTrackerApp:
         )
         self.safe_open(self.length_dialog)
 
+    def open_exercise_progression_editor(self, exercise_name, source_card=None):
+        with get_db() as conn:
+            row=conn.execute("SELECT progression_mode,progression_step,reduction_steps,rep_ceiling,reduction_threshold,max_progress_rpe,max_progression_weight,movement_type,equipment FROM exercise_dict WHERE name=?",(exercise_name,)).fetchone()
+            latest=conn.execute("SELECT target_weight,target_reps FROM workout_sessions WHERE exercise=? ORDER BY id DESC LIMIT 1",(exercise_name,)).fetchone()
+        meta=EXERCISE_METADATA.get(exercise_name,{})
+        movement_type=(row[7] if row and row[7] else meta.get("movement_type","Isolation"))
+        equipment=(row[8] if row and row[8] else meta.get("equipment","Other"))
+        mode=ft.Dropdown(label="Progression mode",value=(row[0] if row and row[0] else "default"),options=[ft.dropdown.Option(key="default",text="Use inherited defaults"),ft.dropdown.Option(key="custom",text="Custom")])
+        step=ft.TextField(label="Weight step (lb)",value="" if not row or row[1] is None else str(row[1]),keyboard_type=ft.KeyboardType.NUMBER)
+        reduction=ft.Dropdown(label="Reduction steps",value=str(row[2] if row and row[2] is not None else 1),options=[ft.dropdown.Option(str(i)) for i in range(1,4)])
+        ceiling=ft.TextField(label="Rep ceiling",value="" if not row or row[3] is None else str(row[3]),keyboard_type=ft.KeyboardType.NUMBER)
+        threshold=ft.TextField(label="Reduce below (%)",value="" if not row or row[4] is None else f"{float(row[4])*100:g}",keyboard_type=ft.KeyboardType.NUMBER)
+        max_rpe=ft.Dropdown(label="Maximum progression RPE",value=str(row[5] if row and row[5] is not None else 9.5),options=[ft.dropdown.Option(f"{x/2:.1f}") for x in range(12,21)])
+        max_weight=ft.TextField(label="Maximum progression weight (lb)",value="" if not row or row[6] is None else f"{float(row[6]):g}",hint_text="Optional; blank means no exercise-specific maximum",keyboard_type=ft.KeyboardType.NUMBER)
+        preview=ft.Text("",size=10,color="cyan200")
+        simulation=ft.Text("",size=10,color="green300",weight="bold")
+        def values_from_controls():
+            custom=mode.value=="custom"
+            if not custom:return ("default",None,None,None,None,None,None)
+            vals=(float(step.value) if str(step.value or '').strip() else None,int(reduction.value) if reduction.value else None,int(ceiling.value) if str(ceiling.value or '').strip() else None,float(threshold.value)/100 if str(threshold.value or '').strip() else None,float(max_rpe.value) if max_rpe.value else None,float(max_weight.value) if str(max_weight.value or '').strip() else None)
+            st,red,ceil,thr,mrpe,mw=vals
+            if st is not None and st<=0:raise ValueError("Weight step must be positive.")
+            if red is not None and not 1<=red<=3:raise ValueError("Reduction steps must be 1 to 3.")
+            if ceil is not None and not 2<=ceil<=50:raise ValueError("Rep ceiling must be 2 to 50.")
+            if thr is not None and not .50<=thr<=.85:raise ValueError("Reduction threshold must be 50% to 85%.")
+            if mrpe is not None and not 6<=mrpe<=10:raise ValueError("Maximum RPE must be 6 to 10.")
+            if mw is not None and mw<=0:raise ValueError("Maximum progression weight must be positive.")
+            return ("custom",*vals)
+        def refresh(ev=None):
+            try:
+                effective=get_effective_progression_settings(exercise_name,movement_type,equipment,get_user_age(),get_user_progression_profile())
+                if mode.value=="custom":
+                    _,st,red,ceil,thr,mrpe,mw=values_from_controls()
+                    overrides={"progression_step":st,"reduction_steps":red,"rep_ceiling":ceil,"reduction_threshold":thr,"max_progress_rpe":mrpe,"max_progression_weight":mw}
+                    for k,v in overrides.items():
+                        if v is not None:effective[k]=v
+                cap=effective.get("max_progression_weight")
+                preview.value=f"Effective: {effective['progression_step']:g} lb step • rep ceiling {int(effective['rep_ceiling'])} • reduce below {effective['reduction_threshold']*100:g}% • max RPE {effective['max_progress_rpe']:g} • max load {f'{float(cap):g} lb' if cap is not None else 'none'}"
+                current_w,current_r=latest if latest else (0 if equipment=="Bodyweight" else 45,10)
+                simulation.value="If the next target succeeds: "+simulate_progression(effective,float(current_w or 0),int(current_r or 10),equipment)["summary"]
+            except Exception as err:
+                preview.value=str(err);simulation.value=""
+            for control in (preview,simulation):
+                try:control.update()
+                except Exception:pass
+        for control in (mode,step,reduction,ceiling,threshold,max_rpe,max_weight):control.on_change=refresh
+        def save(ev=None):
+            try:
+                saved=values_from_controls()
+                with get_db() as conn:
+                    conn.execute("UPDATE exercise_dict SET progression_mode=?,progression_step=?,reduction_steps=?,rep_ceiling=?,reduction_threshold=?,max_progress_rpe=?,max_progression_weight=? WHERE name=?",(*saved,exercise_name));conn.commit()
+                invalidate_progression_settings_cache(exercise_name)
+                self.safe_close(dialog);self.show_snackbar(f"Progression settings saved for {exercise_name}.","green300")
+                self.sets.clear();self.rebuild_entire_display()
+            except Exception as err:self.show_snackbar(str(err),"red300")
+        def reset(ev=None):
+            with get_db() as conn:
+                conn.execute("UPDATE exercise_dict SET progression_mode='default',progression_step=NULL,reduction_steps=NULL,rep_ceiling=NULL,reduction_threshold=NULL,max_progress_rpe=NULL,max_progression_weight=NULL WHERE name=?",(exercise_name,));conn.commit()
+            invalidate_progression_settings_cache(exercise_name);self.safe_close(dialog);self.show_snackbar(f"{exercise_name} restored to inherited progression defaults.","green300");self.sets.clear();self.rebuild_entire_display()
+        current_text=f"Current target: {float(latest[0]):g} lb × {int(latest[1])}" if latest else "Current target: no session target available"
+        dialog=ft.AlertDialog(title=ft.Text(f"Modify Progression: {exercise_name}",size=15,weight="bold"),content=ft.Container(width=370,height=500,content=ft.Column([ft.Text(current_text,size=10,color="white70"),mode,step,reduction,ceiling,threshold,max_rpe,max_weight,ft.Text("The maximum limits automatic prescriptions. Completed sets and historical targets are never changed.",size=9,color="amber200"),preview,simulation],scroll="auto",spacing=7)),actions=[ft.TextButton("Reset Defaults",on_click=reset),ft.TextButton("Cancel",on_click=lambda ev:self.safe_close(dialog)),ft.ElevatedButton("Save",on_click=save)])
+        refresh();self.safe_open(dialog)
+
     def menu_manage_dict(self, e=None):
         try:
             self.close_actions_menu()
@@ -1995,9 +2059,13 @@ class WorkoutTrackerApp:
             )
 
             self.dict_dialog = ft.AlertDialog(
-                title=ft.Text("Manage Dictionary", size=16, weight="bold"),
+                title=ft.Text("📚 Exercise Library", size=16, weight="bold"),
                 content=ft.Container(width=350, height=560, content=ft.Column([
-                    ft.Text("Modify category, progression, name, or remove an exercise.", size=11, color="white54"),
+                    ft.Row([
+                        ft.ElevatedButton("MY EXERCISES", disabled=True, expand=True),
+                        ft.ElevatedButton("BROWSE CATALOG", on_click=lambda ev: [self.safe_close(self.dict_dialog), self.open_catalog_browser()], expand=True),
+                    ], spacing=4),
+                    ft.Text("My Exercises: modify classification, progression, name, or remove an exercise.", size=11, color="white54"),
                     self.dict_dropdown,
                     ft.Row([self.dict_cat_dropdown, ft.ElevatedButton("Update", style=ft.ButtonStyle(bgcolor="blue700", color="white", padding=10), on_click=self.update_dictionary_category)], spacing=6),
                     ft.Divider(height=6, color="white10"),
@@ -2006,7 +2074,7 @@ class WorkoutTrackerApp:
                     ft.Row([self.dict_progression_step, self.dict_reduction_steps], spacing=6),
                     ft.Row([self.dict_rep_ceiling, self.dict_reduction_threshold], spacing=6),
                     self.dict_max_rpe, self.dict_max_progression_weight, self.dict_progression_preview, self.dict_progression_simulation,
-                    ft.Row([ft.TextButton("Reset Defaults", on_click=self.reset_dictionary_progression), ft.ElevatedButton("Save Progression", on_click=self.save_dictionary_progression, style=ft.ButtonStyle(bgcolor="purple700", color="white"))], alignment="spaceBetween"),
+                    ft.Row([ft.TextButton("Reset Defaults", on_click=self.reset_dictionary_progression), ft.ElevatedButton("Open Progression Editor", on_click=lambda ev: self.open_exercise_progression_editor(self.dict_dropdown.value) if self.dict_dropdown.value else self.show_snackbar("Select an exercise first.", "red300"), style=ft.ButtonStyle(bgcolor="purple700", color="white"))], alignment="spaceBetween"),
                     ft.Divider(height=6, color="white10"), self.dict_rename_field,
                     ft.ElevatedButton("Rename Exercise", style=ft.ButtonStyle(bgcolor="teal700", color="white"), on_click=self.rename_dictionary_exercise, width=float('inf')),
                     ft.Divider(height=6, color="white10"),
@@ -5290,91 +5358,6 @@ class WorkoutTrackerApp:
         self.rebuild_navigation_headers()
         self.rebuild_entire_display()
         self.show_snackbar(f"Custom Meso {new_meso_num} Stamped Successfully!", "green300")
-
-    def open_exercise_library(self, e=None, initial_view="mine"):
-        self.close_actions_menu()
-        state={"view":initial_view,"category":"All","equipment":"All","status":"All"}
-        search=ft.TextField(label="Search Exercise Library",text_size=12)
-        result_list=ft.ListView(expand=True,spacing=6,build_controls_on_demand=False)
-        status_text=ft.Text("",size=9,color="cyan200")
-        def chip(label,key,value):
-            return ft.TextButton(label,on_click=lambda ev:self._library_set_view(state,key,value,render),style=ft.ButtonStyle(padding=6))
-        nav=ft.Row([chip("MY EXERCISES","view","mine"),chip("BROWSE CATALOG","view","catalog"),chip("REVIEW MATCHES","view","matches")],spacing=2,scroll="auto")
-        def render(ev=None):
-            result_list.controls.clear();term=str(search.value or "").strip().lower()
-            if state["view"]=="mine":
-                rows=get_library_exercises(term)
-                status_text.value=f"{len(rows)} exercises in My Exercises"
-                for x in rows:
-                    linked="Catalog linked" if x["catalog_id"] else "Custom or unlinked"
-                    result_list.controls.append(ft.Container(content=ft.Column([ft.Text(x["name"],size=11,weight="bold"),ft.Text(f"{x['category']} • {movement_family_label(x['family']) if x['family'] else 'Family not specified'} • {x['equipment']} • {linked}",size=9,color="white54")],spacing=2),bgcolor="white10",border_radius=7,padding=8,ink=True,on_click=lambda ev,n=x["name"]:self.open_library_exercise_detail(n,render)))
-            elif state["view"]=="catalog":
-                items=[x for x in BUILTIN_EXERCISE_CATALOG if not term or term in (x["name"]+" "+x["category"]+" "+movement_family_label(x["family"])+" "+x["equipment"]).lower()]
-                status_text.value=f"{len(items)} catalog definitions"
-                for x in items:
-                    existing=get_library_entry(x["name"]);label="In My Exercises" if existing else "Tap for details"
-                    result_list.controls.append(ft.Container(content=ft.Column([ft.Text(x["name"],size=11,weight="bold"),ft.Text(f"{x['category']} • {movement_family_label(x['family'])} • {x['equipment']} • {x.get('angle','Not specified')}",size=9,color="white54"),ft.Text(label,size=9,color="green300" if existing else "cyan200")],spacing=2),bgcolor="white10",border_radius=7,padding=8,ink=True,on_click=lambda ev,c=x:self.open_catalog_exercise_detail(c,render)))
-            else:
-                rows=get_match_review_items();rows=[x for x in rows if not term or term in x["exercise"]["name"].lower()]
-                status_text.value=f"{len(rows)} unlinked exercises to review"
-                for x in rows:
-                    candidate=x["candidate"];detail=f"{x['kind']}: {candidate['name']}" if candidate else x["kind"]
-                    result_list.controls.append(ft.Container(content=ft.Column([ft.Text(x["exercise"]["name"],size=11,weight="bold"),ft.Text(detail,size=9,color="cyan200")],spacing=2),bgcolor="white10",border_radius=7,padding=8,ink=True,on_click=lambda ev,item=x:self.open_match_review_detail(item,render)))
-            try:status_text.update();result_list.update()
-            except Exception:pass
-        search.on_change=render
-        dialog=ft.AlertDialog(title=ft.Text("📚 Exercise Library",weight="bold"),content=ft.Container(width=390,height=530,content=ft.Column([nav,status_text,search,result_list],expand=True,spacing=6)),actions=[ft.TextButton("Close",on_click=lambda ev:self.safe_close(dialog))],inset_padding=12,content_padding=14)
-        self.exercise_library_dialog=dialog;render();self.safe_open(dialog)
-
-    def _library_set_view(self,state,key,value,render):
-        state[key]=value;render()
-
-    def open_catalog_exercise_detail(self,item,refresh):
-        existing_by_id=None
-        with get_db() as conn:existing_by_id=conn.execute("SELECT name FROM exercise_dict WHERE catalog_id=?",(item["id"],)).fetchone()
-        preferred=ft.TextField(label="Name in My Exercises",value=item["name"],text_size=12)
-        actions=[ft.TextButton("Close",on_click=lambda ev:self.safe_close(dialog))]
-        if existing_by_id:
-            actions.insert(0,ft.TextButton("View My Exercise",on_click=lambda ev:self._open_existing_from_catalog(dialog,existing_by_id[0],refresh)))
-        else:
-            def add(ev=None):
-                try:add_catalog_to_library(item["id"],preferred.value);self.safe_close(dialog);refresh();self.show_snackbar(f"Added {preferred.value} to My Exercises.","green300")
-                except Exception as err:self.show_snackbar(str(err),"red300")
-            actions.insert(0,ft.ElevatedButton("Add to My Exercises",on_click=add))
-        dialog=ft.AlertDialog(title=ft.Text(item["name"],weight="bold"),content=ft.Column([ft.Text(f"{item['category']} • {movement_family_label(item['family'])} • {item['movement_type']} • {item['equipment']}",size=10,color="cyan200"),ft.Text(f"Angle: {item.get('angle','Not specified')}",size=10,color="white70"),preferred],tight=True,spacing=8),actions=actions)
-        self.safe_open(dialog)
-
-    def _open_existing_from_catalog(self,dialog,name,refresh):
-        self.safe_close(dialog);self.open_library_exercise_detail(name,refresh)
-
-    def open_library_exercise_detail(self,name,refresh):
-        x=get_library_entry(name)
-        if not x:return
-        categories=sorted({i["category"] for i in BUILTIN_EXERCISE_CATALOG}|{"General","Custom"});families=sorted({i["family"] for i in BUILTIN_EXERCISE_CATALOG});equipment=["Barbell","Dumbbell","Cable","Machine","Bodyweight","Plate","Other"]
-        cat=ft.Dropdown(label="Category",value=x["category"],options=[ft.dropdown.Option(v) for v in categories]);fam=ft.Dropdown(label="Movement family",value=x["family"] or None,options=[ft.dropdown.Option(key=v,text=movement_family_label(v)) for v in families]);typ=ft.Dropdown(label="Movement type",value=x["movement_type"],options=[ft.dropdown.Option("Compound"),ft.dropdown.Option("Isolation")]);eq=ft.Dropdown(label="Equipment",value=x["equipment"],options=[ft.dropdown.Option(v) for v in equipment]);angle=ft.Dropdown(label="Angle",value=x["angle"],options=[ft.dropdown.Option(v) for v in sorted(set(["Not specified","Flat / Mid","Low-to-High","High-to-Low","Low Incline","High Incline","Decline","Upright","Other"]))])
-        status=ft.Text(f"Catalog status: {'Linked' if x['catalog_id'] else 'Custom or unlinked'}",size=10,color="green300" if x["catalog_id"] else "amber300")
-        def save(ev=None):
-            try:update_library_classification(name,cat.value,fam.value,typ.value,eq.value,angle.value);self.safe_close(dialog);refresh();self.show_snackbar("Exercise classification updated.","green300")
-            except Exception as err:self.show_snackbar(str(err),"red300")
-        actions=[ft.TextButton("Close",on_click=lambda ev:self.safe_close(dialog)),ft.ElevatedButton("Save",on_click=save)]
-        if x["catalog_id"]:
-            def unlink(ev=None):safe_unlink_library_exercise(name);self.safe_close(dialog);refresh();self.show_snackbar("Catalog definition unlinked. History was preserved.","green300")
-            actions.insert(0,ft.TextButton("Unlink Definition",on_click=unlink))
-        dialog=ft.AlertDialog(title=ft.Text(name,weight="bold"),content=ft.Container(width=360,height=430,content=ft.Column([status,cat,fam,typ,eq,angle,ft.Text("Progression settings and workout history are preserved.",size=9,color="white54")],scroll="auto",spacing=7)),actions=actions)
-        self.safe_open(dialog)
-
-    def open_match_review_detail(self,item,refresh):
-        ex=item["exercise"];candidate=item["candidate"]
-        controls=[ft.Text(ex["name"],size=13,weight="bold"),ft.Text(item["kind"],size=10,color="cyan200")]
-        actions=[ft.TextButton("Keep Separate",on_click=lambda ev:self.safe_close(dialog))]
-        if candidate:
-            controls.append(ft.Text(f"Suggested definition: {candidate['name']}\n{candidate['category']} • {movement_family_label(candidate['family'])} • {candidate['equipment']}",size=10,color="white70"))
-            def link(ev=None):
-                try:safe_link_library_exercise(ex["name"],candidate["id"]);self.safe_close(dialog);refresh();self.show_snackbar("Definition linked. Workout history was not changed.","green300")
-                except Exception as err:self.show_snackbar(str(err),"red300")
-            actions.append(ft.ElevatedButton("Link Definition",on_click=link))
-        dialog=ft.AlertDialog(title=ft.Text("Review Catalog Match",weight="bold"),content=ft.Column(controls,tight=True,spacing=7),actions=actions)
-        self.safe_open(dialog)
 
     def open_catalog_browser(self, e=None):
         try: self.close_actions_menu()
