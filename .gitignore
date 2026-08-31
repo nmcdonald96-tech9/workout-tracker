@@ -1,0 +1,33 @@
+# Python compiled files and cache directories
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Pytest cache
+.py*est_cache/
+
+# Virtual environments*.venv/
+venv/
+env/
+
+# IronCycle loc*l database
+workout_tracker.db
+work*ut_tracker.db-wal
+workout_tracker.*b-shm
+*.snapshot
+
+# Temporary and *ackup files
+*.tmp
+*.bak
+*.swp
+*~
+
+* Build output
+build/
+dist/
+.flet*
+.flutter/
+
+# Operating-system fil*s
+.DS_Store
+Thumbs.db
