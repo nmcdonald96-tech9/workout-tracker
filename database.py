@@ -966,3 +966,108 @@ def calculate_plates_per_side(exercise_name, total_weight_str):
         return f"{prefix}{', '.join(breakdown)} lbs" if breakdown else f"Empty {bar_label}"
     except:
         return ""
+
+
+# =======================================
+# --- EVIDENCE-GATED EXERCISE INSIGHTS ---
+# =======================================
+def _median(values):
+    values = sorted(float(v) for v in values if v is not None)
+    if not values:
+        return None
+    mid = len(values) // 2
+    return values[mid] if len(values) % 2 else (values[mid - 1] + values[mid]) / 2.0
+
+
+def get_comparable_exercise_sessions(exercise_name, limit=8):
+    """Return recent completed, non-deload sessions aggregated to one record each."""
+    with get_db() as conn:
+        rows = conn.execute("""
+            SELECT ws.id, ws.date, ws.week, COALESCE(ws.session_tags, ''),
+                   ws.bodyweight_snapshot, s.weight, s.reps, s.rpe,
+                   s.target_weight, s.target_reps, s.rest_seconds
+            FROM workout_sessions ws
+            JOIN workout_sets s ON s.session_id = ws.id
+            WHERE ws.exercise = ? AND ws.status = 'Completed'
+              AND COALESCE(ws.week, '') != 'Deload' AND s.is_complete = 1
+            ORDER BY COALESCE(ws.date, '') DESC, ws.id DESC, s.set_number ASC
+        """, (exercise_name,)).fetchall()
+    sessions = {}
+    is_bodyweight = EXERCISE_METADATA.get(exercise_name, {}).get("equipment") == "Bodyweight"
+    fallback_bw = get_user_bodyweight()
+    for sid, date, week, tags, snap_bw, weight, reps, rpe, target_w, target_r, rest in rows:
+        item = sessions.setdefault(sid, {"session_id":sid,"date":date,"week":week,"tags":tags,"sets":[]})
+        try:
+            w=float(weight or 0); r=int(reps or 0); effort=float(rpe) if rpe is not None else None
+            tw=float(target_w) if target_w is not None else w; tr=int(target_r) if target_r is not None else max(1,r)
+        except (TypeError, ValueError):
+            continue
+        if r <= 0:
+            continue
+        bw = float(snap_bw if snap_bw is not None else fallback_bw) if is_bodyweight else 0.0
+        item["sets"].append({"weight":w,"reps":r,"rpe":effort,"target_weight":tw,"target_reps":max(1,tr),"rest":rest,"e1rm":calculate_e1rm(w,r,bw)})
+    result=[]
+    for item in sessions.values():
+        sets=item.pop("sets")
+        if not sets:
+            continue
+        heaviest=max(sets,key=lambda x:(x["weight"],x["reps"]))
+        rpes=[x["rpe"] for x in sets if x["rpe"] is not None and x["rpe"]>0]
+        rests=[x["rest"] for x in sets if x["rest"] is not None and x["rest"]>=0]
+        completion=[min(1.2,(x["reps"]/x["target_reps"])*(x["weight"]/(x["target_weight"] or 1) if x["target_weight"]>0 else 1.0)) for x in sets]
+        item.update({"working_weight":heaviest["weight"],"working_reps":heaviest["reps"],"best_e1rm":max(x["e1rm"] for x in sets),"avg_rpe":sum(rpes)/len(rpes) if rpes else None,"target_completion":sum(completion)/len(completion),"median_rest":_median(rests),"set_count":len(sets)})
+        result.append(item)
+        if len(result)>=max(1,int(limit or 8)):
+            break
+    return result
+
+
+def analyze_exercise_trend(exercise_name, limit=8):
+    """Classify a recent exercise trend and expose every supporting signal."""
+    sessions=get_comparable_exercise_sessions(exercise_name,limit)
+    n=len(sessions)
+    evidence_level="Insufficient Data" if n<3 else "Early Signal" if n==3 else "Trend Available" if n<=5 else "Established Recent Trend"
+    result={"exercise":exercise_name,"status":"Insufficient Data","evidence_level":evidence_level,"session_count":n,"signals":[],"sessions":sessions,"high_rpe_signal":False,"readiness_relationship":None}
+    if n<3:
+        result["signals"].append(f"{n} comparable session(s); at least 3 are required.")
+        return result
+    chronological=list(reversed(sessions))
+    pivot=max(1,len(chronological)//2)
+    early=chronological[:pivot]; recent=chronological[pivot:]
+    def avg(group,key):
+        vals=[x[key] for x in group if x.get(key) is not None]
+        return sum(vals)/len(vals) if vals else None
+    changes={}
+    for key in ("working_weight","working_reps","best_e1rm","avg_rpe","target_completion","median_rest"):
+        a,b=avg(early,key),avg(recent,key); changes[key]=None if a is None or b is None else b-a
+    weight_pct=(changes["working_weight"]/(avg(early,"working_weight") or 1))*100 if changes["working_weight"] is not None else 0
+    e1rm_pct=(changes["best_e1rm"]/(avg(early,"best_e1rm") or 1))*100 if changes["best_e1rm"] is not None else 0
+    rep_delta=changes["working_reps"] or 0
+    recent_rpes=[x["avg_rpe"] for x in recent if x.get("avg_rpe") is not None]
+    result["high_rpe_signal"]=len(recent_rpes)>=3 and sum(recent_rpes[-3:])/3>=9.2 and not any("PR Attempt" in str(x.get("tags","")) for x in recent[-3:])
+    plateau=n>=4 and abs(weight_pct)<1.0 and abs(rep_delta)<1.0 and abs(e1rm_pct)<2.0 and (avg(recent,"target_completion") or 1)<0.98
+    upward=weight_pct>=2.0 or e1rm_pct>=2.0 or rep_delta>=1.0
+    downward=weight_pct<=-2.0 or e1rm_pct<=-3.0
+    if plateau: result["status"]="Possible Plateau"
+    elif upward and not downward: result["status"]="Trending Up"
+    elif upward and downward: result["status"]="Mixed"
+    elif abs(weight_pct)<1.0 and abs(rep_delta)<1.0 and abs(e1rm_pct)<2.0: result["status"]="Stable"
+    else: result["status"]="Mixed"
+    result["changes"]={"load_pct":round(weight_pct,1),"reps":round(rep_delta,1),"e1rm_pct":round(e1rm_pct,1),"rpe":round(changes["avg_rpe"],2) if changes["avg_rpe"] is not None else None,"rest_seconds":round(changes["median_rest"],1) if changes["median_rest"] is not None else None}
+    result["signals"].extend([f"{n} comparable completed non-deload sessions analyzed.",f"Working load change: {weight_pct:+.1f}%.",f"Working reps change: {rep_delta:+.1f}.",f"Estimated strength change: {e1rm_pct:+.1f}%."])
+    if result["high_rpe_signal"]: result["signals"].append("The latest 3 ordinary sessions averaged RPE 9.2 or higher.")
+    # Readiness association, only with at least 3 sessions in both groups.
+    with get_db() as conn:
+        ready=conn.execute("""
+            SELECT ws.id, (rl.sleep+rl.joints+rl.drive)/3.0
+            FROM workout_sessions ws JOIN readiness_logs rl
+              ON rl.meso_number=ws.meso_number AND rl.week=ws.week AND rl.day_of_week=ws.day_of_week
+            WHERE ws.exercise=? AND ws.status='Completed' AND COALESCE(ws.week,'')!='Deload'
+            GROUP BY ws.id ORDER BY COALESCE(ws.date,'') DESC, ws.id DESC LIMIT ?
+        """,(exercise_name,max(8,int(limit or 8)))).fetchall()
+    readiness={sid:score for sid,score in ready if score is not None}
+    high=[x["target_completion"] for x in sessions if x["session_id"] in readiness and readiness[x["session_id"]]>=4]
+    low=[x["target_completion"] for x in sessions if x["session_id"] in readiness and readiness[x["session_id"]]<4]
+    if len(high)>=3 and len(low)>=3:
+        result["readiness_relationship"]={"higher_count":len(high),"lower_count":len(low),"higher_completion":round(sum(high)/len(high)*100,1),"lower_completion":round(sum(low)/len(low)*100,1)}
+    return result

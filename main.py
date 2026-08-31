@@ -809,6 +809,40 @@ class ExerciseCard(ft.Card):
         )
         self.app.safe_open(dialog)
 
+    def open_exercise_insights(self, e=None):
+        try:
+            insight = analyze_exercise_trend(self.exercise, limit=8)
+            status_colors = {"Trending Up":"green300","Stable":"cyan300","Mixed":"amber300","Possible Plateau":"red300","Insufficient Data":"white54"}
+            changes = insight.get("changes", {})
+            controls = [
+                ft.Text(insight["status"], size=18, weight="bold", color=status_colors.get(insight["status"], "white")),
+                ft.Text(f"{insight['evidence_level']} • {insight['session_count']} comparable session(s)", size=10, color="white54"),
+            ]
+            if changes:
+                controls.append(ft.Row([
+                    make_helper_chip(f"LOAD {changes.get('load_pct',0):+.1f}%", "bluegrey900", "cyan100"),
+                    make_helper_chip(f"REPS {changes.get('reps',0):+.1f}", "bluegrey900", "green100"),
+                    make_helper_chip(f"e1RM {changes.get('e1rm_pct',0):+.1f}%", "bluegrey900", "purple100"),
+                ], spacing=5, wrap=True))
+                if changes.get("rpe") is not None:
+                    controls.append(ft.Text(f"Average RPE change: {changes['rpe']:+.2f}", size=10, color="white70"))
+                if changes.get("rest_seconds") is not None:
+                    controls.append(ft.Text(f"Median rest change: {changes['rest_seconds']:+.0f} sec", size=10, color="white70"))
+            if insight.get("high_rpe_signal"):
+                controls.append(ft.Container(content=ft.Text("Recent logged effort has remained elevated. Review the individual sessions before changing the plan.", size=10, color="amber200"), bgcolor="amber900", padding=8, border_radius=7))
+            relationship=insight.get("readiness_relationship")
+            if relationship:
+                controls.append(ft.Text(f"Readiness association: higher-readiness target completion {relationship['higher_completion']:.1f}% vs lower-readiness {relationship['lower_completion']:.1f}% ({relationship['higher_count']} and {relationship['lower_count']} sessions).", size=10, color="cyan200"))
+            controls.append(ft.Divider(height=8, color="white10"))
+            controls.append(ft.Text("Why this trend?", size=12, weight="bold", color="cyan300"))
+            controls.extend(ft.Text("• " + line, size=10, color="white70") for line in insight.get("signals", []))
+            controls.append(ft.Text("Observational only. IronCycle does not automatically change the plan from this result.", size=9, color="white38", italic=True))
+            dialog=ft.AlertDialog(title=ft.Text(f"Exercise Insights: {self.exercise}", size=15, weight="bold"), content=ft.Container(width=380,height=430,content=ft.Column(controls,scroll="auto",spacing=7)), actions=[ft.TextButton("Close",on_click=lambda ev:self.app.safe_close(dialog))])
+            self.app.safe_open(dialog)
+        except Exception:
+            self.app.show_snackbar("Exercise insights are temporarily unavailable.", "red300")
+            traceback.print_exc()
+
     def open_exercise_actions(self, e=None):
         dialog = ft.AlertDialog(
             title=ft.Text(self.exercise, size=15, weight="bold"),
@@ -816,6 +850,7 @@ class ExerciseCard(ft.Card):
                 ft.TextButton("Why this target?", on_click=lambda ev: [self.app.safe_close(dialog), self.open_target_explanation()]),
                 ft.TextButton("Repeat previous set", on_click=lambda ev: [self.app.safe_close(dialog), self.repeat_previous_set()]),
                 ft.TextButton("Progression history", on_click=lambda ev: [self.app.safe_close(dialog), self.open_progression_history()]),
+                ft.TextButton("Exercise insights", on_click=lambda ev: [self.app.safe_close(dialog), self.open_exercise_insights()]),
                 ft.TextButton("Swap exercise", on_click=lambda ev: [self.app.safe_close(dialog), self.open_swap_dialog(ev)]),
                 ft.TextButton("Add set", on_click=lambda ev: [self.app.safe_close(dialog), self.on_add_set(ev)]),
                 ft.TextButton("Remove last set", on_click=lambda ev: [self.app.safe_close(dialog), self.on_remove_set(ev)]),
