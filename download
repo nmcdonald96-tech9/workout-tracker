@@ -1,9 +1,0 @@
-__pycache__/
-*.py[cod]
-.pytest_cache/
-workout_tracker.db*
-*.bak
-build/
-dist/
-.flet/
-.flutter/
