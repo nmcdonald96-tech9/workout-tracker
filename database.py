@@ -66,6 +66,36 @@ def init_and_seed_db():
             if column_name not in columns:
                 cursor.execute(f"ALTER TABLE exercise_dict ADD COLUMN {column_name} {column_type}")
                 conn.commit()
+        # --- SCHEMA 11: PERSISTENT EXERCISE IDENTITY AND CLASSIFICATION ---
+        cursor.execute("PRAGMA table_info(exercise_dict)")
+        columns = [info[1] for info in cursor.fetchall()]
+        identity_columns = {
+            "catalog_id": "TEXT",
+            "display_name": "TEXT",
+            "movement_family": "TEXT",
+            "movement_type": "TEXT DEFAULT 'Isolation'",
+            "equipment": "TEXT DEFAULT 'Other'",
+            "angle": "TEXT DEFAULT 'Not specified'",
+            "is_custom": "INTEGER DEFAULT 0",
+        }
+        for column_name, column_type in identity_columns.items():
+            if column_name not in columns:
+                cursor.execute(f"ALTER TABLE exercise_dict ADD COLUMN {column_name} {column_type}")
+                conn.commit()
+        cursor.execute("UPDATE exercise_dict SET display_name=name WHERE display_name IS NULL OR TRIM(display_name)='' ")
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS exercise_aliases (
+                alias TEXT PRIMARY KEY,
+                catalog_id TEXT,
+                exercise_name TEXT,
+                source TEXT DEFAULT 'user',
+                confirmed INTEGER DEFAULT 0,
+                FOREIGN KEY(exercise_name) REFERENCES exercise_dict(name) ON DELETE CASCADE
+            )
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_exercise_dict_catalog_id ON exercise_dict(catalog_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_exercise_aliases_exercise ON exercise_aliases(exercise_name)")
+        conn.commit()
         
         cursor.execute(
             f"CREATE TABLE IF NOT EXISTS workout_sessions ("
@@ -969,105 +999,219 @@ def calculate_plates_per_side(exercise_name, total_weight_str):
 
 
 # =======================================
-# --- EVIDENCE-GATED EXERCISE INSIGHTS ---
+# --- MESOCYCLE PLANNING FOUNDATION ---
 # =======================================
-def _median(values):
-    values = sorted(float(v) for v in values if v is not None)
-    if not values:
+from exercise_catalog import (
+    BUILTIN_EXERCISE_CATALOG, CATALOG_BY_ID, ANGLE_NOT_SPECIFIED,
+    get_angle_options, angle_response_required, find_catalog_match,
+    rank_catalog_candidates,
+)
+
+
+def exercise_exists(exercise_name):
+    with get_db() as conn:
+        return conn.execute("SELECT 1 FROM exercise_dict WHERE name=?", (exercise_name,)).fetchone() is not None
+
+
+def get_recent_exercise_set_count(exercise_name, fallback=2):
+    with get_db() as conn:
+        row=conn.execute("""
+            SELECT COUNT(s.id) FROM workout_sessions ws
+            JOIN workout_sets s ON s.session_id=ws.id
+            WHERE ws.exercise=? AND ws.status='Completed' AND s.is_complete=1
+              AND ws.id=(SELECT id FROM workout_sessions WHERE exercise=? AND status='Completed' ORDER BY COALESCE(date,'') DESC,id DESC LIMIT 1)
+        """,(exercise_name,exercise_name)).fetchone()
+    count=int(row[0] or 0) if row else 0
+    return count if count>0 else max(1,int(fallback or 2))
+
+
+def _planner_exercise_details(name):
+    match=find_catalog_match(name)
+    if match:
+        c=match["catalog"]
+        return {"name":name,"category":c["category"],"family":c["family"],"pattern":c["pattern"],"movement_type":c["movement_type"],"equipment":c["equipment"],"angle":c.get("angle",ANGLE_NOT_SPECIFIED),"catalog_id":c["id"]}
+    with get_db() as conn:
+        row=conn.execute("SELECT category,movement_pattern FROM exercise_dict WHERE name=?",(name,)).fetchone()
+    meta=EXERCISE_METADATA.get(name,{})
+    if not row and not meta:
         return None
-    mid = len(values) // 2
-    return values[mid] if len(values) % 2 else (values[mid - 1] + values[mid]) / 2.0
+    return {"name":name,"category":row[0] if row else meta.get("category","General"),"family":None,"pattern":row[1] if row else meta.get("pattern","General"),"movement_type":meta.get("movement_type","Isolation"),"equipment":meta.get("equipment","Other"),"angle":ANGLE_NOT_SPECIFIED,"catalog_id":None}
 
 
-def get_comparable_exercise_sessions(exercise_name, limit=8):
-    """Return recent completed, non-deload sessions aggregated to one record each."""
+def validate_custom_exercise_definition(name, category, family, equipment, angle=ANGLE_NOT_SPECIFIED):
+    errors=[]
+    if not str(name or '').strip(): errors.append("Exercise name is required.")
+    if not str(category or '').strip(): errors.append("Category is required.")
+    if not str(family or '').strip(): errors.append("Movement family is required.")
+    if not str(equipment or '').strip(): errors.append("Equipment is required.")
+    options=get_angle_options(family)
+    if options and angle not in options: errors.append("Choose an angle option, including Not specified.")
+    return {"valid":not errors,"errors":errors,"angle_required_response":bool(options),"angle":angle if options else ANGLE_NOT_SPECIFIED}
+
+
+def estimate_blueprint_sets(blueprint, selected_days, fallback_sets=2):
+    day_summaries={}; category_summary={}
+    for day in selected_days:
+        exercises=list((blueprint or {}).get(day,[]) or [])
+        day={"day":day,"exercise_count":len(exercises),"estimated_sets":0,"categories":{},"patterns":{},"planned_rest_day":not exercises}
+        for name in exercises:
+            details=_planner_exercise_details(name) or {"category":"General","pattern":"Unknown"}
+            sets=get_recent_exercise_set_count(name,fallback_sets)
+            day["estimated_sets"]+=sets
+            day["categories"][details["category"]]=day["categories"].get(details["category"],0)+sets
+            day["patterns"][details["pattern"]]=day["patterns"].get(details["pattern"],0)+1
+            cat=category_summary.setdefault(details["category"],{"planned_sets":0,"exercise_occurrences":0,"days":[]})
+            cat["planned_sets"]+=sets;cat["exercise_occurrences"]+=1
+            if day["day"] not in cat["days"]:cat["days"].append(day["day"])
+        day_summaries[day["day"]]=day
+    return {"day_summaries":day_summaries,"category_summary":category_summary,"estimated_weekly_sets":sum(x["estimated_sets"] for x in day_summaries.values()),"assumption":"Most recent completed set count; exercises without history use 2 estimated sets."}
+
+
+def validate_meso_blueprint(blueprint, selected_days, meso_length, daily_exercise_cap=0):
+    errors=[];warnings=[];notices=[]
+    selected=list(selected_days or [])
+    if not selected: errors.append({"code":"NO_SELECTED_DAYS","message":"Select at least one day before creating the mesocycle."})
+    try:
+        length=int(meso_length)
+        if not 3<=length<=8: errors.append({"code":"INVALID_LENGTH","message":"Mesocycle length must be between 3 and 8 weeks."})
+    except Exception: errors.append({"code":"INVALID_LENGTH","message":"Mesocycle length must be between 3 and 8 weeks."})
+    total=0; occurrences={}; previous_day=None; previous_compounds=set()
+    for day in selected:
+        exercises=list((blueprint or {}).get(day,[]) or []);total+=len(exercises)
+        if not exercises: notices.append({"code":"PLANNED_REST_DAY","day":day,"message":f"{day} is selected and empty; it will be treated as a planned rest day."})
+        if daily_exercise_cap and len(exercises)>int(daily_exercise_cap): errors.append({"code":"DAILY_CAP","day":day,"message":f"{day} contains {len(exercises)} exercises, exceeding the configured limit of {int(daily_exercise_cap)}."})
+        if len(exercises)>=9: warnings.append({"code":"HIGH_EXERCISE_COUNT","day":day,"message":f"{day} contains {len(exercises)} exercises."})
+        seen=set();patterns={};compounds=set()
+        for name in exercises:
+            if name in seen: errors.append({"code":"DUPLICATE_SAME_DAY","day":day,"exercise":name,"message":f"{day} contains {name} more than once."})
+            seen.add(name);occurrences.setdefault(name,[]).append(day)
+            details=_planner_exercise_details(name)
+            if details is None: errors.append({"code":"UNKNOWN_EXERCISE","day":day,"exercise":name,"message":f"{name} is not available in the dictionary or built-in catalog."});continue
+            patterns[details["pattern"]]=patterns.get(details["pattern"],0)+1
+            if details["movement_type"]=="Compound":compounds.add(details["pattern"])
+        for pattern,count in patterns.items():
+            if count>=4:warnings.append({"code":"PATTERN_CONCENTRATION","day":day,"pattern":pattern,"message":f"{day} contains {count} {pattern} movements."})
+            elif count==3:notices.append({"code":"PATTERN_FOCUS","day":day,"pattern":pattern,"message":f"{day} contains 3 {pattern} movements."})
+        if previous_day:
+            for pattern in sorted(previous_compounds & compounds): warnings.append({"code":"CONSECUTIVE_COMPOUND_PATTERN","days":[previous_day,day],"pattern":pattern,"message":f"{pattern} compound work appears on consecutive selected days: {previous_day} and {day}."})
+        previous_day=day;previous_compounds=compounds
+    if total==0: errors.append({"code":"NO_EXERCISES","message":"Add at least one exercise to the mesocycle."})
+    for exercise,days in occurrences.items():
+        if len(days)>1:notices.append({"code":"REPEATED_WEEKLY_EXERCISE","exercise":exercise,"days":days,"message":f"{exercise} appears on {', '.join(days)}; repeated frequency may be intentional."})
+    volume=estimate_blueprint_sets(blueprint,selected)
+    return {"can_stamp":not errors,"errors":errors,"warnings":warnings,"notices":notices,"weekly_summary":volume["category_summary"],"day_summaries":volume["day_summaries"],"estimated_weekly_sets":volume["estimated_weekly_sets"],"set_estimate_assumption":volume["assumption"],"exercise_occurrences":occurrences}
+
+
+def get_replacement_candidates(exercise_name, available_only=False, category=None, family=None, equipment=None, angle=ANGLE_NOT_SPECIFIED, limit=8):
+    details=_planner_exercise_details(exercise_name) or {}
+    category=category or details.get("category");family=family or details.get("family");equipment=equipment or details.get("equipment")
+    ranked=rank_catalog_candidates(exercise_name,category,family,equipment,angle,limit=50)
+    results=[]
+    for item in ranked:
+        if item["name"]==exercise_name:continue
+        exists=exercise_exists(item["name"])
+        if available_only and not exists:continue
+        item=dict(item);item["in_user_dictionary"]=exists;item["action"]="Use" if exists else "Add and Use";item["requires_user_confirmation"]=True
+        results.append(item)
+        if len(results)>=max(1,int(limit or 8)):break
+    return results
+
+
+
+def add_catalog_exercise_to_dictionary(catalog_id, display_name=None):
+    """Persist a known catalog exercise and its identity metadata."""
+    item=CATALOG_BY_ID.get(catalog_id)
+    if not item:
+        raise ValueError("Unknown catalog exercise.")
+    name=str(display_name or item["name"]).strip()
+    if not name:
+        raise ValueError("Exercise name is required.")
     with get_db() as conn:
-        rows = conn.execute("""
-            SELECT ws.id, ws.date, ws.week, COALESCE(ws.session_tags, ''),
-                   ws.bodyweight_snapshot, s.weight, s.reps, s.rpe,
-                   s.target_weight, s.target_reps, s.rest_seconds
-            FROM workout_sessions ws
-            JOIN workout_sets s ON s.session_id = ws.id
-            WHERE ws.exercise = ? AND ws.status = 'Completed'
-              AND COALESCE(ws.week, '') != 'Deload' AND s.is_complete = 1
-            ORDER BY COALESCE(ws.date, '') DESC, ws.id DESC, s.set_number ASC
-        """, (exercise_name,)).fetchall()
-    sessions = {}
-    is_bodyweight = EXERCISE_METADATA.get(exercise_name, {}).get("equipment") == "Bodyweight"
-    fallback_bw = get_user_bodyweight()
-    for sid, date, week, tags, snap_bw, weight, reps, rpe, target_w, target_r, rest in rows:
-        item = sessions.setdefault(sid, {"session_id":sid,"date":date,"week":week,"tags":tags,"sets":[]})
+        existing=conn.execute("SELECT name FROM exercise_dict WHERE name=?",(name,)).fetchone()
+        if existing:
+            conn.execute("""UPDATE exercise_dict SET catalog_id=?,display_name=?,movement_family=?,movement_type=?,equipment=?,angle=?,is_custom=0 WHERE name=?""",
+                         (catalog_id,name,item["family"],item["movement_type"],item["equipment"],item.get("angle",ANGLE_NOT_SPECIFIED),name))
+            conn.commit()
+            return {"name":name,"created":False,"catalog_id":catalog_id}
+        conn.execute("""INSERT INTO exercise_dict
+            (name,category,movement_pattern,setup_notes,catalog_id,display_name,movement_family,movement_type,equipment,angle,is_custom)
+            VALUES (?,?,?,'',?,?,?,?,?,?,0)""",
+            (name,item["category"],item["pattern"],catalog_id,name,item["family"],item["movement_type"],item["equipment"],item.get("angle",ANGLE_NOT_SPECIFIED)))
+        for alias in item.get("aliases",[]):
+            conn.execute("INSERT OR IGNORE INTO exercise_aliases(alias,catalog_id,exercise_name,source,confirmed) VALUES(?,?,?,?,1)",(alias,catalog_id,name,"builtin"))
+        conn.commit()
+    return {"name":name,"created":True,"catalog_id":catalog_id}
+
+
+def create_custom_exercise(name,category,family,equipment,angle=ANGLE_NOT_SPECIFIED,movement_type=None,catalog_id=None):
+    validation=validate_custom_exercise_definition(name,category,family,equipment,angle)
+    if not validation["valid"]:
+        raise ValueError(" ".join(validation["errors"]))
+    name=str(name).strip()
+    catalog=CATALOG_BY_ID.get(catalog_id) if catalog_id else None
+    if catalog and catalog["family"] != family:
+        raise ValueError("Catalog match does not use the selected movement family.")
+    inferred=movement_type or (catalog["movement_type"] if catalog else "Isolation")
+    pattern=catalog["pattern"] if catalog else family.replace("_"," ").title()
+    with get_db() as conn:
+        if conn.execute("SELECT 1 FROM exercise_dict WHERE name=?",(name,)).fetchone():
+            raise ValueError("An exercise with this name already exists.")
+        conn.execute("""INSERT INTO exercise_dict
+            (name,category,movement_pattern,setup_notes,catalog_id,display_name,movement_family,movement_type,equipment,angle,is_custom)
+            VALUES (?,?,?,'',?,?,?,?,?,?,1)""",
+            (name,category,pattern,catalog_id,name,family,inferred,equipment,angle))
+        if catalog_id:
+            conn.execute("INSERT OR REPLACE INTO exercise_aliases(alias,catalog_id,exercise_name,source,confirmed) VALUES(?,?,?,?,1)",(name,catalog_id,name,"user"))
+        conn.commit()
+    return {"name":name,"catalog_id":catalog_id,"is_custom":True}
+
+
+def preview_future_exercise_replacement(meso_number,current_week,day,old_name,new_name,scope="this_week"):
+    with get_db() as conn:
+        rows=conn.execute("""SELECT id,week,day_of_week,status FROM workout_sessions
+            WHERE meso_number=? AND exercise=? AND day_of_week=? ORDER BY CASE WHEN week='Deload' THEN 999 ELSE CAST(week AS INTEGER) END,id""",
+            (meso_number,old_name,day)).fetchall()
+    current_num=int(current_week) if str(current_week).isdigit() else 999
+    affected=[];completed=[]
+    for sid,week,day_name,status in rows:
+        week_num=int(week) if str(week).isdigit() else 999
+        include=(scope=="this_week" and str(week)==str(current_week)) or (scope in ("this_and_later","all_future") and week_num>=current_num)
+        if not include: continue
+        item={"session_id":sid,"week":week,"day":day_name,"status":status}
+        (affected if status==STATUS_PENDING else completed).append(item)
+    return {"old_name":old_name,"new_name":new_name,"scope":scope,"pending_sessions":affected,"completed_sessions":completed,"pending_count":len(affected),"completed_count":len(completed),"updates_blueprint":scope=="all_future"}
+
+
+def apply_future_exercise_replacement(meso_number,current_week,day,old_name,new_name,scope="this_week",catalog_id=None,custom_definition=None):
+    preview=preview_future_exercise_replacement(meso_number,current_week,day,old_name,new_name,scope)
+    if preview["completed_count"]:
+        raise ValueError("Completed sessions entered the proposed change scope; no changes were applied.")
+    with get_db() as conn:
         try:
-            w=float(weight or 0); r=int(reps or 0); effort=float(rpe) if rpe is not None else None
-            tw=float(target_w) if target_w is not None else w; tr=int(target_r) if target_r is not None else max(1,r)
-        except (TypeError, ValueError):
-            continue
-        if r <= 0:
-            continue
-        bw = float(snap_bw if snap_bw is not None else fallback_bw) if is_bodyweight else 0.0
-        item["sets"].append({"weight":w,"reps":r,"rpe":effort,"target_weight":tw,"target_reps":max(1,tr),"rest":rest,"e1rm":calculate_e1rm(w,r,bw)})
-    result=[]
-    for item in sessions.values():
-        sets=item.pop("sets")
-        if not sets:
-            continue
-        heaviest=max(sets,key=lambda x:(x["weight"],x["reps"]))
-        rpes=[x["rpe"] for x in sets if x["rpe"] is not None and x["rpe"]>0]
-        rests=[x["rest"] for x in sets if x["rest"] is not None and x["rest"]>=0]
-        completion=[min(1.2,(x["reps"]/x["target_reps"])*(x["weight"]/(x["target_weight"] or 1) if x["target_weight"]>0 else 1.0)) for x in sets]
-        item.update({"working_weight":heaviest["weight"],"working_reps":heaviest["reps"],"best_e1rm":max(x["e1rm"] for x in sets),"avg_rpe":sum(rpes)/len(rpes) if rpes else None,"target_completion":sum(completion)/len(completion),"median_rest":_median(rests),"set_count":len(sets)})
-        result.append(item)
-        if len(result)>=max(1,int(limit or 8)):
-            break
-    return result
-
-
-def analyze_exercise_trend(exercise_name, limit=8):
-    """Classify a recent exercise trend and expose every supporting signal."""
-    sessions=get_comparable_exercise_sessions(exercise_name,limit)
-    n=len(sessions)
-    evidence_level="Insufficient Data" if n<3 else "Early Signal" if n==3 else "Trend Available" if n<=5 else "Established Recent Trend"
-    result={"exercise":exercise_name,"status":"Insufficient Data","evidence_level":evidence_level,"session_count":n,"signals":[],"sessions":sessions,"high_rpe_signal":False,"readiness_relationship":None}
-    if n<3:
-        result["signals"].append(f"{n} comparable session(s); at least 3 are required.")
-        return result
-    chronological=list(reversed(sessions))
-    pivot=max(1,len(chronological)//2)
-    early=chronological[:pivot]; recent=chronological[pivot:]
-    def avg(group,key):
-        vals=[x[key] for x in group if x.get(key) is not None]
-        return sum(vals)/len(vals) if vals else None
-    changes={}
-    for key in ("working_weight","working_reps","best_e1rm","avg_rpe","target_completion","median_rest"):
-        a,b=avg(early,key),avg(recent,key); changes[key]=None if a is None or b is None else b-a
-    weight_pct=(changes["working_weight"]/(avg(early,"working_weight") or 1))*100 if changes["working_weight"] is not None else 0
-    e1rm_pct=(changes["best_e1rm"]/(avg(early,"best_e1rm") or 1))*100 if changes["best_e1rm"] is not None else 0
-    rep_delta=changes["working_reps"] or 0
-    recent_rpes=[x["avg_rpe"] for x in recent if x.get("avg_rpe") is not None]
-    result["high_rpe_signal"]=len(recent_rpes)>=3 and sum(recent_rpes[-3:])/3>=9.2 and not any("PR Attempt" in str(x.get("tags","")) for x in recent[-3:])
-    plateau=n>=4 and abs(weight_pct)<1.0 and abs(rep_delta)<1.0 and abs(e1rm_pct)<2.0 and (avg(recent,"target_completion") or 1)<0.98
-    upward=weight_pct>=2.0 or e1rm_pct>=2.0 or rep_delta>=1.0
-    downward=weight_pct<=-2.0 or e1rm_pct<=-3.0
-    if plateau: result["status"]="Possible Plateau"
-    elif upward and not downward: result["status"]="Trending Up"
-    elif upward and downward: result["status"]="Mixed"
-    elif abs(weight_pct)<1.0 and abs(rep_delta)<1.0 and abs(e1rm_pct)<2.0: result["status"]="Stable"
-    else: result["status"]="Mixed"
-    result["changes"]={"load_pct":round(weight_pct,1),"reps":round(rep_delta,1),"e1rm_pct":round(e1rm_pct,1),"rpe":round(changes["avg_rpe"],2) if changes["avg_rpe"] is not None else None,"rest_seconds":round(changes["median_rest"],1) if changes["median_rest"] is not None else None}
-    result["signals"].extend([f"{n} comparable completed non-deload sessions analyzed.",f"Working load change: {weight_pct:+.1f}%.",f"Working reps change: {rep_delta:+.1f}.",f"Estimated strength change: {e1rm_pct:+.1f}%."])
-    if result["high_rpe_signal"]: result["signals"].append("The latest 3 ordinary sessions averaged RPE 9.2 or higher.")
-    # Readiness association, only with at least 3 sessions in both groups.
-    with get_db() as conn:
-        ready=conn.execute("""
-            SELECT ws.id, (rl.sleep+rl.joints+rl.drive)/3.0
-            FROM workout_sessions ws JOIN readiness_logs rl
-              ON rl.meso_number=ws.meso_number AND rl.week=ws.week AND rl.day_of_week=ws.day_of_week
-            WHERE ws.exercise=? AND ws.status='Completed' AND COALESCE(ws.week,'')!='Deload'
-            GROUP BY ws.id ORDER BY COALESCE(ws.date,'') DESC, ws.id DESC LIMIT ?
-        """,(exercise_name,max(8,int(limit or 8)))).fetchall()
-    readiness={sid:score for sid,score in ready if score is not None}
-    high=[x["target_completion"] for x in sessions if x["session_id"] in readiness and readiness[x["session_id"]]>=4]
-    low=[x["target_completion"] for x in sessions if x["session_id"] in readiness and readiness[x["session_id"]]<4]
-    if len(high)>=3 and len(low)>=3:
-        result["readiness_relationship"]={"higher_count":len(high),"lower_count":len(low),"higher_completion":round(sum(high)/len(high)*100,1),"lower_completion":round(sum(low)/len(low)*100,1)}
-    return result
+            conn.execute("BEGIN")
+            if not conn.execute("SELECT 1 FROM exercise_dict WHERE name=?",(new_name,)).fetchone():
+                if catalog_id:
+                    item=CATALOG_BY_ID.get(catalog_id)
+                    if not item: raise ValueError("Unknown catalog exercise.")
+                    conn.execute("""INSERT INTO exercise_dict(name,category,movement_pattern,setup_notes,catalog_id,display_name,movement_family,movement_type,equipment,angle,is_custom)
+                        VALUES(?,?,?,'',?,?,?,?,?,?,0)""",(new_name,item["category"],item["pattern"],catalog_id,new_name,item["family"],item["movement_type"],item["equipment"],item.get("angle",ANGLE_NOT_SPECIFIED)))
+                elif custom_definition:
+                    valid=validate_custom_exercise_definition(new_name,custom_definition.get("category"),custom_definition.get("family"),custom_definition.get("equipment"),custom_definition.get("angle",ANGLE_NOT_SPECIFIED))
+                    if not valid["valid"]: raise ValueError(" ".join(valid["errors"]))
+                    conn.execute("""INSERT INTO exercise_dict(name,category,movement_pattern,setup_notes,catalog_id,display_name,movement_family,movement_type,equipment,angle,is_custom)
+                        VALUES(?,?,?,'',NULL,?,?,?,?,?,1)""",(new_name,custom_definition["category"],custom_definition["family"].replace('_',' ').title(),new_name,custom_definition["family"],custom_definition.get("movement_type","Isolation"),custom_definition["equipment"],custom_definition.get("angle",ANGLE_NOT_SPECIFIED)))
+                else: raise ValueError("The replacement exercise does not exist.")
+            ids=[x["session_id"] for x in preview["pending_sessions"]]
+            if ids:
+                placeholders=",".join("?" for _ in ids)
+                meta=conn.execute("SELECT category,movement_type FROM exercise_dict WHERE name=?",(new_name,)).fetchone()
+                conn.execute(f"UPDATE workout_sessions SET exercise=?,category=?,movement_type=? WHERE id IN ({placeholders}) AND status=?",(new_name,meta[0] or "General",meta[1] or "Isolation",*ids,STATUS_PENDING))
+            if scope=="all_future":
+                row=conn.execute("SELECT blueprint_json FROM meso_configs WHERE meso_number=?",(meso_number,)).fetchone()
+                if row and row[0]:
+                    bp=json.loads(row[0]);bp[day]=[new_name if x==old_name else x for x in bp.get(day,[])]
+                    conn.execute("UPDATE meso_configs SET blueprint_json=? WHERE meso_number=?",(json.dumps(bp),meso_number))
+            conn.commit()
+        except Exception:
+            conn.rollback();raise
+    return preview
