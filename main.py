@@ -1589,41 +1589,40 @@ class WorkoutTrackerApp:
         for x in plan_overview(self.current_meso):items.controls.append(ft.Container(content=ft.Row([ft.Text(f"W{x['week']} {x['day']}",weight="bold",size=11,width=110),ft.Text(f"{x['completed']} complete • {x['pending']} pending • {x['skipped']} skipped"+(f" • {x['exceptions']} rolled" if x['exceptions'] else ""),size=9,color="cyan200" if x['exceptions'] else "white54",expand=True)]),bgcolor="white10",padding=7,border_radius=7))
         tools=ft.Column(visible=False,controls=[ft.TextButton("Restore Future Schedule",on_click=lambda ev:self.show_snackbar("No unexpected future placements found." if not diag['unexpected'] else f"{diag['unexpected']} placement(s) need review.","cyan300")),ft.TextButton("Reset Pending Schedule",on_click=lambda ev:self.show_snackbar("Reset remains protected by a preview and safety snapshot.","cyan300")),ft.TextButton("Plan Diagnostics",on_click=lambda ev:self.open_plan_diagnostics())])
         def toggle(ev=None):tools.visible=not tools.visible;tools.update()
-        dialog=ft.AlertDialog(title=ft.Text("🗓️ Manage Active Meso",weight="bold"),content=ft.Container(width=390,height=540,content=ft.Column([ft.Text("CURRENT PLAN • newest week first",size=9,color="cyan300",weight="bold"),items,ft.ElevatedButton("Edit Schedule",on_click=lambda ev:[self.safe_close(dialog),self.open_schedule_editor()],width=float('inf')),ft.ElevatedButton("Roll Missed Workout",on_click=lambda ev:[self.safe_close(dialog),self.open_missed_workout_rollover()],width=float('inf')),ft.TextButton("Plan Tools ▾",on_click=toggle),tools],expand=True,spacing=5)),actions=[ft.TextButton("Close",on_click=lambda ev:self.safe_close(dialog))],inset_padding=12,content_padding=14);self.safe_open(dialog)
+        dialog=ft.AlertDialog(title=ft.Text("🗓️ Manage Active Meso",weight="bold"),content=ft.Container(width=390,height=540,content=ft.Column([ft.Text("CURRENT PLAN • newest week first",size=9,color="cyan300",weight="bold"),items,ft.ElevatedButton("Edit Schedule",on_click=lambda ev:[self.safe_close(dialog),self.open_workout_structure_editor()],width=float('inf')),ft.ElevatedButton("Roll Missed Workout",on_click=lambda ev:[self.safe_close(dialog),self.open_missed_workout_rollover()],width=float('inf')),ft.TextButton("Plan Tools ▾",on_click=toggle),tools],expand=True,spacing=5)),actions=[ft.TextButton("Close",on_click=lambda ev:self.safe_close(dialog))],inset_padding=12,content_padding=14);self.safe_open(dialog)
 
-    def open_schedule_editor(self,e=None):
-        rows=[x for x in get_plan_sessions(self.current_meso) if x['week']==str(self.current_week) and x['day']==self.current_day and x['status']==STATUS_PENDING]
-        if not rows:self.show_snackbar("Only pending exercises can be edited in the selected workout.","amber300");return
-        checks=[ft.Checkbox(label=f"{x['exercise']} • {x['category']}",value=False,data=x['id']) for x in rows]
-        action=ft.RadioGroup(value='move',content=ft.Row([ft.Radio(value='move',label='Move'),ft.Radio(value='remove',label='Remove')]))
-        destination=ft.Dropdown(label='Destination day',value=next((d for d in self.ordered_day_names() if d!=self.current_day),None),options=[ft.dropdown.Option(d) for d in self.ordered_day_names() if d!=self.current_day])
-        scope=ft.RadioGroup(value='workout',content=ft.Column([ft.Radio(value='workout',label='This workout only'),ft.Radio(value='week',label='This week only'),ft.Radio(value='future',label='This and future pending weeks')],spacing=1))
-        preview=ft.Text('Select pending exercises to preview.',size=10,color='cyan200')
-        details=ft.Column(spacing=2)
-        def selected():return [c.data for c in checks if c.value]
-        def refresh(ev=None):
-            destination.visible=action.value=='move'
-            details.controls.clear()
+    def open_workout_structure_editor(self,e=None):
+        rows=[x for x in get_plan_sessions(self.current_meso) if x['week']==str(self.current_week) and x['day']==self.current_day]
+        pending=[x for x in rows if x['status']==STATUS_PENDING]
+        if not pending:self.show_snackbar('No pending exercises are available to structure.','amber300');return
+        selected=set();list_col=ft.Column(spacing=5,scroll='auto',expand=True)
+        def rebuild_list():
+            list_col.controls.clear();ordered=[x for x in get_plan_sessions(self.current_meso) if x['week']==str(self.current_week) and x['day']==self.current_day]
+            group_letters={};next_letter=0
+            for x in ordered:
+                gid=x.get('group_id');label=''
+                if gid:
+                    if gid not in group_letters:group_letters[gid]=chr(65+next_letter);next_letter+=1
+                    label=f"{group_letters[gid]}{x.get('group_position') or ''} "
+                check=ft.Checkbox(value=x['id'] in selected,disabled=x['status']!=STATUS_PENDING,on_change=lambda ev,sid=x['id']:(selected.add(sid) if ev.control.value else selected.discard(sid)))
+                controls=[check,ft.Text(label+x['exercise'],size=11,weight='bold',expand=True),ft.Text(x['status'],size=9,color='green300' if x['status']==STATUS_COMPLETED else 'white54')]
+                if x['status']==STATUS_PENDING:controls.extend([ft.TextButton('▲',on_click=lambda ev,sid=x['id']:move(sid,-1)),ft.TextButton('▼',on_click=lambda ev,sid=x['id']:move(sid,1))])
+                list_col.controls.append(ft.Container(content=ft.Row(controls,spacing=3),bgcolor='white10',padding=5,border_radius=7))
+        def move(sid,direction):
+            try:reorder_pending_exercise(self.current_meso,self.current_week,self.current_day,sid,direction);rebuild_list();list_col.update()
+            except Exception as err:self.show_snackbar(str(err),'red300')
+        def group(ev=None):
             try:
-                plan=schedule_editor_preview(self.current_meso,self.current_week,self.current_day,selected(),action.value,destination.value,scope.value)
-                preview.value=f"Affected {len(plan['affected'])} • Duplicate skips {len(plan['duplicates'])} • Completed affected 0 • Blueprint {'updated' if plan['blueprint_changed'] else 'unchanged'}"
-                for x in plan['affected'][:12]:details.controls.append(ft.Text(f"W{x['week']} {x['exercise']}: {x['from_day']} → {x['to_day'] or 'Removed'}",size=9,color='white70'))
-                for x in plan['duplicates'][:6]:details.controls.append(ft.Text(f"Duplicate protected: W{x['week']} {x['exercise']}",size=9,color='amber300'))
-            except Exception as err:preview.value=str(err)
-            if ev is not None:
-                for c in (destination,preview,details):
-                    try:c.update()
-                    except Exception:pass
-        for c in checks:c.on_change=refresh
-        action.on_change=refresh;destination.on_select=refresh;scope.on_change=refresh
-        def apply(ev=None):
+                ids=[x['id'] for x in get_plan_sessions(self.current_meso) if x['week']==str(self.current_week) and x['day']==self.current_day and x['id'] in selected]
+                set_exercise_group(self.current_meso,self.current_week,self.current_day,ids);selected.clear();rebuild_list();list_col.update();self.show_snackbar('Workout group created.','green300')
+            except Exception as err:self.show_snackbar(str(err),'red300')
+        def ungroup(ev=None):
             try:
-                snapshot=self.create_short_session_snapshot()
-                result=apply_schedule_editor_change(self.current_meso,self.current_week,self.current_day,selected(),action.value,destination.value,scope.value)
-                self.safe_close(dialog);self.sets.clear();self.set_active_position();self.rebuild_navigation_headers();self.rebuild_entire_display()
-                self.show_snackbar(f"Schedule updated: {len(result['affected'])} affected, {result['duplicate_skips']} duplicate(s) protected. Snapshot: {snapshot}","green300")
-            except Exception as err:self.show_snackbar(str(err),"red300")
-        dialog=ft.AlertDialog(title=ft.Text('Edit Schedule',weight='bold'),content=ft.Container(width=400,height=560,content=ft.Column([ft.Text(f"W{self.current_week} {self.current_day} • pending exercises only",size=10,color='cyan300'),ft.Column(checks,scroll='auto',expand=True),action,destination,ft.Text('APPLY TO',size=9,weight='bold',color='white54'),scope,preview,details],spacing=5,expand=True)),actions=[ft.TextButton('Cancel',on_click=lambda ev:self.safe_close(dialog)),ft.TextButton('Refresh Preview',on_click=refresh),ft.ElevatedButton('Apply Schedule',on_click=apply)],inset_padding=12);self.safe_open(dialog);refresh()
+                if not selected:raise ValueError('Select one member of the group to ungroup.')
+                clear_exercise_group(self.current_meso,self.current_week,self.current_day,next(iter(selected)));selected.clear();rebuild_list();list_col.update();self.show_snackbar('Workout group removed.','green300')
+            except Exception as err:self.show_snackbar(str(err),'red300')
+        def close(ev=None):self.safe_close(dialog);self.sets.clear();self.rebuild_entire_display()
+        rebuild_list();dialog=ft.AlertDialog(title=ft.Text('Workout Structure & Supersets',weight='bold'),content=ft.Container(width=410,height=520,content=ft.Column([ft.Text(f"W{self.current_week} {self.current_day} • completed rows are locked",size=10,color='cyan300'),list_col,ft.Text('Select 2 exercises for a superset or 3 for a circuit.',size=9,color='white54'),ft.Row([ft.ElevatedButton('Create Group',on_click=group,expand=True),ft.ElevatedButton('Ungroup',on_click=ungroup,expand=True)],spacing=6)],expand=True)),actions=[ft.TextButton('Done',on_click=close)],inset_padding=12);self.safe_open(dialog)
 
     def open_missed_workout_rollover(self,e=None):
         rows=[x for x in get_plan_sessions(self.current_meso) if x['week']==str(self.current_week) and x['day']==self.current_day and x['status']==STATUS_PENDING]
@@ -2442,8 +2441,9 @@ class WorkoutTrackerApp:
             "Meso metric drill-down: enabled",
             "Final set auto-log: enabled",
             "Readiness date collision guard: enabled",
-            "Active schedule editor: enabled",
-            "Schedule edit scopes: workout/week/future",
+            "Stable workout ordering: enabled",
+            "Superset/circuit grouping: enabled",
+            "Group-aware execution sequence: enabled",
         ]
         self.diagnostics_dialog = ft.AlertDialog(
             title=ft.Text("IronCycle Diagnostics", weight="bold"),
