@@ -131,6 +131,19 @@ def init_and_seed_db():
         if "session_tags" not in cols:
             cursor.execute("ALTER TABLE workout_sessions ADD COLUMN session_tags TEXT DEFAULT ''")
             conn.commit()
+        # Schema 12: preserve recurring placement separately from one-workout exceptions.
+        cursor.execute("PRAGMA table_info(workout_sessions)")
+        session_columns = [info[1] for info in cursor.fetchall()]
+        for column_name, column_type in {
+            "schedule_origin_day": "TEXT",
+            "schedule_exception": "INTEGER DEFAULT 0",
+            "skip_reason": "TEXT"
+        }.items():
+            if column_name not in session_columns:
+                cursor.execute(f"ALTER TABLE workout_sessions ADD COLUMN {column_name} {column_type}")
+                conn.commit()
+        cursor.execute("UPDATE workout_sessions SET schedule_origin_day=day_of_week WHERE schedule_origin_day IS NULL OR TRIM(schedule_origin_day)='' ")
+        conn.commit()
 
         # --- SAFE MIGRATION: REST TIME BETWEEN SETS ---
         # Records seconds elapsed between the first edit of the previous set's
@@ -1010,66 +1023,88 @@ def exercise_exists(exercise_name):
         return conn.execute("SELECT 1 FROM exercise_dict WHERE name=? LIMIT 1",(name,)).fetchone() is not None
 
 
-DAY_ORDER=["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"]
+PLAN_DAY_ORDER=["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"]
 def get_pending_plan(meso_number):
     with get_db() as c:
-        rows=c.execute("SELECT id,week,day_of_week,exercise,category,target_weight,target_reps,movement_type FROM workout_sessions WHERE meso_number=? AND status=? ORDER BY CASE WHEN week='Deload' THEN 999 ELSE CAST(week AS INTEGER) END, CASE day_of_week WHEN 'Monday' THEN 1 WHEN 'Tuesday' THEN 2 WHEN 'Wednesday' THEN 3 WHEN 'Thursday' THEN 4 WHEN 'Friday' THEN 5 WHEN 'Saturday' THEN 6 WHEN 'Sunday' THEN 7 ELSE 8 END,id",(meso_number,STATUS_PENDING)).fetchall()
-    return [{"id":r[0],"week":r[1],"day":r[2],"exercise":r[3],"category":r[4],"weight":r[5],"reps":r[6],"movement_type":r[7]} for r in rows]
+        rows=c.execute("SELECT id,week,day_of_week,exercise,category,target_weight,target_reps,movement_type,COALESCE(schedule_origin_day,day_of_week),COALESCE(schedule_exception,0),skip_reason FROM workout_sessions WHERE meso_number=? AND status=? ORDER BY CASE WHEN week='Deload' THEN 999 ELSE CAST(week AS INTEGER) END, CASE day_of_week WHEN 'Monday' THEN 1 WHEN 'Tuesday' THEN 2 WHEN 'Wednesday' THEN 3 WHEN 'Thursday' THEN 4 WHEN 'Friday' THEN 5 WHEN 'Saturday' THEN 6 WHEN 'Sunday' THEN 7 ELSE 8 END,id",(meso_number,STATUS_PENDING)).fetchall()
+    return [{"id":r[0],"week":r[1],"day":r[2],"exercise":r[3],"category":r[4],"weight":r[5],"reps":r[6],"movement_type":r[7],"origin_day":r[8],"exception":bool(r[9]),"skip_reason":r[10]} for r in rows]
 
 def next_training_slot(meso_number,week,day):
-    with get_db() as c:
-        cfg=c.execute("SELECT length_weeks,selected_days FROM meso_configs WHERE meso_number=?",(meso_number,)).fetchone()
-    length=int(cfg[0] if cfg and cfg[0] else max(1,int(week)));selected=[]
+    with get_db() as c:cfg=c.execute("SELECT length_weeks,selected_days FROM meso_configs WHERE meso_number=?",(meso_number,)).fetchone()
+    length=int(cfg[0] if cfg and cfg[0] else week)
     try:selected=json.loads(cfg[1]) if cfg and cfg[1] else []
     except Exception:selected=[]
-    selected=[d for d in DAY_ORDER if d in selected] or DAY_ORDER[:5]
-    start_week=int(week);start_index=DAY_ORDER.index(day) if day in DAY_ORDER else -1
-    for wk in range(start_week,length+1):
-        for d in selected:
-            if wk==start_week and DAY_ORDER.index(d)<=start_index:continue
-            return str(wk),d
+    selected=[d for d in PLAN_DAY_ORDER if d in selected] or PLAN_DAY_ORDER[:5]
+    start=int(week);idx=PLAN_DAY_ORDER.index(day) if day in PLAN_DAY_ORDER else -1
+    for wk in range(start,length+1):
+        for candidate in selected:
+            if wk==start and PLAN_DAY_ORDER.index(candidate)<=idx:continue
+            return str(wk),candidate
     return None
 
-def rollover_missed_workout(meso_number,week,source_day,destination_week,destination_day,selected_ids):
-    selected_ids={int(x) for x in selected_ids};moved=skipped=duplicates=0
+def preview_rollover(meso_number,week,source_day,destination_week,destination_day,selected_ids):
+    selected={int(x) for x in selected_ids}
     with get_db() as c:
-        c.execute('BEGIN IMMEDIATE')
-        rows=c.execute("SELECT id,exercise FROM workout_sessions WHERE meso_number=? AND week=? AND day_of_week=? AND status=?",(meso_number,str(week),source_day,STATUS_PENDING)).fetchall()
-        if not rows:raise ValueError('No pending exercises were found for that workout.')
-        valid={r[0] for r in rows}
-        if not selected_ids.issubset(valid):raise ValueError('The workout changed before rollover. Reopen the dialog.')
-        for session_id,exercise in rows:
-            if session_id not in selected_ids:
-                c.execute("UPDATE workout_sessions SET status=? WHERE id=? AND status=?",(STATUS_SKIPPED,session_id,STATUS_PENDING));skipped+=1;continue
-            exists=c.execute("SELECT 1 FROM workout_sessions WHERE meso_number=? AND week=? AND day_of_week=? AND exercise=? AND status IN (?,?)",(meso_number,str(destination_week),destination_day,exercise,STATUS_PENDING,STATUS_COMPLETED)).fetchone()
-            if exists:
-                c.execute("UPDATE workout_sessions SET status=? WHERE id=?",(STATUS_SKIPPED,session_id));duplicates+=1;skipped+=1
+        source=c.execute("SELECT id,exercise,category FROM workout_sessions WHERE meso_number=? AND week=? AND day_of_week=? AND status=? ORDER BY id",(meso_number,str(week),source_day,STATUS_PENDING)).fetchall()
+        destination={r[0] for r in c.execute("SELECT exercise FROM workout_sessions WHERE meso_number=? AND week=? AND day_of_week=? AND status IN (?,?)",(meso_number,str(destination_week),destination_day,STATUS_PENDING,STATUS_COMPLETED)).fetchall()}
+    valid={r[0] for r in source}
+    if not selected.issubset(valid):raise ValueError("The workout changed. Reopen the rollover dialog.")
+    rolled=[r for r in source if r[0] in selected and r[1] not in destination]
+    duplicates=[r for r in source if r[0] in selected and r[1] in destination]
+    skipped=[r for r in source if r[0] not in selected]+duplicates
+    return {"source":source,"rolled":rolled,"skipped":skipped,"duplicates":duplicates,"destination_count":len(destination),"result_count":len(destination)+len(rolled)}
+
+def rollover_one_workout(meso_number,week,source_day,destination_week,destination_day,selected_ids):
+    preview=preview_rollover(meso_number,week,source_day,destination_week,destination_day,selected_ids)
+    selected={r[0] for r in preview["rolled"]}
+    duplicate_ids={r[0] for r in preview["duplicates"]}
+    with get_db() as c:
+        c.execute("BEGIN IMMEDIATE")
+        for session_id,exercise,category in preview["source"]:
+            if session_id in selected:
+                c.execute("UPDATE workout_sessions SET week=?,day_of_week=?,schedule_exception=1,skip_reason=NULL WHERE id=? AND status=?",(str(destination_week),destination_day,session_id,STATUS_PENDING))
             else:
-                c.execute("UPDATE workout_sessions SET week=?,day_of_week=? WHERE id=? AND status=?",(str(destination_week),destination_day,session_id,STATUS_PENDING));moved+=1
-        c.execute("INSERT OR REPLACE INTO user_settings(setting_key,setting_value) VALUES('last_plan_edit',?)",(json.dumps({"type":"missed_workout_rollover","from":f"W{week} {source_day}","to":f"W{destination_week} {destination_day}","moved":moved,"skipped":skipped,"duplicates":duplicates,"at":datetime.now().isoformat(timespec='seconds')}),))
+                reason="rollover_destination_duplicate" if session_id in duplicate_ids else "missed_workout_rollover"
+                c.execute("UPDATE workout_sessions SET status=?,skip_reason=? WHERE id=? AND status=?",(STATUS_SKIPPED,reason,session_id,STATUS_PENDING))
+        c.execute("INSERT OR REPLACE INTO user_settings(setting_key,setting_value) VALUES('last_plan_edit',?)",(json.dumps({"type":"one_workout_rollover","from":f"W{week} {source_day}","to":f"W{destination_week} {destination_day}","moved":len(preview['rolled']),"skipped":len(preview['skipped']),"at":datetime.now().isoformat(timespec='seconds')}),))
         c.commit()
-    return {"moved":moved,"skipped":skipped,"duplicates":duplicates}
+    return preview
+
+def get_future_schedule_repairs(meso_number,from_week=1):
+    with get_db() as c:
+        rows=c.execute("SELECT id,week,day_of_week,exercise,schedule_origin_day FROM workout_sessions WHERE meso_number=? AND status=? AND week GLOB '[0-9]*' AND CAST(week AS INTEGER)>=? AND schedule_origin_day IS NOT NULL AND day_of_week<>schedule_origin_day AND COALESCE(schedule_exception,0)=0 ORDER BY CAST(week AS INTEGER),id",(meso_number,STATUS_PENDING,int(from_week))).fetchall()
+    return [{"id":r[0],"week":r[1],"current_day":r[2],"exercise":r[3],"origin_day":r[4]} for r in rows]
+
+def restore_future_schedule(meso_number,session_ids):
+    ids=[int(x) for x in session_ids]
+    if not ids:return 0
+    marks=','.join('?' for _ in ids)
+    with get_db() as c:
+        c.execute("BEGIN IMMEDIATE")
+        rows=c.execute(f"SELECT id,schedule_origin_day FROM workout_sessions WHERE id IN ({marks}) AND meso_number=? AND status=?",(*ids,meso_number,STATUS_PENDING)).fetchall()
+        for session_id,origin_day in rows:
+            if origin_day:c.execute("UPDATE workout_sessions SET day_of_week=?,schedule_exception=0 WHERE id=?",(origin_day,session_id))
+        c.commit()
+    return len(rows)
 
 def apply_pending_plan_edit(meso_number,session_id,operation,replacement=None,destination_day=None,scope='single'):
     plan=get_pending_plan(meso_number);source=next((x for x in plan if x['id']==int(session_id)),None)
-    if not source:raise ValueError('Only pending sessions can be edited.')
+    if not source:raise ValueError("Only pending sessions can be edited.")
     affected=[source]
-    if scope=='future_day':affected=[x for x in plan if x['exercise']==source['exercise'] and x['day']==source['day'] and str(x['week']).isdigit() and int(x['week'])>=int(source['week'])]
+    if scope=='future_day':affected=[x for x in plan if x['exercise']==source['exercise'] and x['origin_day']==source['origin_day'] and str(x['week']).isdigit() and int(x['week'])>=int(source['week'])]
     elif scope=='future_all':affected=[x for x in plan if x['exercise']==source['exercise'] and str(x['week']).isdigit() and int(x['week'])>=int(source['week'])]
     with get_db() as c:
-        c.execute('BEGIN IMMEDIATE')
+        c.execute("BEGIN IMMEDIATE")
         for row in affected:
             if operation=='remove':c.execute("DELETE FROM workout_sessions WHERE id=? AND status=?",(row['id'],STATUS_PENDING))
             elif operation=='move':
-                if not destination_day:raise ValueError('Choose a destination day.')
-                if c.execute("SELECT 1 FROM workout_sessions WHERE meso_number=? AND week=? AND day_of_week=? AND exercise=? AND status=? AND id<>?",(meso_number,row['week'],destination_day,row['exercise'],STATUS_PENDING,row['id'])).fetchone():raise ValueError(f"{row['exercise']} already exists on {destination_day}.")
-                c.execute("UPDATE workout_sessions SET day_of_week=? WHERE id=? AND status=?",(destination_day,row['id'],STATUS_PENDING))
+                if not destination_day:raise ValueError("Choose a destination day.")
+                c.execute("UPDATE workout_sessions SET day_of_week=?,schedule_origin_day=?,schedule_exception=0 WHERE id=? AND status=?",(destination_day,destination_day,row['id'],STATUS_PENDING))
             elif operation=='replace':
                 meta=c.execute("SELECT category,COALESCE(movement_type,'Isolation') FROM exercise_dict WHERE name=?",(replacement,)).fetchone()
-                if not meta:raise ValueError('Choose a replacement from My Exercises.')
-                if c.execute("SELECT 1 FROM workout_sessions WHERE meso_number=? AND week=? AND day_of_week=? AND exercise=? AND status=? AND id<>?",(meso_number,row['week'],row['day'],replacement,STATUS_PENDING,row['id'])).fetchone():raise ValueError(f"{replacement} already exists in that workout.")
+                if not meta:raise ValueError("Choose a replacement from My Exercises.")
                 defaults=get_exercise_smart_defaults(replacement,meso_number)
                 c.execute("UPDATE workout_sessions SET exercise=?,category=?,movement_type=?,target_weight=?,target_reps=? WHERE id=? AND status=?",(replacement,meta[0],meta[1],defaults[0],defaults[1],row['id'],STATUS_PENDING));c.execute("DELETE FROM workout_sets WHERE session_id=?",(row['id'],))
-            else:raise ValueError('Unknown operation.')
+            else:raise ValueError("Unknown operation.")
         c.commit()
     return len(affected)
