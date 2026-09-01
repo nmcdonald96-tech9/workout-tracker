@@ -1125,3 +1125,30 @@ def apply_short_session(meso,week,day,keep_ids,action,dest=None):
    else:c.execute("UPDATE workout_sessions SET status=?,skip_reason=? WHERE id=? AND status=?",(STATUS_SKIPPED,'short_session_destination_duplicate' if x['id'] in dup else 'short_session_skip',x['id'],STATUS_PENDING))
   c.commit()
  return data
+
+
+def workout_timeline(meso,week,day):
+    with get_db() as c:
+        rows=c.execute("""SELECT ws.id,ws.exercise,s.set_number,s.completed_at,s.weight,s.reps,s.rpe FROM workout_sets s JOIN workout_sessions ws ON ws.id=s.session_id WHERE ws.meso_number=? AND ws.week=? AND ws.day_of_week=? AND s.is_complete=1 AND s.completed_at IS NOT NULL ORDER BY s.completed_at,s.id""",(meso,str(week),day)).fetchall()
+    parsed=[]
+    for row in rows:
+        try:parsed.append((*row,datetime.fromisoformat(row[3])))
+        except Exception:pass
+    times=[x[7] for x in parsed];intervals=[max(0,int((times[i]-times[i-1]).total_seconds())) for i in range(1,len(times))]
+    median=sorted(intervals)[len(intervals)//2] if intervals else None
+    last_by_ex={};events=[]
+    for i,x in enumerate(parsed):
+        sid,ex,num,stamp,w,reps,rpe,dt=x;global_gap=max(0,int((dt-parsed[i-1][7]).total_seconds())) if i else None;same_gap=None;between=0
+        if ex in last_by_ex:
+            j=last_by_ex[ex];same_gap=max(0,int((dt-parsed[j][7]).total_seconds()));between=max(0,i-j-1)
+        events.append({'session_id':sid,'exercise':ex,'set_number':num,'completed_at':stamp,'weight':w,'reps':reps,'rpe':rpe,'previous_exercise':parsed[i-1][1] if i else None,'previous_set':parsed[i-1][2] if i else None,'global_gap':global_gap,'same_exercise_gap':same_gap,'intervening_sets':between,'extended_global':bool(global_gap is not None and median is not None and global_gap>=median+60 and global_gap>=median*1.35)})
+        last_by_ex[ex]=i
+    return {'events':events,'elapsed':max(0,int((times[-1]-times[0]).total_seconds())) if len(times)>=2 else 0,'average':round(sum(intervals)/len(intervals)) if intervals else None,'median':median,'longest':max(intervals) if intervals else None}
+def global_set_gap(meso,week,day,completed_at,exclude_session=None,exclude_set=None):
+    try:target=datetime.fromisoformat(str(completed_at))
+    except:return None
+    with get_db() as c:
+        row=c.execute("""SELECT s.completed_at FROM workout_sets s JOIN workout_sessions ws ON ws.id=s.session_id WHERE ws.meso_number=? AND ws.week=? AND ws.day_of_week=? AND s.is_complete=1 AND s.completed_at IS NOT NULL AND s.completed_at<? AND NOT (ws.id=? AND s.set_number=?) ORDER BY s.completed_at DESC,s.id DESC LIMIT 1""",(meso,str(week),day,str(completed_at),int(exclude_session or -1),int(exclude_set or -1))).fetchone()
+    if not row:return None
+    try:return max(0,int((target-datetime.fromisoformat(row[0])).total_seconds()))
+    except:return None

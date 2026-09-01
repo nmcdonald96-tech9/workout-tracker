@@ -567,12 +567,12 @@ class ExerciseCard(ft.Card):
 
             set_is_done = bool(set_data.get("done"))
             complete_set_btn = ft.ElevatedButton(
-                content=ft.Text("✓ DONE" if set_is_done else "COMPLETE", size=10, weight="bold"),
+                content=ft.Text("✓ DONE" if set_is_done else ("COMPLETE & LOG" if idx == len(self.app.sets[self.db_id]) - 1 else "COMPLETE"), size=9, weight="bold"),
                 data=(not set_is_done),
                 disabled=(self.status == STATUS_COMPLETED),
                 on_click=self.make_set_done_handler(idx),
                 height=40,
-                width=88,
+                width=102,
                 style=ft.ButtonStyle(
                     bgcolor=COLOR_COMPLETE if set_is_done else COLOR_ACTIVE,
                     color="white",
@@ -848,7 +848,7 @@ class ExerciseCard(ft.Card):
             rows = conn.execute("""
                 SELECT ws.date, ws.week, s.set_number, s.target_weight, s.target_reps,
                        s.weight, s.reps, s.rpe, s.progression_decision,
-                       s.progression_reason, s.normal_target_weight, s.normal_target_reps
+                       s.progression_reason, s.normal_target_weight, s.normal_target_reps, s.completed_at
                 FROM workout_sets s JOIN workout_sessions ws ON ws.id=s.session_id
                 WHERE ws.exercise=? AND ws.status='Completed' AND s.is_complete=1
                 ORDER BY ws.date DESC, ws.id DESC, s.set_number ASC LIMIT 60
@@ -857,12 +857,27 @@ class ExerciseCard(ft.Card):
         def fmt(value):
             try: return f"{float(value):g}"
             except: return "?"
-        for date,wk,num,tw,tr,aw,ar,rpe,decision,reason,nw,nr in rows:
+        timeline_cache={}
+        for date,wk,num,tw,tr,aw,ar,rpe,decision,reason,nw,nr,completed_at in rows:
+            key=(wk,date)
+            if key not in timeline_cache:
+                timeline_cache[key]=workout_timeline(self.app.current_meso,wk,next((e['day'] for e in get_plan_sessions(self.app.current_meso) if e['week']==str(wk) and e['exercise']==self.exercise),'Monday'))
+            event=next((x for x in timeline_cache[key]['events'] if x['exercise']==self.exercise and x['set_number']==num and x['completed_at']==completed_at),None)
+            timing=[]
+            if event:
+                if event['global_gap'] is None:timing.append(ft.Text("Workout timing: First working set",size=9,color="white38"))
+                else:
+                    line=f"Since previous set: {format_duration_seconds(event['global_gap'])} • {event['previous_exercise']} Set {event['previous_set']}"
+                    if event['extended_global']:line+=" • Extended interval"
+                    timing.append(ft.Text(line,size=9,color="amber300" if event['extended_global'] else "white38"))
+                if event['same_exercise_gap'] is not None:timing.append(ft.Text(f"Same-exercise recovery: {format_duration_seconds(event['same_exercise_gap'])} • {event['intervening_sets']} other set(s) between",size=9,color="cyan200"))
+            else:timing.append(ft.Text("Timing information not recorded",size=9,color="white38"))
             controls.append(ft.Container(content=ft.Column([
                 ft.Text(f"{date or 'Unknown'} • W{wk} • Set {num}", size=11, weight="bold", color="cyan200"),
                 ft.Text(f"Target {fmt(tw)} x {tr if tr is not None else '?'} → Actual {fmt(aw)} x {ar if ar is not None else '?'} @ RPE {fmt(rpe)}", size=11),
                 ft.Text(f"{(decision or 'legacy').replace('_',' ').title()}: {reason or 'Legacy set; no saved decision.'}", size=10, color="white54"),
                 ft.Text(f"Load {'increased' if (tw is not None and aw is not None and float(aw)>float(tw)) else 'held/reduced'} • Reps {'met' if (tr is not None and ar is not None and int(ar)>=int(tr)) else 'building'}", size=9, color="cyan200"),
+                *timing,
             ], spacing=2), bgcolor="white10", border_radius=8, padding=8))
         if not controls: controls=[ft.Text("No completed history for this exercise.", color="white54")]
         dialog=ft.AlertDialog(title=ft.Text(f"Progression History: {self.exercise}", size=15, weight="bold"),
@@ -916,6 +931,10 @@ class ExerciseCard(ft.Card):
                 set_data["done"] = False
                 set_data["completed_at"] = None
             self.autosave_pending_sets()
+            all_done = bool(self.app.sets.get(self.db_id)) and all(bool(x.get("done")) for x in self.app.sets[self.db_id])
+            if requested_value and set_idx == len(self.app.sets[self.db_id]) - 1 and all_done:
+                self.on_save(None)
+                return
             if requested_value and not exercise_was_started:
                 category_name = self.context.get("category") if self.context else None
                 self.app.activate_exercise(category_name, self.db_id)  # rebuilds internally
@@ -954,14 +973,7 @@ class ExerciseCard(ft.Card):
                     normal_target = self.normal_set_targets[i - 1] if i - 1 < len(self.normal_set_targets) else target
                     completed_at = s_data.get("completed_at")
                     done = 1 if s_data.get("done") else 0
-                    rest_secs = None
-                    if done and completed_at and i > 1:
-                        prev_completed = self.app.sets[self.db_id][i - 2].get("completed_at")
-                        if prev_completed:
-                            try:
-                                rest_secs = max(0, int(round((datetime.fromisoformat(completed_at) - datetime.fromisoformat(prev_completed)).total_seconds())))
-                            except Exception:
-                                rest_secs = None
+                    rest_secs = global_set_gap(self.app.current_meso,self.app.current_week,self.app.current_day,completed_at,self.db_id,i) if done and completed_at else None
                     cursor.execute("""
                         INSERT INTO workout_sets
                             (session_id, set_number, weight, reps, rpe, rest_seconds, target_weight, target_reps, normal_target_weight, normal_target_reps, completed_at, is_complete)
@@ -1117,12 +1129,7 @@ class ExerciseCard(ft.Card):
             prev_completed_at = None
             for i, (w_val, r_val, rpe_val, orig_idx, target, completed_at) in enumerate(rows_to_save, start=1):
                 normal_target = self.normal_set_targets[orig_idx] if orig_idx < len(self.normal_set_targets) else target
-                rest_secs = None
-                if prev_completed_at and completed_at:
-                    try:
-                        rest_secs = max(0, int(round((datetime.fromisoformat(completed_at) - datetime.fromisoformat(prev_completed_at)).total_seconds())))
-                    except Exception:
-                        rest_secs = None
+                rest_secs = global_set_gap(self.app.current_meso,self.app.current_week,self.app.current_day,completed_at,self.db_id,i) if completed_at else None
                 prev_completed_at = completed_at or prev_completed_at
                 effective_settings = get_effective_progression_settings(self.exercise, self.mov_type, EXERCISE_METADATA.get(self.exercise, {}).get("equipment", "Barbell"), get_user_age(), get_user_progression_profile())
                 outcome = classify_set_progression(float(w_val), int(r_val), float(rpe_val), float(target["w"]), int(target["r"]), float(normal_target["w"]), int(normal_target["r"]), effective_settings)
@@ -2397,6 +2404,9 @@ class WorkoutTrackerApp:
             "Next Week source: recurring blueprint/origin day",
             "Temporary schedule exceptions copied forward: no",
             "Rollover refresh: synchronized",
+            "Workout timeline: global set chronology",
+            "Meso metric drill-down: enabled",
+            "Final set auto-log: enabled",
         ]
         self.diagnostics_dialog = ft.AlertDialog(
             title=ft.Text("IronCycle Diagnostics", weight="bold"),
@@ -3979,6 +3989,9 @@ class WorkoutTrackerApp:
             stats_col.controls.append(
                 ft.Text(f"Avg Rest Between Sets: {format_duration_seconds(avg_rest_today)}", size=16, color="cyan200")
             )
+        timeline=workout_timeline(self.current_meso,self.current_week,self.current_day)
+        if timeline['events']:
+            stats_col.controls.extend([ft.Text("Workout Timeline",size=14,color="cyan300",weight="bold"),ft.Text(f"Elapsed: {format_duration_seconds(timeline['elapsed'])} • Sets: {len(timeline['events'])}",size=12),ft.Text(f"Median interval: {format_duration_seconds(timeline['median']) or '—'} • Average: {format_duration_seconds(timeline['average']) or '—'} • Longest: {format_duration_seconds(timeline['longest']) or '—'}",size=10,color="white70")])
 
         def outcome_card(key,label,color):
             return ft.Container(content=ft.Column([ft.Text(str(outcome_counts[key]),size=18,weight="bold",color=color),ft.Text(label,size=9,color="white54")],spacing=1,horizontal_alignment="center"),bgcolor="white10",border_radius=8,padding=8,expand=True,ink=outcome_counts[key]>0,on_click=(lambda ev,k=key:self.open_next_target_outcomes(k)) if outcome_counts[key]>0 else None)
@@ -4153,6 +4166,22 @@ class WorkoutTrackerApp:
                 padding=40
             )
         )
+
+    def open_meso_metric_details(self,kind,comparisons,excluded,first_week,final_week):
+        controls=[]
+        key='load_delta' if kind=='load' else 'e1rm_delta';title='Load Change' if kind=='load' else 'Estimated Strength Change'
+        groups=[('INCREASED',[x for x in comparisons if x[key]>0],'green300'),('UNCHANGED',[x for x in comparisons if x[key]==0],'white70'),('DECREASED',[x for x in comparisons if x[key]<0],'red300')]
+        for label,items,color in groups:
+            controls.append(ft.Text(label,size=10,weight='bold',color=color))
+            for x in items:
+                if kind=='load':detail=f"W{first_week}: {x['start']['heavy_w']:g} × {x['start']['heavy_r']} → W{final_week}: {x['finish']['heavy_w']:g} × {x['finish']['heavy_r']} • {x['load_delta']:+g} lb ({x['load_pct']:+.1f}%)"
+                else:detail=f"W{first_week}: {x['start']['e1rm_w']:g} × {x['start']['e1rm_r']} = {x['start']['best_e1rm']:.1f} → W{final_week}: {x['finish']['e1rm_w']:g} × {x['finish']['e1rm_r']} = {x['finish']['best_e1rm']:.1f} • {x['e1rm_delta']:+.1f} lb"
+                controls.append(ft.Container(content=ft.Column([ft.Text(x['exercise'],weight='bold',size=11),ft.Text(detail,size=9,color='white70')],spacing=2),bgcolor='white10',padding=7,border_radius=7))
+        if excluded:
+            controls.append(ft.Text('EXCLUDED',size=10,weight='bold',color='amber300'))
+            for ex,why in excluded:controls.append(ft.Text(f"{ex}: {why}",size=9,color='white54'))
+        note='e1RM is calculated from recorded weight and reps. It is an estimate, not a completed one-rep maximum.' if kind=='e1rm' else 'Compared exercises have a completed result in both the starting and ending week.'
+        dialog=ft.AlertDialog(title=ft.Text(title,weight='bold'),content=ft.Container(width=390,height=500,content=ft.ListView([ft.Text(note,size=9,color='white54'),*controls],spacing=6)),actions=[ft.TextButton('Close',on_click=lambda ev:self.safe_close(dialog))],inset_padding=12);self.safe_open(dialog)
 
     def open_meso_report(self, e=None):
         self.close_actions_menu()
@@ -4346,6 +4375,10 @@ class WorkoutTrackerApp:
                     "label_color": label_color,
                 })
 
+        excluded=[]
+        for ex,weeks in best.items():
+            if first_week not in weeks:excluded.append((ex,f"No completed result in Week {first_week}"))
+            elif final_week not in weeks:excluded.append((ex,f"No completed result in Week {final_week}"))
         # Sort by load progression first because the report now explicitly separates load/reps/e1RM.
         comparisons.sort(key=lambda c: (c["load_pct"], c["e1rm_pct"]), reverse=True)
 
@@ -4373,14 +4406,16 @@ class WorkoutTrackerApp:
                     ft.Text(f"{load_up_count}/{len(comparisons)}", size=20, weight="bold", color="green300"),
                     ft.Text("Loads Increased", size=10, color="white54"),
                 ], horizontal_alignment="center", spacing=2),
-                bgcolor="white10", border_radius=8, padding=12, expand=True
+                bgcolor="white10", border_radius=8, padding=12, expand=True, ink=True,
+                on_click=lambda ev:self.open_meso_metric_details('load',comparisons,excluded,first_week,final_week)
             ),
             ft.Container(
                 content=ft.Column([
                     ft.Text(f"{e1rm_up_count}/{len(comparisons)}", size=20, weight="bold", color="cyan300"),
                     ft.Text("e1RM Improved", size=10, color="white54"),
                 ], horizontal_alignment="center", spacing=2),
-                bgcolor="white10", border_radius=8, padding=12, expand=True
+                bgcolor="white10", border_radius=8, padding=12, expand=True, ink=True,
+                on_click=lambda ev:self.open_meso_metric_details('e1rm',comparisons,excluded,first_week,final_week)
             ),
             ft.Container(
                 content=ft.Column([
