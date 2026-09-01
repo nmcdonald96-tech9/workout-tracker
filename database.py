@@ -1037,8 +1037,7 @@ def next_plan_slot(meso,week,day):
  except:selected=[]
  selected=[d for d in PLAN_DAYS if d in selected]
  if not selected:selected=sorted({d for _,d in future_slots if d in PLAN_DAYS},key=PLAN_DAYS.index) or PLAN_DAYS[:5]
- idx=PLAN_DAYS.index(day) if day in PLAN_DAYS else -1
- existing={(str(w),d) for w,d in future_slots}
+ idx=PLAN_DAYS.index(day) if day in PLAN_DAYS else -1;existing={(str(w),d) for w,d in future_slots}
  for wk in range(int(week),length+1):
   for d in selected:
    if wk==int(week) and PLAN_DAYS.index(d)<=idx:continue
@@ -1060,3 +1059,73 @@ def plan_diagnostics(meso):
  p=[x for x in get_plan_sessions(meso) if x['status']==STATUS_PENDING];seen=set();dups=0
  for x in p:k=(x['week'],x['day'],x['exercise']);dups+=int(k in seen);seen.add(k)
  return {"pending":len(p),"exceptions":sum(x['exception'] for x in p),"unexpected":len(unexpected_future_placements(meso)),"duplicates":dups}
+
+
+def get_recurring_week_template(meso_number,source_week):
+    with get_db() as c:
+        cfg=c.execute("SELECT blueprint_json FROM meso_configs WHERE meso_number=?",(meso_number,)).fetchone()
+        rows=c.execute("SELECT exercise,category,day_of_week,target_weight,target_reps,movement_type,COALESCE(schedule_origin_day,day_of_week) FROM workout_sessions WHERE meso_number=? AND week=? ORDER BY id",(meso_number,str(source_week))).fetchall()
+        library={r[0]:r[1:] for r in c.execute("SELECT name,category,COALESCE(movement_type,'Isolation') FROM exercise_dict").fetchall()}
+    latest={r[0]:r for r in rows};template=[];seen=set();blueprint={}
+    try:blueprint=json.loads(cfg[0]) if cfg and cfg[0] else {}
+    except Exception:blueprint={}
+    if isinstance(blueprint,dict) and blueprint:
+        for day in PLAN_DAYS:
+            for exercise in blueprint.get(day,[]) or []:
+                if exercise in seen:continue
+                prior=latest.get(exercise);lib=library.get(exercise,("General","Isolation"))
+                template.append({"exercise":exercise,"category":prior[1] if prior else lib[0],"day":day,"target_weight":prior[3] if prior else None,"target_reps":prior[4] if prior else None,"movement_type":prior[5] if prior else lib[1]});seen.add(exercise)
+    # Preserve recurring additions absent from an older blueprint, but always use origin day.
+    for r in rows:
+        if r[0] in seen:continue
+        template.append({"exercise":r[0],"category":r[1],"day":r[6] or r[2],"target_weight":r[3],"target_reps":r[4],"movement_type":r[5]});seen.add(r[0])
+    return template
+
+def validate_generated_week(meso_number,week):
+    with get_db() as c:
+        rows=c.execute("SELECT exercise,day_of_week,COALESCE(schedule_origin_day,day_of_week),COALESCE(schedule_exception,0),status FROM workout_sessions WHERE meso_number=? AND week=?",(meso_number,str(week))).fetchall()
+    duplicates=len(rows)-len({(r[0],r[1]) for r in rows})
+    invalid=sum(1 for r in rows if r[1]!=r[2] or r[3] or r[4]!=STATUS_PENDING)
+    return {"sessions":len(rows),"duplicates":duplicates,"invalid_recurring_rows":invalid,"ok":duplicates==0 and invalid==0}
+
+
+# 1.23/1.24 read-only progression and mesocycle decision support.
+def progression_review(meso_number, exposure_limit=6):
+    with get_db() as c:
+        rows=c.execute("""SELECT ws.exercise,ws.category,ws.movement_type,s.progression_decision,s.progression_reason_code,s.weight,s.reps,s.rpe,s.target_weight,s.target_reps,ws.date,ws.id,ed.progression_mode,ed.progression_step,ed.rep_ceiling,ed.max_progression_weight FROM workout_sessions ws JOIN workout_sets s ON s.session_id=ws.id LEFT JOIN exercise_dict ed ON ed.name=ws.exercise WHERE ws.meso_number=? AND ws.status=? AND s.is_complete=1 ORDER BY ws.exercise,ws.date DESC,ws.id DESC,s.set_number""",(meso_number,STATUS_COMPLETED)).fetchall()
+    grouped={}
+    for r in rows:grouped.setdefault(r[0],[]).append(r)
+    result=[]
+    for ex,items in grouped.items():
+        recent=items[:max(1,int(exposure_limit))*5];decisions=[str(x[3] or 'hold') for x in recent];codes=[str(x[4] or '') for x in recent]
+        hold_run=0;reduce_run=0
+        for d in decisions:
+            if d=='hold' and reduce_run==0:hold_run+=1
+            else:break
+        for d in decisions:
+            if d=='reduce' and hold_run==0:reduce_run+=1
+            else:break
+        cap=items[0][15];latest_weight=float(items[0][5] or 0);status='progressing'
+        if cap is not None and latest_weight>=float(cap):status='load_cap'
+        elif reduce_run>=2:status='repeated_reduce'
+        elif hold_run>=3:status='repeated_hold'
+        elif 'BUILD_REPS' in codes[:5]:status='building_reps'
+        invalid=[]
+        if items[0][12]=='custom' and items[0][13] is None:invalid.append('Custom mode has no weight step')
+        if items[0][14] is not None and int(items[0][14])<int(items[0][6] or 0):invalid.append('Rep ceiling is below latest completed reps')
+        if cap is not None and float(cap)<latest_weight:invalid.append('Maximum load is below latest completed load')
+        if invalid:status='configuration_review'
+        result.append({'exercise':ex,'category':items[0][1] or 'General','status':status,'hold_run':hold_run,'reduce_run':reduce_run,'latest_weight':latest_weight,'latest_reps':int(items[0][6] or 0),'latest_rpe':float(items[0][7] or 0),'load_cap':cap,'issues':invalid,'decisions':decisions[:6]})
+    return sorted(result,key=lambda x:({'configuration_review':0,'repeated_reduce':1,'repeated_hold':2,'load_cap':3,'building_reps':4,'progressing':5}.get(x['status'],9),x['exercise']))
+
+def mesocycle_health(meso_number):
+    with get_db() as c:
+        session_rows=c.execute("SELECT status,COALESCE(schedule_exception,0),skip_reason,week,exercise FROM workout_sessions WHERE meso_number=? AND COALESCE(week,'')!='Deload'",(meso_number,)).fetchall()
+        decisions=c.execute("""SELECT COALESCE(s.progression_decision,'hold'),COUNT(*) FROM workout_sets s JOIN workout_sessions ws ON ws.id=s.session_id WHERE ws.meso_number=? AND ws.status=? AND s.is_complete=1 GROUP BY COALESCE(s.progression_decision,'hold')""",(meso_number,STATUS_COMPLETED)).fetchall()
+        readiness=c.execute("SELECT sleep,joints,drive,COALESCE(diet,0) FROM readiness_logs WHERE meso_number=?",(meso_number,)).fetchall()
+    total=len(session_rows);completed=sum(r[0]==STATUS_COMPLETED for r in session_rows);pending=sum(r[0]==STATUS_PENDING for r in session_rows);skipped=sum(r[0]==STATUS_SKIPPED for r in session_rows);rolled=sum(bool(r[1]) for r in session_rows);roll_skips=sum(r[2] in ('missed_workout_rollover','rollover_destination_duplicate') for r in session_rows);manual_skips=max(0,skipped-roll_skips)
+    scores=[]
+    for row in readiness:
+        vals=[float(v) for v in row if v is not None and float(v)>0];scores.append(sum(vals)/len(vals)*2 if vals else 0)
+    review=progression_review(meso_number);dist={k:int(v) for k,v in decisions}
+    return {'total':total,'completed':completed,'pending':pending,'skipped':skipped,'completion_pct':round(completed/total*100,1) if total else 0,'rolled':rolled,'rollover_skips':roll_skips,'manual_skips':manual_skips,'avg_readiness':round(sum(scores)/len(scores),1) if scores else None,'decisions':dist,'repeated_holds':sum(x['status']=='repeated_hold' for x in review),'repeated_reductions':sum(x['status']=='repeated_reduce' for x in review),'load_caps':sum(x['status']=='load_cap' for x in review),'configuration_issues':sum(x['status']=='configuration_review' for x in review)}

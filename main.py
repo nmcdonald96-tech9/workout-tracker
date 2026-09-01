@@ -1209,7 +1209,7 @@ class WorkoutTrackerApp:
         self.gen_days = {"Monday": True, "Tuesday": True, "Wednesday": True, "Thursday": True, "Friday": True, "Saturday": False, "Sunday": False}
         self.gen_length = 4
 
-        required_symbols = {"init_and_seed_db": init_and_seed_db, "calculate_set_specific_progression": calculate_set_specific_progression, "classify_set_progression": classify_set_progression, "get_plan_sessions": get_plan_sessions, "rollover_one_workout": rollover_one_workout, "plan_diagnostics": plan_diagnostics}
+        required_symbols = {"init_and_seed_db": init_and_seed_db, "calculate_set_specific_progression": calculate_set_specific_progression, "classify_set_progression": classify_set_progression, "get_plan_sessions": get_plan_sessions, "rollover_one_workout": rollover_one_workout, "plan_diagnostics": plan_diagnostics, "progression_review": progression_review, "mesocycle_health": mesocycle_health}
         missing = [name for name, value in required_symbols.items() if not callable(value)]
         if missing:
             raise RuntimeError("Installation validation failed. Check matching main.py, database.py, and constants.py. Missing: " + ", ".join(missing))
@@ -1537,6 +1537,7 @@ class WorkoutTrackerApp:
                     ft.Row([
                         ft.ElevatedButton("📈 Strength Standards", on_click=self.open_strength_standards, expand=True, style=btn_style),
                         ft.ElevatedButton("🏁 Meso Report", on_click=self.open_meso_report, expand=True, style=btn_style),
+                        ft.ElevatedButton("🔎 Progression Review", on_click=self.open_progression_review, expand=True, style=btn_style),
                     ], spacing=6),
                     ft.ElevatedButton("📋 View Last Workout Summary", on_click=self.open_latest_workout_summary, width=float('inf'), style=btn_style),
 
@@ -1603,14 +1604,9 @@ class WorkoutTrackerApp:
         def apply(ev=None):
             try:
                 d=rollover_one_workout(self.current_meso,self.current_week,self.current_day,dw,dd,[c.data for c in checks if c.value])
-                self.safe_close(dialog)
-                self.sets.clear()
+                self.safe_close(dialog);self.sets.clear()
                 def finish_rollover_refresh():
-                    time.sleep(0.18)
-                    self.set_active_position()
-                    self.rebuild_navigation_headers()
-                    self.rebuild_entire_display()
-                    self.show_snackbar(f"Rollover complete: moved {len(d['rolled'])}, skipped {len(d['skipped'])}. Next active workout: W{self.current_week} {self.current_day}.","green300")
+                    time.sleep(0.18);self.set_active_position();self.rebuild_navigation_headers();self.rebuild_entire_display();self.show_snackbar(f"Rollover complete: moved {len(d['rolled'])}, skipped {len(d['skipped'])}. Next active workout: W{self.current_week} {self.current_day}.","green300")
                 try:self.page.run_thread(finish_rollover_refresh)
                 except Exception:finish_rollover_refresh()
             except Exception as err:self.show_snackbar(str(err),"red300")
@@ -2367,8 +2363,12 @@ class WorkoutTrackerApp:
             f"Focus mode: {'On' if self.workout_focus_mode else 'Off'}",
             f"Density: {self.ui_density}",
             f"Last workout rebuild: {self.last_rebuild_ms if self.last_rebuild_ms is not None else 'not measured'} ms",
+            "Next Week source: recurring blueprint/origin day",
+            "Temporary schedule exceptions copied forward: no",
             "Rollover refresh: synchronized",
-            "Cross-week destination lookup: configured plus scheduled weeks",
+            "Progression Review: available",
+            "Mesocycle Health: available",
+            "Transition snapshots: enabled",
         ]
         self.diagnostics_dialog = ft.AlertDialog(
             title=ft.Text("IronCycle Diagnostics", weight="bold"),
@@ -4126,6 +4126,32 @@ class WorkoutTrackerApp:
             )
         )
 
+    def open_progression_review(self,e=None):
+        self.close_actions_menu();rows=progression_review(self.current_meso);counts={}
+        for x in rows:counts[x['status']]=counts.get(x['status'],0)+1
+        labels={'progressing':'Progressing normally','building_reps':'Building reps','repeated_hold':'Repeated holds','repeated_reduce':'Repeated reductions','load_cap':'Load cap reached','configuration_review':'Configuration review'}
+        controls=[ft.Text(f"{labels.get(k,k)}: {v}",size=11,color='cyan200' if k in ('progressing','building_reps') else 'amber300') for k,v in counts.items()]
+        for x in rows:
+            reason=' • '.join(x['issues']) if x['issues'] else ('Recent: '+', '.join(d.replace('_',' ') for d in x['decisions'][:4]))
+            controls.append(ft.Container(content=ft.Column([ft.Row([ft.Text(x['exercise'],weight='bold',size=11,expand=True),ft.Text(labels.get(x['status'],x['status']),size=9,color='amber300' if x['status'] not in ('progressing','building_reps') else 'green300')]),ft.Text(f"Latest {x['latest_weight']:g} lb × {x['latest_reps']} @ {x['latest_rpe']:g}",size=9,color='white70'),ft.Text(reason,size=9,color='white54'),ft.TextButton('Modify progression',on_click=lambda ev,name=x['exercise']:[self.safe_close(dialog),self.open_exercise_progression_editor(name)])],spacing=3),bgcolor='white10',padding=8,border_radius=7))
+        if not rows:controls=[ft.Text('No completed progression history is available yet.',color='white54')]
+        dialog=ft.AlertDialog(title=ft.Text('Progression Review',weight='bold'),content=ft.Container(width=390,height=500,content=ft.ListView(controls,spacing=6)),actions=[ft.TextButton('Close',on_click=lambda ev:self.safe_close(dialog))],inset_padding=12);self.safe_open(dialog)
+
+    def open_meso_health_decisions(self,e=None):
+        h=mesocycle_health(self.current_meso);d=h['decisions'];lines=[f"Completion: {h['completion_pct']:.1f}% ({h['completed']}/{h['total']})",f"Pending: {h['pending']} • Skipped: {h['skipped']}",f"One-workout exceptions: {h['rolled']}",f"Skipped by rollover: {h['rollover_skips']} • Manual skips: {h['manual_skips']}",f"Readiness average: {h['avg_readiness'] if h['avg_readiness'] is not None else 'Not logged'}",f"Progress: {d.get('progress',0)} • Hold: {d.get('hold',0)} • Reduce: {d.get('reduce',0)} • Resume: {d.get('resume_normal',0)}",f"Repeated holds: {h['repeated_holds']} • Repeated reductions: {h['repeated_reductions']}",f"Load caps reached: {h['load_caps']} • Configuration reviews: {h['configuration_issues']}"]
+        def snapshot_name():
+            name=f"pre_meso_transition_auto_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt";path=os.path.join(self.get_backup_storage_dir(),name)
+            with open(path,'w',encoding='utf-8') as f:f.write(self.create_backup_string())
+            return name
+        def extend(ev=None):
+            name=snapshot_name()
+            with get_db() as c:
+                row=c.execute('SELECT length_weeks FROM meso_configs WHERE meso_number=?',(self.current_meso,)).fetchone();length=int(row[0] if row and row[0] else int(self.current_week));c.execute('UPDATE meso_configs SET length_weeks=? WHERE meso_number=?',(length+1,self.current_meso));c.commit()
+            self.safe_close(dialog);self.rebuild_navigation_headers();self.rebuild_entire_display();self.show_snackbar(f"Mesocycle extended one week. Snapshot: {name}",'green300')
+        actions=[ft.TextButton('Close',on_click=lambda ev:self.safe_close(dialog)),ft.ElevatedButton('Extend One Week',on_click=extend),ft.ElevatedButton('Generate Deload',on_click=lambda ev:[self.safe_close(dialog),self.run_progression_engine('Deload')]),ft.ElevatedButton('Repeat / Review',on_click=lambda ev:[self.safe_close(dialog),self.open_clone_meso_dialog()])]
+        if h['pending']>0:lines.append('Resolve pending sessions in Manage Active Meso before finishing or repeating.')
+        dialog=ft.AlertDialog(title=ft.Text('Mesocycle Health and Next Step',weight='bold'),content=ft.Container(width=390,content=ft.Column([ft.Text('\n'.join(lines),size=11,selectable=True),ft.Text('All transition actions remain user-controlled. Completed history is never rewritten.',size=9,color='amber200')],tight=True,spacing=8)),actions=actions,inset_padding=12);self.safe_open(dialog)
+
     def open_meso_report(self, e=None):
         self.close_actions_menu()
         self.view_mode = "meso_report"
@@ -4134,6 +4160,7 @@ class WorkoutTrackerApp:
 
     def build_meso_report_view(self):
         self.meso_report_canvas.controls.clear()
+        self.meso_report_canvas.controls.append(ft.ElevatedButton("Mesocycle Health & Next Step",on_click=self.open_meso_health_decisions,width=float('inf'),style=ft.ButtonStyle(bgcolor="purple700",color="white")))
         meso = self.current_meso
         meso_label = self.current_meso_label()
 
@@ -5625,82 +5652,36 @@ class WorkoutTrackerApp:
         self.show_snackbar("Mesocycle Wiped.", "red300")
 
     def run_progression_engine(self, mode):
-        next_w = "Deload" if mode == "Deload" else str(int(self.current_week) + 1)
+        next_w="Deload" if mode=="Deload" else str(int(self.current_week)+1)
         try:
+            template=get_recurring_week_template(self.current_meso,self.current_week)
+            if not template:
+                self.show_snackbar(f"No recurring exercises found for Week {self.current_week}.","red300");return
+            today_str=datetime.now().strftime("%Y-%m-%d");new_sessions=[]
             with get_db() as conn:
-                cursor = conn.cursor()
-
-                cursor.execute(
-                    "SELECT exercise, category, day_of_week, target_weight, target_reps, movement_type "
-                    "FROM workout_sessions WHERE meso_number = ? AND week = ?",
-                    (self.current_meso, self.current_week)
-                )
-                all_current_week_exercises = cursor.fetchall()
-
-                if not all_current_week_exercises:
-                    self.show_snackbar(
-                        f"No exercises found for Week {self.current_week} (Meso {self.current_meso}). "
-                        "Cannot advance — nothing to copy forward.",
-                        "red300"
-                    )
-                    return
-
-                new_sessions = []
-                today_str = datetime.now().strftime("%Y-%m-%d")
-
-                for ex, cat, day, tw, tr, mov_type in all_current_week_exercises:
-                    try:
-                        new_w, new_r, _ = get_exercise_smart_defaults(ex, self.current_meso)
-                    except Exception as def_err:
-                        # A single exercise's computation failing must never block
-                        # the rest of the week -- fall back to its own stored target.
-                        print(f"[run_progression_engine] smart defaults failed for '{ex}': {def_err}")
-                        is_bw_fallback = EXERCISE_METADATA.get(ex, {}).get("equipment") == "Bodyweight"
-                        new_w = float(tw) if tw is not None else (0.0 if is_bw_fallback else 45.0)
-                        new_r = int(tr) if tr is not None else 10
-
-                    if mode == "Deload":
-                        is_bw = EXERCISE_METADATA.get(ex, {}).get("equipment") == "Bodyweight"
-                        new_w = new_w * 0.65 if not is_bw else new_w
-                        # tr is this week's stored target_reps -- guard against None
-                        # before floor-dividing (a None here previously crashed silently).
-                        safe_tr = int(tr) if tr is not None else 10
-                        new_r = max(1, safe_tr // 2)
-
-                    new_sessions.append((today_str, ex, cat, day, next_w, new_w, new_r, "Pending", mov_type, self.current_meso))
-
-                if new_sessions:
-                    cursor.executemany(
-                        "INSERT INTO workout_sessions (date, exercise, category, day_of_week, week, target_weight, target_reps, status, movement_type, meso_number) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                        new_sessions
-                    )
+                cursor=conn.cursor();cursor.execute("BEGIN IMMEDIATE")
+                existing={r[0] for r in cursor.execute("SELECT exercise FROM workout_sessions WHERE meso_number=? AND week=?",(self.current_meso,next_w)).fetchall()}
+                for item in template:
+                    ex=item["exercise"]
+                    if ex in existing:continue
+                    try:new_w,new_r,_=get_exercise_smart_defaults(ex,self.current_meso)
+                    except Exception:
+                        is_bw=EXERCISE_METADATA.get(ex,{}).get("equipment")=="Bodyweight";new_w=float(item["target_weight"]) if item["target_weight"] is not None else (0.0 if is_bw else 45.0);new_r=int(item["target_reps"] or 10)
+                    if mode=="Deload":
+                        is_bw=EXERCISE_METADATA.get(ex,{}).get("equipment")=="Bodyweight";new_w=new_w if is_bw else new_w*0.65;new_r=max(1,int(item["target_reps"] or 10)//2)
+                    new_sessions.append((today_str,ex,item["category"],item["day"],next_w,new_w,new_r,STATUS_PENDING,item["movement_type"],self.current_meso,item["day"],0,None))
+                cursor.executemany("INSERT INTO workout_sessions(date,exercise,category,day_of_week,week,target_weight,target_reps,status,movement_type,meso_number,schedule_origin_day,schedule_exception,skip_reason) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",new_sessions)
                 conn.commit()
-
+            report=validate_generated_week(self.current_meso,next_w)
+            if not report["ok"]:raise RuntimeError(f"Generated week validation failed: {report}")
         except Exception as engine_err:
-            # This is the safety net: whatever goes wrong, the user sees it
-            # instead of the button silently doing nothing.
-            error_detail = traceback.format_exc()
-            print(f"[run_progression_engine] FAILED:\n{error_detail}")
-            self.show_snackbar(f"Progression engine failed: {engine_err}", "red300")
-            return
-
-        self.current_week = next_w
-
-        try:
-            self.set_active_position(force_week=self.current_week)
-        except Exception as e:
-            print(f"[run_progression_engine] set_active_position failed: {e}")
-
-        try:
-            self.rebuild_navigation_headers()
-        except Exception as e:
-            print(f"[run_progression_engine] rebuild_navigation_headers failed: {e}")
-
-        # Unconditional -- runs regardless of what happened above, and has its
-        # own internal crash-report display if rendering itself fails.
-        self.rebuild_entire_display()
-        self.show_snackbar(f"Advanced to Week {next_w}!", "green300")
+            print(f"[run_progression_engine] FAILED:\n{traceback.format_exc()}");self.show_snackbar(f"Progression engine failed: {engine_err}","red300");return
+        self.current_week=next_w
+        try:self.set_active_position(force_week=self.current_week)
+        except Exception as err:print(f"[run_progression_engine] set_active_position failed: {err}")
+        try:self.rebuild_navigation_headers()
+        except Exception as err:print(f"[run_progression_engine] navigation failed: {err}")
+        self.rebuild_entire_display();self.show_snackbar(f"Advanced to Week {next_w}: {report['sessions']} recurring exercise(s) generated from the plan.","green300")
 
     def rebuild_entire_display(self):
         if hasattr(self, "foundation"):
