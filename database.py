@@ -1010,53 +1010,58 @@ def exercise_exists(exercise_name):
         return conn.execute("SELECT 1 FROM exercise_dict WHERE name=? LIMIT 1",(name,)).fetchone() is not None
 
 
-def get_library_entries(include_reviewed=False):
-    with get_db() as conn:
-        rows=conn.execute("SELECT name,category,COALESCE(movement_family,''),COALESCE(movement_type,'Isolation'),COALESCE(equipment,'Other'),COALESCE(angle,'Not specified'),catalog_id,COALESCE(is_custom,0) FROM exercise_dict ORDER BY category,name").fetchall()
-        reviewed={r[0].split('catalog_reviewed:',1)[1] for r in conn.execute("SELECT setting_key FROM user_settings WHERE setting_key LIKE 'catalog_reviewed:%' AND setting_value='1'").fetchall()}
-    out=[]
-    for r in rows:
-        if not include_reviewed and r[0] in reviewed:continue
-        out.append({"name":r[0],"category":r[1] or "General","family":r[2],"movement_type":r[3],"equipment":r[4],"angle":r[5],"catalog_id":r[6],"is_custom":bool(r[7]),"reviewed":r[0] in reviewed})
-    return out
+# 1.17 transactional active-meso plan editing. Completed sessions are immutable.
+def get_pending_plan(meso_number):
+    with get_db() as c:
+        rows=c.execute("SELECT id,week,day_of_week,exercise,category,target_weight,target_reps,movement_type FROM workout_sessions WHERE meso_number=? AND status=? ORDER BY CASE WHEN week='Deload' THEN 999 ELSE CAST(week AS INTEGER) END, CASE day_of_week WHEN 'Monday' THEN 1 WHEN 'Tuesday' THEN 2 WHEN 'Wednesday' THEN 3 WHEN 'Thursday' THEN 4 WHEN 'Friday' THEN 5 WHEN 'Saturday' THEN 6 WHEN 'Sunday' THEN 7 ELSE 8 END,id",(meso_number,STATUS_PENDING)).fetchall()
+    return [{"id":r[0],"week":r[1],"day":r[2],"exercise":r[3],"category":r[4],"weight":r[5],"reps":r[6],"movement_type":r[7]} for r in rows]
 
-def get_catalog_review_items():
-    out=[]
-    for ex in get_library_entries(False):
-        if ex["catalog_id"]:continue
-        exact=catalog_match(ex["name"])
-        if exact:
-            out.append({"exercise":ex,"candidate":exact["item"],"kind":"Exact name" if exact["source"]=="canonical" else "Known alias","score":100,"reasons":[exact["source"]]})
-            continue
-        ranked=rank_catalog_candidates(ex["name"],ex["category"],ex["family"] or None,ex["equipment"] or None,ex["angle"],1)
-        candidate=ranked[0] if ranked and ranked[0]["score"]>=35 else None
-        out.append({"exercise":ex,"candidate":candidate["item"] if candidate else None,"kind":"Possible match" if candidate else "No suggested match","score":candidate["score"] if candidate else 0,"reasons":candidate["reasons"] if candidate else []})
-    order={"Exact name":0,"Known alias":1,"Possible match":2,"No suggested match":3}
-    return sorted(out,key=lambda x:(order[x["kind"]],x["exercise"]["name"]))
+def preview_plan_edit(meso_number,operation,session_id,replacement=None,scope='single',destination_day=None):
+    plan=get_pending_plan(meso_number);source=next((x for x in plan if x['id']==session_id),None)
+    if not source:raise ValueError('Only pending sessions can be edited.')
+    affected=[source]
+    if scope=='future_day':affected=[x for x in plan if x['day']==source['day'] and x['exercise']==source['exercise'] and (x['week']=='Deload' or int(x['week'])>=int(source['week']))]
+    elif scope=='future_all':affected=[x for x in plan if x['exercise']==source['exercise'] and (x['week']=='Deload' or int(x['week'])>=int(source['week']))]
+    return {"operation":operation,"source":source,"replacement":replacement,"destination_day":destination_day,"scope":scope,"affected":affected,"count":len(affected)}
 
-def mark_catalog_reviewed_custom(name):
-    with get_db() as conn:
-        conn.execute("INSERT OR REPLACE INTO user_settings(setting_key,setting_value) VALUES(?, '1')",(f"catalog_reviewed:{name}",));conn.commit()
+def apply_plan_edit(meso_number,operation,session_id,replacement=None,scope='single',destination_day=None):
+    preview=preview_plan_edit(meso_number,operation,session_id,replacement,scope,destination_day)
+    ids=[x['id'] for x in preview['affected']]
+    if not ids:return preview
+    marks=','.join('?'*len(ids))
+    with get_db() as c:
+        c.execute('BEGIN IMMEDIATE')
+        completed=c.execute(f"SELECT COUNT(*) FROM workout_sessions WHERE id IN ({marks}) AND status<>?",(*ids,STATUS_PENDING)).fetchone()[0]
+        if completed:raise ValueError('A targeted session is no longer pending.')
+        if operation=='remove':c.execute(f"DELETE FROM workout_sessions WHERE id IN ({marks})",ids)
+        elif operation=='replace':
+            if not replacement:raise ValueError('Choose a replacement exercise.')
+            meta=c.execute("SELECT category,COALESCE(movement_type,'Isolation') FROM exercise_dict WHERE name=?",(replacement,)).fetchone()
+            if not meta:raise ValueError('Replacement must exist in My Exercises.')
+            for row in preview['affected']:
+                if c.execute("SELECT 1 FROM workout_sessions WHERE meso_number=? AND week=? AND day_of_week=? AND exercise=? AND status=? AND id<>?",(meso_number,row['week'],row['day'],replacement,STATUS_PENDING,row['id'])).fetchone():raise ValueError(f"{replacement} already exists on {row['day']} Week {row['week']}.")
+                defaults=get_exercise_smart_defaults(replacement,meso_number)
+                c.execute("UPDATE workout_sessions SET exercise=?,category=?,movement_type=?,target_weight=?,target_reps=? WHERE id=?",(replacement,meta[0],meta[1],defaults[0],defaults[1],row['id']))
+                c.execute("DELETE FROM workout_sets WHERE session_id=?",(row['id'],))
+        elif operation=='move':
+            if not destination_day:raise ValueError('Choose a destination day.')
+            for row in preview['affected']:
+                if c.execute("SELECT 1 FROM workout_sessions WHERE meso_number=? AND week=? AND day_of_week=? AND exercise=? AND status=? AND id<>?",(meso_number,row['week'],destination_day,row['exercise'],STATUS_PENDING,row['id'])).fetchone():raise ValueError(f"{row['exercise']} already exists on {destination_day} Week {row['week']}.")
+            c.execute(f"UPDATE workout_sessions SET day_of_week=? WHERE id IN ({marks})",(destination_day,*ids))
+        else:raise ValueError('Unknown plan operation.')
+        c.commit()
+    return preview
 
-def safe_link_catalog_definition(name,catalog_id):
-    item=CATALOG_BY_ID.get(catalog_id)
-    if not item:raise ValueError("Unknown catalog definition.")
-    with get_db() as conn:
-        collision=conn.execute("SELECT name FROM exercise_dict WHERE catalog_id=? AND name<>?",(catalog_id,name)).fetchone()
-        if collision:raise ValueError(f"Already linked to {collision[0]}.")
-        conn.execute("UPDATE exercise_dict SET catalog_id=?,movement_family=?,movement_type=?,equipment=?,angle=? WHERE name=?",(catalog_id,item["family"],item["movement_type"],item["equipment"],item.get("angle","Not specified"),name))
-        conn.execute("DELETE FROM user_settings WHERE setting_key=?",(f"catalog_reviewed:{name}",))
-        conn.execute("INSERT OR REPLACE INTO exercise_aliases(alias,catalog_id,exercise_name,source,confirmed) VALUES(?,?,?,?,1)",(name,catalog_id,name,"user"));conn.commit()
-
-def add_catalog_definition(catalog_id,display_name=None):
-    item=CATALOG_BY_ID.get(catalog_id)
-    if not item:raise ValueError("Unknown catalog definition.")
-    name=str(display_name or item["name"]).strip()
-    if not name:raise ValueError("Name is required.")
-    with get_db() as conn:
-        linked=conn.execute("SELECT name FROM exercise_dict WHERE catalog_id=?",(catalog_id,)).fetchone()
-        if linked:raise ValueError(f"Already in My Exercises as {linked[0]}.")
-        if conn.execute("SELECT 1 FROM exercise_dict WHERE name=?",(name,)).fetchone():raise ValueError("That name already exists. Use Review Matches to link it.")
-        conn.execute("INSERT INTO exercise_dict(name,category,movement_pattern,setup_notes,catalog_id,display_name,movement_family,movement_type,equipment,angle,is_custom) VALUES(?,?,?,'',?,?,?,?,?,?,0)",(name,item["category"],item["pattern"],catalog_id,name,item["family"],item["movement_type"],item["equipment"],item.get("angle","Not specified")))
-        conn.execute("INSERT OR REPLACE INTO exercise_aliases(alias,catalog_id,exercise_name,source,confirmed) VALUES(?,?,?,?,1)",(name,catalog_id,name,"user"));conn.commit()
-    return name
+def add_pending_plan_exercise(meso_number,week,day,exercise,repeat_future=False):
+    with get_db() as c:
+        row=c.execute("SELECT category,COALESCE(movement_type,'Isolation') FROM exercise_dict WHERE name=?",(exercise,)).fetchone()
+        if not row:raise ValueError('Exercise must exist in My Exercises.')
+        weeks=[str(week)]
+        if repeat_future:
+            cfg=c.execute("SELECT length_weeks FROM meso_configs WHERE meso_number=?",(meso_number,)).fetchone();last=int(cfg[0] if cfg and cfg[0] else week);weeks=[str(x) for x in range(int(week),last+1)]
+        defaults=get_exercise_smart_defaults(exercise,meso_number);added=0;c.execute('BEGIN IMMEDIATE')
+        for wk in weeks:
+            if c.execute("SELECT 1 FROM workout_sessions WHERE meso_number=? AND week=? AND day_of_week=? AND exercise=?",(meso_number,wk,day,exercise)).fetchone():continue
+            c.execute("INSERT INTO workout_sessions(date,exercise,category,day_of_week,week,target_weight,target_reps,status,movement_type,meso_number) VALUES(?,?,?,?,?,?,?,?,?,?)",(datetime.now().strftime('%Y-%m-%d'),exercise,row[0],day,wk,defaults[0],defaults[1],STATUS_PENDING,row[1],meso_number));added+=1
+        c.commit()
+    return added

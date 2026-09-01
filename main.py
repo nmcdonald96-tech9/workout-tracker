@@ -1209,7 +1209,7 @@ class WorkoutTrackerApp:
         self.gen_days = {"Monday": True, "Tuesday": True, "Wednesday": True, "Thursday": True, "Friday": True, "Saturday": False, "Sunday": False}
         self.gen_length = 4
 
-        required_symbols = {"init_and_seed_db": init_and_seed_db, "calculate_set_specific_progression": calculate_set_specific_progression, "classify_set_progression": classify_set_progression, "get_catalog_review_items": get_catalog_review_items, "safe_link_catalog_definition": safe_link_catalog_definition, "add_catalog_definition": add_catalog_definition}
+        required_symbols = {"init_and_seed_db": init_and_seed_db, "calculate_set_specific_progression": calculate_set_specific_progression, "classify_set_progression": classify_set_progression, "get_pending_plan": get_pending_plan, "preview_plan_edit": preview_plan_edit, "apply_plan_edit": apply_plan_edit}
         missing = [name for name, value in required_symbols.items() if not callable(value)]
         if missing:
             raise RuntimeError("Installation validation failed. Check matching main.py, database.py, and constants.py. Missing: " + ", ".join(missing))
@@ -1504,8 +1504,7 @@ class WorkoutTrackerApp:
         self.actions_menu_dialog = ft.AlertDialog(
             title=ft.Text("Quick Actions", size=16, weight="bold"),
             content=ft.Container(
-                width=340,
-                height=560,
+                width=340, height=560,
                 content=ft.ListView([
                     ft.Text("NAVIGATION", size=10, weight="bold", color="cyan300"),
                     ft.Dropdown(
@@ -1529,6 +1528,7 @@ class WorkoutTrackerApp:
                         ft.ElevatedButton("⏳ Length", on_click=self.trigger_adjust_meso_length, expand=True, style=btn_style),
                     ], spacing=6),
                     ft.ElevatedButton("🏗️ Architect New Meso", style=ft.ButtonStyle(bgcolor="orange700", shape=ft.RoundedRectangleBorder(radius=6), color="white"), on_click=self.open_generator_view, width=float('inf')),
+                    ft.ElevatedButton("🗓️ Edit Active Meso", on_click=self.open_active_meso_editor, width=float('inf'), style=btn_style),
                     ft.ElevatedButton("🔁 Repeat Previous Meso", style=ft.ButtonStyle(bgcolor="blue700", shape=ft.RoundedRectangleBorder(radius=6), color="white"), on_click=self.open_clone_meso_dialog, width=float('inf')),
                     
                     ft.Divider(height=10, color="white10"),
@@ -1580,6 +1580,56 @@ class WorkoutTrackerApp:
             content_padding=20
         )
         self.safe_open(self.actions_menu_dialog)
+
+    def open_active_meso_editor(self,e=None):
+        self.close_actions_menu();plan=get_pending_plan(self.current_meso)
+        week=ft.Dropdown(label="Week",value=str(self.current_week) if str(self.current_week).isdigit() else "1",options=[ft.dropdown.Option(w) for w in self.get_existing_weeks() if str(w).isdigit()])
+        day=ft.Dropdown(label="Day",value=self.current_day,options=[ft.dropdown.Option(d) for d in self.ordered_day_names()])
+        rows=ft.ListView(expand=True,spacing=6,build_controls_on_demand=False)
+        def render(ev=None):
+            rows.controls.clear()
+            selected=[x for x in get_pending_plan(self.current_meso) if x['week']==week.value and x['day']==day.value]
+            for x in selected:
+                rows.controls.append(ft.Container(content=ft.Row([ft.Column([ft.Text(x['exercise'],size=11,weight="bold"),ft.Text(f"{x['category']} • {float(x['weight'] or 0):g} lb × {int(x['reps'] or 0)}",size=9,color="white54")],expand=True,spacing=2),ft.TextButton("Edit",on_click=lambda ev,item=x:self.open_plan_item_editor(item,render))]),bgcolor="white10",padding=8,border_radius=7))
+            try:rows.update()
+            except Exception:pass
+        week.on_select=render;day.on_select=render
+        def add(ev=None):self.open_plan_add_dialog(week.value,day.value,render)
+        dialog=ft.AlertDialog(title=ft.Text("🗓️ Edit Active Meso",weight="bold"),content=ft.Container(width=390,height=520,content=ft.Column([ft.Text("Only pending workouts can be changed. Completed history is protected.",size=9,color="amber200"),ft.Row([week,day]),rows],expand=True,spacing=6)),actions=[ft.TextButton("Add Exercise",on_click=add),ft.TextButton("Close",on_click=lambda ev:self.safe_close(dialog))],inset_padding=12,content_padding=14)
+        render();self.safe_open(dialog)
+
+    def open_plan_item_editor(self,item,refresh):
+        choices=[]
+        for cat,names in self.load_exercise_dict().items():
+            for name in names:choices.append(ft.dropdown.Option(name))
+        operation=ft.Dropdown(label="Operation",value="replace",options=[ft.dropdown.Option("replace","Replace exercise"),ft.dropdown.Option("move","Move to another day"),ft.dropdown.Option("remove","Remove from plan")])
+        replacement=ft.Dropdown(label="Replacement from My Exercises",options=choices)
+        destination=ft.Dropdown(label="Destination day",options=[ft.dropdown.Option(d) for d in self.ordered_day_names()])
+        scope=ft.Dropdown(label="Apply to",value="single",options=[ft.dropdown.Option("single","This workout only"),ft.dropdown.Option("future_day","This day from this week forward"),ft.dropdown.Option("future_all","All remaining occurrences")])
+        preview_text=ft.Text("",size=10,color="cyan200")
+        def preview(ev=None):
+            try:
+                data=preview_plan_edit(self.current_meso,operation.value,item['id'],replacement.value,scope.value,destination.value);preview_text.value=f"{data['count']} pending session(s) affected • 0 completed sessions affected"
+            except Exception as err:preview_text.value=str(err)
+            try:preview_text.update()
+            except Exception:pass
+        for c in (operation,replacement,destination,scope):c.on_select=preview
+        def apply(ev=None):
+            try:
+                data=apply_plan_edit(self.current_meso,operation.value,item['id'],replacement.value,scope.value,destination.value);self.safe_close(dialog);self.sets.clear();refresh();self.rebuild_entire_display();self.show_snackbar(f"Plan updated: {data['count']} pending session(s). Completed history unchanged.","green300")
+            except Exception as err:self.show_snackbar(str(err),"red300")
+        dialog=ft.AlertDialog(title=ft.Text(item['exercise'],weight="bold"),content=ft.Column([operation,replacement,destination,scope,preview_text,ft.Text("Replacement uses the incoming exercise's own progression defaults and history.",size=9,color="white54")],tight=True,spacing=7),actions=[ft.TextButton("Cancel",on_click=lambda ev:self.safe_close(dialog)),ft.ElevatedButton("Apply Change",on_click=apply)])
+        preview();self.safe_open(dialog)
+
+    def open_plan_add_dialog(self,week,day,refresh):
+        options=[ft.dropdown.Option(n) for names in self.load_exercise_dict().values() for n in names]
+        exercise=ft.Dropdown(label="Exercise from My Exercises",options=options);repeat=ft.Checkbox(label="Repeat on this day through remaining weeks",value=False)
+        def add(ev=None):
+            try:
+                count=add_pending_plan_exercise(self.current_meso,week,day,exercise.value,bool(repeat.value));self.safe_close(dialog);refresh();self.rebuild_entire_display();self.show_snackbar(f"Added {count} pending session(s).","green300")
+            except Exception as err:self.show_snackbar(str(err),"red300")
+        dialog=ft.AlertDialog(title=ft.Text(f"Add to Week {week} • {day}",weight="bold"),content=ft.Column([exercise,repeat],tight=True),actions=[ft.TextButton("Cancel",on_click=lambda ev:self.safe_close(dialog)),ft.ElevatedButton("Add",on_click=add)])
+        self.safe_open(dialog)
 
     def open_latest_workout_summary(self, e=None):
         self.close_actions_menu()
@@ -2066,7 +2116,6 @@ class WorkoutTrackerApp:
                         ft.ElevatedButton("MY EXERCISES", disabled=True, expand=True),
                         ft.ElevatedButton("BROWSE CATALOG", on_click=lambda ev: [self.safe_close(self.dict_dialog), self.open_catalog_browser()], expand=True),
                     ], spacing=4),
-                    ft.ElevatedButton("REVIEW MATCHES", on_click=lambda ev: [self.safe_close(self.dict_dialog), self.open_catalog_review()], width=float('inf')),
                     ft.Text("My Exercises: modify classification, progression, name, or remove an exercise.", size=11, color="white54"),
                     self.dict_dropdown,
                     ft.Row([self.dict_cat_dropdown, ft.ElevatedButton("Update", style=ft.ButtonStyle(bgcolor="blue700", color="white", padding=10), on_click=self.update_dictionary_category)], spacing=6),
@@ -2317,9 +2366,8 @@ class WorkoutTrackerApp:
             f"Focus mode: {'On' if self.workout_focus_mode else 'Off'}",
             f"Density: {self.ui_density}",
             f"Last workout rebuild: {self.last_rebuild_ms if self.last_rebuild_ms is not None else 'not measured'} ms",
-            f"Catalog definitions: {len(BUILTIN_EXERCISE_CATALOG)}",
-            f"Catalog linked: {get_catalog_coverage()['linked']}",
-            f"Catalog unlinked: {get_catalog_coverage()['unlinked']}",
+            f"Pending plan sessions: {len(get_pending_plan(self.current_meso))}",
+            "Plan editor protection: completed sessions immutable",
         ]
         self.diagnostics_dialog = ft.AlertDialog(
             title=ft.Text("IronCycle Diagnostics", weight="bold"),
@@ -5365,67 +5413,20 @@ class WorkoutTrackerApp:
         self.show_snackbar(f"Custom Meso {new_meso_num} Stamped Successfully!", "green300")
 
     def open_catalog_browser(self, e=None):
-        try:self.close_actions_menu()
-        except Exception:pass
+        try: self.close_actions_menu()
+        except Exception: pass
         search=ft.TextField(label="Search catalog",hint_text="Name, category, family, or equipment",text_size=12)
         results=ft.ListView(expand=True,spacing=5,build_controls_on_demand=False)
-        coverage_text=ft.Text("",size=9,color="cyan200")
+        coverage=get_catalog_coverage()
         def render(ev=None):
-            coverage=get_catalog_coverage();q=str(search.value or "").strip().lower();results.controls.clear()
-            coverage_text.value=f"{len(BUILTIN_EXERCISE_CATALOG)} built-in definitions • {coverage['linked']} linked • {coverage['unlinked']} unlinked My Exercises entries"
+            q=str(search.value or "").strip().lower();results.controls.clear()
             items=[x for x in BUILTIN_EXERCISE_CATALOG if not q or q in (x["name"]+" "+x["category"]+" "+movement_family_label(x["family"])+" "+x["equipment"]).lower()]
-            with get_db() as conn:linked={r[0]:r[1] for r in conn.execute("SELECT catalog_id,name FROM exercise_dict WHERE catalog_id IS NOT NULL").fetchall()}
-            for x in items:
-                status=f"In My Exercises as {linked[x['id']]}" if x["id"] in linked else "Tap for details"
-                results.controls.append(ft.Container(content=ft.Column([ft.Text(x["name"],size=11,weight="bold"),ft.Text(f"{x['category']} • {movement_family_label(x['family'])} • {x['equipment']} • {x.get('angle','Not specified')}",size=9,color="white54"),ft.Text(status,size=9,color="green300" if x["id"] in linked else "cyan200")],spacing=2),bgcolor="white10",padding=7,border_radius=7,ink=True,on_click=lambda ev,item=x:self.open_catalog_definition_detail(item,render)))
-            try:coverage_text.update();results.update()
-            except Exception:pass
-        search.on_change=render
-        dialog=ft.AlertDialog(title=ft.Text("📚 Exercise Library • Browse Catalog",weight="bold"),content=ft.Container(width=390,height=520,content=ft.Column([coverage_text,search,results],expand=True,spacing=6)),actions=[ft.TextButton("Review Matches",on_click=lambda ev:[self.safe_close(dialog),self.open_catalog_review()]),ft.TextButton("Close",on_click=lambda ev:self.safe_close(dialog))],inset_padding=12,content_padding=14)
-        render();self.safe_open(dialog)
-
-    def open_catalog_definition_detail(self,item,refresh):
-        with get_db() as conn:linked=conn.execute("SELECT name FROM exercise_dict WHERE catalog_id=?",(item["id"],)).fetchone()
-        preferred=ft.TextField(label="Name in My Exercises",value=item["name"],text_size=12)
-        def add(ev=None):
-            try:
-                name=add_catalog_definition(item["id"],preferred.value);self.safe_close(dialog);refresh();self.show_snackbar(f"Added {name} to My Exercises.","green300")
-            except Exception as err:self.show_snackbar(str(err),"red300")
-        actions=[ft.TextButton("Close",on_click=lambda ev:self.safe_close(dialog))]
-        if not linked:actions.insert(0,ft.ElevatedButton("Add to My Exercises",on_click=add))
-        dialog=ft.AlertDialog(title=ft.Text(item["name"],weight="bold"),content=ft.Column([ft.Text(f"{item['category']} • {movement_family_label(item['family'])}",size=11,color="cyan200"),ft.Text(f"{item['movement_type']} • {item['equipment']} • {item.get('angle','Not specified')}",size=10,color="white70"),ft.Text(f"Already linked as: {linked[0]}",size=10,color="green300") if linked else preferred],tight=True,spacing=8),actions=actions,inset_padding=18)
-        self.safe_open(dialog)
-
-    def open_catalog_review(self,e=None):
-        try:self.close_actions_menu()
-        except Exception:pass
-        results=ft.ListView(expand=True,spacing=6,build_controls_on_demand=False)
-        summary=ft.Text("",size=9,color="cyan200")
-        def render():
-            rows=get_catalog_review_items();results.controls.clear()
-            counts={k:sum(1 for x in rows if x["kind"]==k) for k in ("Exact name","Known alias","Possible match","No suggested match")}
-            summary.value=f"{len(rows)} to review • {counts['Exact name']} exact • {counts['Known alias']} aliases • {counts['Possible match']} possible • {counts['No suggested match']} custom"
-            for item in rows:
-                candidate=item["candidate"];line=f"{item['kind']}: {candidate['name']}" if candidate else item["kind"]
-                results.controls.append(ft.Container(content=ft.Column([ft.Text(item["exercise"]["name"],size=11,weight="bold"),ft.Text(line,size=9,color="cyan200")],spacing=2),bgcolor="white10",padding=8,border_radius=7,ink=True,on_click=lambda ev,x=item:self.open_catalog_review_detail(x,render)))
-            try:summary.update();results.update()
-            except Exception:pass
-        dialog=ft.AlertDialog(title=ft.Text("📚 Exercise Library • Review Matches",weight="bold"),content=ft.Container(width=390,height=520,content=ft.Column([summary,ft.Text("Link suggestions are advisory. Workout history and progression settings remain on the existing exercise.",size=9,color="amber200"),results],expand=True,spacing=6)),actions=[ft.TextButton("Browse Catalog",on_click=lambda ev:[self.safe_close(dialog),self.open_catalog_browser()]),ft.TextButton("Close",on_click=lambda ev:self.safe_close(dialog))],inset_padding=12,content_padding=14)
-        render();self.safe_open(dialog)
-
-    def open_catalog_review_detail(self,item,refresh):
-        ex=item["exercise"];candidate=item["candidate"]
-        controls=[ft.Text(ex["name"],size=13,weight="bold"),ft.Text(item["kind"],size=10,color="cyan200")]
-        if candidate:
-            controls.extend([ft.Text(f"Suggested: {candidate['name']}",size=11,weight="bold"),ft.Text(f"{candidate['category']} • {movement_family_label(candidate['family'])} • {candidate['equipment']} • {candidate.get('angle','Not specified')}",size=9,color="white70"),ft.Text("Why: "+", ".join(item.get("reasons") or ["classification similarity"]),size=9,color="white54")])
-        def keep(ev=None):mark_catalog_reviewed_custom(ex["name"]);self.safe_close(dialog);refresh();self.show_snackbar(f"{ex['name']} kept custom.","green300")
-        actions=[ft.TextButton("Keep Custom",on_click=keep),ft.TextButton("Cancel",on_click=lambda ev:self.safe_close(dialog))]
-        if candidate:
-            def link(ev=None):
-                try:safe_link_catalog_definition(ex["name"],candidate["id"]);self.safe_close(dialog);refresh();self.show_snackbar("Catalog definition linked. History and progression settings preserved.","green300")
-                except Exception as err:self.show_snackbar(str(err),"red300")
-            actions.append(ft.ElevatedButton("Link Definition",on_click=link))
-        dialog=ft.AlertDialog(title=ft.Text("Review Match",weight="bold"),content=ft.Column(controls,tight=True,spacing=7),actions=actions,inset_padding=18)
+            for x in items[:80]:
+                results.controls.append(ft.Container(content=ft.Column([ft.Text(x["name"],size=11,weight="bold"),ft.Text(f"{x['category']} • {movement_family_label(x['family'])} • {x['equipment']} • {x.get('angle','Not specified')}",size=9,color="white54")],spacing=2),bgcolor="white10",padding=7,border_radius=7))
+            try: results.update()
+            except Exception: pass
+        search.on_change=render;render()
+        dialog=ft.AlertDialog(title=ft.Text("Exercise Catalog",weight="bold"),content=ft.Container(width=390,height=500,content=ft.Column([ft.Text(f"{len(BUILTIN_EXERCISE_CATALOG)} built-in definitions • {coverage['linked']} linked • {coverage['unlinked']} unlinked dictionary entries",size=9,color="cyan200"),search,results],expand=True)),actions=[ft.TextButton("Close",on_click=lambda ev:self.safe_close(dialog))])
         self.safe_open(dialog)
 
     def open_guided_exercise_creation(self,name,category,movement_type,on_created):
