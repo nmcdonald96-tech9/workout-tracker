@@ -1593,7 +1593,7 @@ class WorkoutTrackerApp:
         if not rows:self.show_snackbar("No pending exercises in the current workout.","amber300");return
         slot=next_plan_slot(self.current_meso,self.current_week,self.current_day)
         if not slot:self.show_snackbar("No later training day is available.","amber300");return
-        dw,dd=slot;checks=[ft.Checkbox(label=f"{x['exercise']} • {x['category']}",data=x['id']) for x in rows];preview=ft.Text("",size=10,color="cyan200")
+        dw,dd=slot;checks=[ft.Checkbox(label=f"{x['exercise']} • {x['category']} • {('Rolled from '+x['origin_day']) if x['exception'] else ('Normally '+x['origin_day'])}",data=x['id']) for x in rows];preview=ft.Text("",size=10,color="cyan200")
         def refresh(ev=None):
             d=preview_rollover(self.current_meso,self.current_week,self.current_day,dw,dd,[c.data for c in checks if c.value]);preview.value=f"Move {len(d['rolled'])} • Skip {len(d['skipped'])} • Destination total {d['result_count']}"
             if ev is not None:
@@ -1601,7 +1601,18 @@ class WorkoutTrackerApp:
                 except RuntimeError:pass
         for c in checks:c.on_change=refresh
         def apply(ev=None):
-            try:d=rollover_one_workout(self.current_meso,self.current_week,self.current_day,dw,dd,[c.data for c in checks if c.value]);self.safe_close(dialog);self.sets.clear();self.set_active_position();self.rebuild_entire_display();self.show_snackbar(f"Moved {len(d['rolled'])}; skipped {len(d['skipped'])}. Future weeks retain original days.","green300")
+            try:
+                d=rollover_one_workout(self.current_meso,self.current_week,self.current_day,dw,dd,[c.data for c in checks if c.value])
+                self.safe_close(dialog)
+                self.sets.clear()
+                def finish_rollover_refresh():
+                    time.sleep(0.18)
+                    self.set_active_position()
+                    self.rebuild_navigation_headers()
+                    self.rebuild_entire_display()
+                    self.show_snackbar(f"Rollover complete: moved {len(d['rolled'])}, skipped {len(d['skipped'])}. Next active workout: W{self.current_week} {self.current_day}.","green300")
+                try:self.page.run_thread(finish_rollover_refresh)
+                except Exception:finish_rollover_refresh()
             except Exception as err:self.show_snackbar(str(err),"red300")
         dialog=ft.AlertDialog(title=ft.Text("Roll Missed Workout",weight="bold"),content=ft.Container(width=390,height=460,content=ft.Column([ft.Text(f"W{self.current_week} {self.current_day} → W{dw} {dd}",weight="bold"),ft.Text("One-workout exception. Future weeks retain the recurring day.",size=10,color="green300"),ft.Column(checks,scroll="auto",expand=True),preview],expand=True)),actions=[ft.TextButton("Cancel",on_click=lambda ev:self.safe_close(dialog)),ft.ElevatedButton("Roll Selected & Skip Others",on_click=apply)],inset_padding=12);self.safe_open(dialog);refresh()
 
@@ -2356,6 +2367,8 @@ class WorkoutTrackerApp:
             f"Focus mode: {'On' if self.workout_focus_mode else 'Off'}",
             f"Density: {self.ui_density}",
             f"Last workout rebuild: {self.last_rebuild_ms if self.last_rebuild_ms is not None else 'not measured'} ms",
+            "Rollover refresh: synchronized",
+            "Cross-week destination lookup: configured plus scheduled weeks",
         ]
         self.diagnostics_dialog = ft.AlertDialog(
             title=ft.Text("IronCycle Diagnostics", weight="bold"),

@@ -1028,15 +1028,21 @@ def plan_overview(meso):
   k=(x['week'],x['day']);v=out.setdefault(k,{"week":x['week'],"day":x['day'],"pending":0,"completed":0,"skipped":0,"exceptions":0});v[str(x['status']).lower()]=v.get(str(x['status']).lower(),0)+1;v['exceptions']+=int(x['exception'])
  return sorted(out.values(),key=lambda x:(-(int(x['week']) if str(x['week']).isdigit() else 999),PLAN_DAYS.index(x['day']) if x['day'] in PLAN_DAYS else 99))
 def next_plan_slot(meso,week,day):
- with get_db() as c:cfg=c.execute("SELECT length_weeks,selected_days FROM meso_configs WHERE meso_number=?",(meso,)).fetchone()
- length=int(cfg[0] if cfg and cfg[0] else week)
+ with get_db() as c:
+  cfg=c.execute("SELECT length_weeks,selected_days FROM meso_configs WHERE meso_number=?",(meso,)).fetchone()
+  highest=c.execute("SELECT COALESCE(MAX(CAST(week AS INTEGER)),0) FROM workout_sessions WHERE meso_number=? AND week GLOB '[0-9]*'",(meso,)).fetchone()[0] or 0
+  future_slots=c.execute("SELECT DISTINCT week,day_of_week FROM workout_sessions WHERE meso_number=? AND status=? AND week GLOB '[0-9]*'",(meso,STATUS_PENDING)).fetchall()
+ configured=int(cfg[0] if cfg and cfg[0] else 0);length=max(configured,int(highest),int(week))
  try:selected=json.loads(cfg[1]) if cfg and cfg[1] else []
  except:selected=[]
- selected=[d for d in PLAN_DAYS if d in selected] or PLAN_DAYS[:5];idx=PLAN_DAYS.index(day)
+ selected=[d for d in PLAN_DAYS if d in selected]
+ if not selected:selected=sorted({d for _,d in future_slots if d in PLAN_DAYS},key=PLAN_DAYS.index) or PLAN_DAYS[:5]
+ idx=PLAN_DAYS.index(day) if day in PLAN_DAYS else -1
+ existing={(str(w),d) for w,d in future_slots}
  for wk in range(int(week),length+1):
   for d in selected:
    if wk==int(week) and PLAN_DAYS.index(d)<=idx:continue
-   return str(wk),d
+   if (str(wk),d) in existing:return str(wk),d
  return None
 def preview_rollover(meso,week,day,dw,dd,ids):
  selected={int(i) for i in ids};rows=[x for x in get_plan_sessions(meso) if x['week']==str(week) and x['day']==day and x['status']==STATUS_PENDING];dest={x['exercise'] for x in get_plan_sessions(meso) if x['week']==str(dw) and x['day']==dd and x['status'] in (STATUS_PENDING,STATUS_COMPLETED)};rolled=[x for x in rows if x['id'] in selected and x['exercise'] not in dest];dups=[x for x in rows if x['id'] in selected and x['exercise'] in dest];return {"source":rows,"rolled":rolled,"duplicates":dups,"skipped":[x for x in rows if x['id'] not in selected]+dups,"result_count":len(dest)+len(rolled)}
