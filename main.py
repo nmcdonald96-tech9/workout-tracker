@@ -1209,7 +1209,7 @@ class WorkoutTrackerApp:
         self.gen_days = {"Monday": True, "Tuesday": True, "Wednesday": True, "Thursday": True, "Friday": True, "Saturday": False, "Sunday": False}
         self.gen_length = 4
 
-        required_symbols = {"init_and_seed_db": init_and_seed_db, "calculate_set_specific_progression": calculate_set_specific_progression, "classify_set_progression": classify_set_progression, "get_plan_sessions": get_plan_sessions, "rollover_one_workout": rollover_one_workout, "plan_diagnostics": plan_diagnostics, "progression_review": progression_review, "mesocycle_health": mesocycle_health}
+        required_symbols = {"init_and_seed_db": init_and_seed_db, "calculate_set_specific_progression": calculate_set_specific_progression, "classify_set_progression": classify_set_progression, "get_plan_sessions": get_plan_sessions, "rollover_one_workout": rollover_one_workout, "plan_diagnostics": plan_diagnostics, "progression_review": progression_review, "mesocycle_health": mesocycle_health, "apply_short_session": apply_short_session}
         missing = [name for name, value in required_symbols.items() if not callable(value)]
         if missing:
             raise RuntimeError("Installation validation failed. Check matching main.py, database.py, and constants.py. Missing: " + ", ".join(missing))
@@ -1533,13 +1533,8 @@ class WorkoutTrackerApp:
                     
                     ft.Divider(height=10, color="white10"),
 
-                    ft.Text("PROGRESS", size=10, weight="bold", color="cyan300"),
-                    ft.Row([
-                        ft.ElevatedButton("📈 Strength Standards", on_click=self.open_strength_standards, expand=True, style=btn_style),
-                        ft.ElevatedButton("🏁 Meso Report", on_click=self.open_meso_report, expand=True, style=btn_style),
-                        ft.ElevatedButton("🔎 Progression Review", on_click=self.open_progression_review, expand=True, style=btn_style),
-                    ], spacing=6),
-                    ft.ElevatedButton("📋 View Last Workout Summary", on_click=self.open_latest_workout_summary, width=float('inf'), style=btn_style),
+                    ft.Text("INSIGHTS", size=10, weight="bold", color="cyan300"),
+                    ft.ElevatedButton("📊 Progress & Reports", on_click=self.open_progress_reports_hub, width=float('inf'), style=btn_style),
 
                     ft.Divider(height=10, color="white10"),
                     
@@ -1627,6 +1622,42 @@ class WorkoutTrackerApp:
             controls.append(ft.Container(content=ft.Column([ft.Text(f"{exercise} • {len(sets)} set(s)",weight="bold",size=11),*details],spacing=4),bgcolor="white10",padding=8,border_radius=7))
         if not controls:controls=[ft.Text("No exercises are in this outcome.",color="white54")]
         dialog=ft.AlertDialog(title=ft.Text(f"Next Targets: {labels.get(decision,decision)}",weight="bold"),content=ft.Container(width=390,height=460,content=ft.ListView(controls,spacing=6)),actions=[ft.TextButton("Close",on_click=lambda ev:self.safe_close(dialog))],inset_padding=12);self.safe_open(dialog)
+
+    def open_progress_reports_hub(self,e=None):
+        self.close_actions_menu()
+        def tile(icon,title,detail,fn):return ft.Container(content=ft.Row([ft.Text(icon,size=20,width=30),ft.Column([ft.Text(title,weight='bold',size=12),ft.Text(detail,size=9,color='white54')],expand=True),ft.Text('›',color='cyan300')]),bgcolor='white10',padding=10,border_radius=8,ink=True,on_click=lambda ev:[self.safe_close(dialog),fn()])
+        controls=[tile('📋','Latest Workout','Results and next-target outcomes',self.open_latest_workout_summary),tile('🔎','Progression Review','Exercise trends and load caps',self.open_progression_review),tile('🧭','Mesocycle Health','Completion, readiness, and next steps',self.open_meso_health),tile('📈','Mesocycle Performance','Load, reps, e1RM, volume, and rest',self.open_meso_report),tile('🏆','Strength Standards','Eligible lift comparisons',self.open_strength_standards)]
+        dialog=ft.AlertDialog(title=ft.Text('Progress & Reports',weight='bold'),content=ft.Container(width=390,height=470,content=ft.ListView(controls,spacing=7)),actions=[ft.TextButton('Close',on_click=lambda ev:self.safe_close(dialog))],inset_padding=12);self.safe_open(dialog)
+    def open_progression_review(self,e=None):
+        rows=progression_review(self.current_meso);controls=[]
+        for x in rows:controls.append(ft.Container(content=ft.Column([ft.Text(x['exercise'],weight='bold'),ft.Text(f"{x['status']} • {x['weight']:g} lb × {x['reps']} @ {x['rpe']:g}",size=9,color='cyan200'),ft.TextButton('Modify progression',on_click=lambda ev,n=x['exercise']:[self.safe_close(dialog),self.open_exercise_progression_editor(n)])],spacing=2),bgcolor='white10',padding=8,border_radius=7))
+        if not controls:controls=[ft.Text('No completed progression history yet.',color='white54')]
+        dialog=ft.AlertDialog(title=ft.Text('Progression Review',weight='bold'),content=ft.Container(width=390,height=480,content=ft.ListView(controls,spacing=6)),actions=[ft.TextButton('Close',on_click=lambda ev:self.safe_close(dialog))],inset_padding=12);self.safe_open(dialog)
+    def open_meso_health(self,e=None):
+        h=mesocycle_health(self.current_meso);text=f"Completion: {h['completion']:.1f}% ({h['completed']}/{h['total']})\nPending: {h['pending']} • Skipped: {h['skipped']}\nOne-workout exceptions: {h['exceptions']}\nRollover skips: {h['roll_skips']}\nReadiness average: {h['readiness'] if h['readiness'] is not None else 'Not logged'}"
+        dialog=ft.AlertDialog(title=ft.Text('Mesocycle Health & Next Step',weight='bold'),content=ft.Text(text,size=11),actions=[ft.TextButton('Close',on_click=lambda ev:self.safe_close(dialog)),ft.ElevatedButton('Open Meso Report',on_click=lambda ev:[self.safe_close(dialog),self.open_meso_report()])]);self.safe_open(dialog)
+    def create_short_session_snapshot(self):
+        n=f"pre_short_session_auto_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt";open(os.path.join(self.get_backup_storage_dir(),n),'w',encoding='utf-8').write(self.create_backup_string());return n
+    def open_short_session(self,e=None):
+        rows=[x for x in get_plan_sessions(self.current_meso) if x['week']==str(self.current_week) and x['day']==self.current_day and x['status']==STATUS_PENDING]
+        if not rows:self.show_snackbar('No pending exercises are available.','amber300');return
+        checks=[ft.Checkbox(label=f"{x['exercise']} • {('Rolled from '+x['origin_day']) if x['exception'] else ('Normally '+x['origin_day'])}",value=True,data=x['id']) for x in rows]
+        action=ft.RadioGroup(value='skip',content=ft.Row([ft.Radio(value='skip',label='Mark skipped'),ft.Radio(value='roll',label='Roll remainder')],wrap=True));dests=short_session_destinations(self.current_meso,self.current_week,self.current_day);dest=ft.Dropdown(label='Roll destination',options=[ft.dropdown.Option(key=f'{w}|{d}',text=f"W{w} {d}"+(' • rest-day exception' if r else '')) for w,d,r in dests],visible=False);preview=ft.Text('',size=10,color='cyan200')
+        if dests:dest.value=f'{dests[0][0]}|{dests[0][1]}'
+        def refresh(ev=None):
+            dest.visible=action.value=='roll';target=tuple(dest.value.split('|',1)) if action.value=='roll' and dest.value else None;d=short_session_preview(self.current_meso,self.current_week,self.current_day,[c.data for c in checks if c.value],action.value,target);preview.value=f"Keep {d['keep']} • Roll {d['roll']} • Skip {d['skip']}"+(f" • Destination total {d['result']}" if target else '')
+            if ev is not None:
+                try:dest.update();preview.update()
+                except RuntimeError:pass
+        for c in checks:c.on_change=refresh
+        action.on_change=refresh;dest.on_select=refresh
+        def apply(ev=None):
+            try:
+                target=tuple(dest.value.split('|',1)) if action.value=='roll' and dest.value else None
+                if action.value=='roll' and not target:raise ValueError('Choose a roll destination.')
+                snap=self.create_short_session_snapshot();d=apply_short_session(self.current_meso,self.current_week,self.current_day,[c.data for c in checks if c.value],action.value,target);self.safe_close(dialog);self.sets.clear();time.sleep(.12);self.set_active_position();self.rebuild_navigation_headers();self.rebuild_entire_display();self.show_snackbar(f"Short session: keep {d['keep']}, roll {d['roll']}, skip {d['skip']}. Snapshot: {snap}",'green300')
+            except Exception as err:self.show_snackbar(str(err),'red300')
+        dialog=ft.AlertDialog(title=ft.Text('Short Session',weight='bold'),content=ft.Container(width=390,height=510,content=ft.Column([ft.Text('Keep checked exercises today. Choose one action for the remainder.',size=10),ft.Column(checks,scroll='auto',expand=True),action,dest,preview,ft.Text('Set counts can be shortened manually from each exercise card.',size=9,color='white54')],expand=True)),actions=[ft.TextButton('Cancel',on_click=lambda ev:self.safe_close(dialog)),ft.ElevatedButton('Apply Short Session',on_click=apply)],inset_padding=12);self.safe_open(dialog);refresh()
 
     def open_latest_workout_summary(self, e=None):
         self.close_actions_menu()
@@ -2366,9 +2397,6 @@ class WorkoutTrackerApp:
             "Next Week source: recurring blueprint/origin day",
             "Temporary schedule exceptions copied forward: no",
             "Rollover refresh: synchronized",
-            "Progression Review: available",
-            "Mesocycle Health: available",
-            "Transition snapshots: enabled",
         ]
         self.diagnostics_dialog = ft.AlertDialog(
             title=ft.Text("IronCycle Diagnostics", weight="bold"),
@@ -3767,7 +3795,7 @@ class WorkoutTrackerApp:
         for slider in (sleep_s,joint_s,drive_s,diet_s): slider.on_change=update_preview
         note_field.on_blur=save_context; tag_checks=build_tag_controls(ft,SESSION_TAG_OPTIONS,selected_tags,save_context); update_preview()
         sliders=ft.Column([ft.Row([ft.Column([ft.Text("Sleep",size=10),sleep_s],expand=True),ft.Column([ft.Text("Joints",size=10),joint_s],expand=True)]),ft.Row([ft.Column([ft.Text("Drive",size=10),drive_s],expand=True),ft.Column([ft.Text("Diet",size=10),diet_s],expand=True)])],spacing=2)
-        return ft.Container(content=ft.Column([header,preview,sliders,ft.Row(tag_checks,spacing=2,wrap=True),note_field,ft.ElevatedButton("Update Readiness" if readiness_logged else "Log Readiness",on_click=save_readiness,width=float("inf"),height=36,style=ft.ButtonStyle(bgcolor="blue700",color="white")),ft.Text("Readiness edits affect pending, incomplete targets only. Completed sets remain unchanged.",size=9,color=COLOR_MUTED,italic=True)],spacing=4,tight=True),bgcolor="white5",border_radius=8,padding=4)
+        return ft.Container(content=ft.Column([header,preview,sliders,ft.Row(tag_checks,spacing=2,wrap=True),note_field,ft.Row([ft.ElevatedButton("Update Readiness" if readiness_logged else "Log Readiness",on_click=save_readiness,expand=True,height=36,style=ft.ButtonStyle(bgcolor="blue700",color="white")),ft.ElevatedButton("Short Session",on_click=self.open_short_session,expand=True,height=36,style=ft.ButtonStyle(bgcolor="teal700",color="white"))],spacing=6),ft.Text("Readiness sets the tone. Keep selected exercises and skip or roll the remainder.",size=9,color=COLOR_MUTED,italic=True)],spacing=4,tight=True),bgcolor="white5",border_radius=8,padding=4)
 
     def toggle_navigation_rows(self, e=None):
         self.nav_collapsed = not self.nav_collapsed
@@ -4126,32 +4154,6 @@ class WorkoutTrackerApp:
             )
         )
 
-    def open_progression_review(self,e=None):
-        self.close_actions_menu();rows=progression_review(self.current_meso);counts={}
-        for x in rows:counts[x['status']]=counts.get(x['status'],0)+1
-        labels={'progressing':'Progressing normally','building_reps':'Building reps','repeated_hold':'Repeated holds','repeated_reduce':'Repeated reductions','load_cap':'Load cap reached','configuration_review':'Configuration review'}
-        controls=[ft.Text(f"{labels.get(k,k)}: {v}",size=11,color='cyan200' if k in ('progressing','building_reps') else 'amber300') for k,v in counts.items()]
-        for x in rows:
-            reason=' • '.join(x['issues']) if x['issues'] else ('Recent: '+', '.join(d.replace('_',' ') for d in x['decisions'][:4]))
-            controls.append(ft.Container(content=ft.Column([ft.Row([ft.Text(x['exercise'],weight='bold',size=11,expand=True),ft.Text(labels.get(x['status'],x['status']),size=9,color='amber300' if x['status'] not in ('progressing','building_reps') else 'green300')]),ft.Text(f"Latest {x['latest_weight']:g} lb × {x['latest_reps']} @ {x['latest_rpe']:g}",size=9,color='white70'),ft.Text(reason,size=9,color='white54'),ft.TextButton('Modify progression',on_click=lambda ev,name=x['exercise']:[self.safe_close(dialog),self.open_exercise_progression_editor(name)])],spacing=3),bgcolor='white10',padding=8,border_radius=7))
-        if not rows:controls=[ft.Text('No completed progression history is available yet.',color='white54')]
-        dialog=ft.AlertDialog(title=ft.Text('Progression Review',weight='bold'),content=ft.Container(width=390,height=500,content=ft.ListView(controls,spacing=6)),actions=[ft.TextButton('Close',on_click=lambda ev:self.safe_close(dialog))],inset_padding=12);self.safe_open(dialog)
-
-    def open_meso_health_decisions(self,e=None):
-        h=mesocycle_health(self.current_meso);d=h['decisions'];lines=[f"Completion: {h['completion_pct']:.1f}% ({h['completed']}/{h['total']})",f"Pending: {h['pending']} • Skipped: {h['skipped']}",f"One-workout exceptions: {h['rolled']}",f"Skipped by rollover: {h['rollover_skips']} • Manual skips: {h['manual_skips']}",f"Readiness average: {h['avg_readiness'] if h['avg_readiness'] is not None else 'Not logged'}",f"Progress: {d.get('progress',0)} • Hold: {d.get('hold',0)} • Reduce: {d.get('reduce',0)} • Resume: {d.get('resume_normal',0)}",f"Repeated holds: {h['repeated_holds']} • Repeated reductions: {h['repeated_reductions']}",f"Load caps reached: {h['load_caps']} • Configuration reviews: {h['configuration_issues']}"]
-        def snapshot_name():
-            name=f"pre_meso_transition_auto_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt";path=os.path.join(self.get_backup_storage_dir(),name)
-            with open(path,'w',encoding='utf-8') as f:f.write(self.create_backup_string())
-            return name
-        def extend(ev=None):
-            name=snapshot_name()
-            with get_db() as c:
-                row=c.execute('SELECT length_weeks FROM meso_configs WHERE meso_number=?',(self.current_meso,)).fetchone();length=int(row[0] if row and row[0] else int(self.current_week));c.execute('UPDATE meso_configs SET length_weeks=? WHERE meso_number=?',(length+1,self.current_meso));c.commit()
-            self.safe_close(dialog);self.rebuild_navigation_headers();self.rebuild_entire_display();self.show_snackbar(f"Mesocycle extended one week. Snapshot: {name}",'green300')
-        actions=[ft.TextButton('Close',on_click=lambda ev:self.safe_close(dialog)),ft.ElevatedButton('Extend One Week',on_click=extend),ft.ElevatedButton('Generate Deload',on_click=lambda ev:[self.safe_close(dialog),self.run_progression_engine('Deload')]),ft.ElevatedButton('Repeat / Review',on_click=lambda ev:[self.safe_close(dialog),self.open_clone_meso_dialog()])]
-        if h['pending']>0:lines.append('Resolve pending sessions in Manage Active Meso before finishing or repeating.')
-        dialog=ft.AlertDialog(title=ft.Text('Mesocycle Health and Next Step',weight='bold'),content=ft.Container(width=390,content=ft.Column([ft.Text('\n'.join(lines),size=11,selectable=True),ft.Text('All transition actions remain user-controlled. Completed history is never rewritten.',size=9,color='amber200')],tight=True,spacing=8)),actions=actions,inset_padding=12);self.safe_open(dialog)
-
     def open_meso_report(self, e=None):
         self.close_actions_menu()
         self.view_mode = "meso_report"
@@ -4160,7 +4162,6 @@ class WorkoutTrackerApp:
 
     def build_meso_report_view(self):
         self.meso_report_canvas.controls.clear()
-        self.meso_report_canvas.controls.append(ft.ElevatedButton("Mesocycle Health & Next Step",on_click=self.open_meso_health_decisions,width=float('inf'),style=ft.ButtonStyle(bgcolor="purple700",color="white")))
         meso = self.current_meso
         meso_label = self.current_meso_label()
 
