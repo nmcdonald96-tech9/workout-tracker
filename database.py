@@ -1019,69 +1019,38 @@ def exercise_exists(exercise_name):
 
 
 PLAN_DAYS=["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"]
-def get_plan_sessions(meso_number):
-    with get_db() as c:
-        rows=c.execute("SELECT id,week,day_of_week,exercise,category,status,target_weight,target_reps,COALESCE(schedule_origin_day,day_of_week),COALESCE(schedule_exception,0),skip_reason FROM workout_sessions WHERE meso_number=? ORDER BY CASE WHEN week='Deload' THEN 999 ELSE CAST(week AS INTEGER) END,id",(meso_number,)).fetchall()
-    return [{"id":r[0],"week":r[1],"day":r[2],"exercise":r[3],"category":r[4],"status":r[5],"weight":r[6],"reps":r[7],"origin_day":r[8],"exception":bool(r[9]),"skip_reason":r[10]} for r in rows]
-
-def plan_overview(meso_number):
-    sessions=get_plan_sessions(meso_number);out={}
-    for row in sessions:
-        key=(row['week'],row['day']);slot=out.setdefault(key,{"week":row['week'],"day":row['day'],"pending":0,"completed":0,"skipped":0,"exceptions":0})
-        label=str(row['status']).lower();slot[label]=slot.get(label,0)+1;slot['exceptions']+=int(row['exception'])
-    return sorted(out.values(),key=lambda x:(999 if x['week']=='Deload' else int(x['week']),PLAN_DAYS.index(x['day']) if x['day'] in PLAN_DAYS else 99))
-
-def next_plan_slot(meso_number,week,day):
-    with get_db() as c:cfg=c.execute("SELECT length_weeks,selected_days FROM meso_configs WHERE meso_number=?",(meso_number,)).fetchone()
-    length=int(cfg[0] if cfg and cfg[0] else week)
-    try:selected=json.loads(cfg[1]) if cfg and cfg[1] else []
-    except Exception:selected=[]
-    selected=[d for d in PLAN_DAYS if d in selected] or PLAN_DAYS[:5];start=int(week);idx=PLAN_DAYS.index(day)
-    for wk in range(start,length+1):
-        for d in selected:
-            if wk==start and PLAN_DAYS.index(d)<=idx:continue
-            return str(wk),d
-    return None
-
-def preview_rollover(meso,week,day,dw,dd,selected_ids):
-    selected={int(x) for x in selected_ids};rows=[x for x in get_plan_sessions(meso) if x['week']==str(week) and x['day']==day and x['status']==STATUS_PENDING]
-    destination={x['exercise'] for x in get_plan_sessions(meso) if x['week']==str(dw) and x['day']==dd and x['status'] in (STATUS_PENDING,STATUS_COMPLETED)}
-    rolled=[x for x in rows if x['id'] in selected and x['exercise'] not in destination];duplicates=[x for x in rows if x['id'] in selected and x['exercise'] in destination];skipped=[x for x in rows if x['id'] not in selected]+duplicates
-    return {"source":rows,"rolled":rolled,"duplicates":duplicates,"skipped":skipped,"destination_count":len(destination),"result_count":len(destination)+len(rolled)}
-
-def rollover_one_workout(meso,week,day,dw,dd,selected_ids):
-    data=preview_rollover(meso,week,day,dw,dd,selected_ids);move_ids={x['id'] for x in data['rolled']};dup_ids={x['id'] for x in data['duplicates']}
-    with get_db() as c:
-        c.execute('BEGIN IMMEDIATE')
-        for row in data['source']:
-            if row['id'] in move_ids:c.execute("UPDATE workout_sessions SET week=?,day_of_week=?,schedule_exception=1,skip_reason=NULL WHERE id=? AND status=?",(str(dw),dd,row['id'],STATUS_PENDING))
-            else:c.execute("UPDATE workout_sessions SET status=?,skip_reason=? WHERE id=? AND status=?",(STATUS_SKIPPED,'rollover_destination_duplicate' if row['id'] in dup_ids else 'missed_workout_rollover',row['id'],STATUS_PENDING))
-        c.commit()
-    return data
-
-def unexpected_future_placements(meso,from_week=1):
-    return [x for x in get_plan_sessions(meso) if x['status']==STATUS_PENDING and str(x['week']).isdigit() and int(x['week'])>=int(from_week) and x['day']!=x['origin_day'] and not x['exception']]
-
-def restore_future_schedule(meso,ids):
-    ids={int(x) for x in ids};count=0
-    with get_db() as c:
-        c.execute('BEGIN IMMEDIATE')
-        for x in unexpected_future_placements(meso,1):
-            if x['id'] in ids:c.execute("UPDATE workout_sessions SET day_of_week=schedule_origin_day,schedule_exception=0 WHERE id=? AND status=?",(x['id'],STATUS_PENDING));count+=1
-        c.commit()
-    return count
-
-def reset_pending_schedule_preview(meso):
-    rows=[x for x in get_plan_sessions(meso) if x['status']==STATUS_PENDING]
-    changed=[x for x in rows if x['day']!=x['origin_day'] or x['exception']]
-    return {"pending":len(rows),"changed":len(changed),"exceptions":sum(x['exception'] for x in changed),"completed":0}
-
-def reset_pending_schedule(meso):
-    with get_db() as c:
-        c.execute('BEGIN IMMEDIATE');cur=c.execute("UPDATE workout_sessions SET day_of_week=schedule_origin_day,schedule_exception=0,skip_reason=NULL WHERE meso_number=? AND status=? AND schedule_origin_day IS NOT NULL",(meso,STATUS_PENDING));c.commit();return cur.rowcount
-
+def get_plan_sessions(meso):
+ with get_db() as c:rows=c.execute("SELECT id,week,day_of_week,exercise,category,status,COALESCE(schedule_origin_day,day_of_week),COALESCE(schedule_exception,0),skip_reason FROM workout_sessions WHERE meso_number=? ORDER BY id",(meso,)).fetchall()
+ return [{"id":r[0],"week":r[1],"day":r[2],"exercise":r[3],"category":r[4],"status":r[5],"origin_day":r[6],"exception":bool(r[7]),"skip_reason":r[8]} for r in rows]
+def plan_overview(meso):
+ out={}
+ for x in get_plan_sessions(meso):
+  k=(x['week'],x['day']);v=out.setdefault(k,{"week":x['week'],"day":x['day'],"pending":0,"completed":0,"skipped":0,"exceptions":0});v[str(x['status']).lower()]=v.get(str(x['status']).lower(),0)+1;v['exceptions']+=int(x['exception'])
+ return sorted(out.values(),key=lambda x:(-(int(x['week']) if str(x['week']).isdigit() else 999),PLAN_DAYS.index(x['day']) if x['day'] in PLAN_DAYS else 99))
+def next_plan_slot(meso,week,day):
+ with get_db() as c:cfg=c.execute("SELECT length_weeks,selected_days FROM meso_configs WHERE meso_number=?",(meso,)).fetchone()
+ length=int(cfg[0] if cfg and cfg[0] else week)
+ try:selected=json.loads(cfg[1]) if cfg and cfg[1] else []
+ except:selected=[]
+ selected=[d for d in PLAN_DAYS if d in selected] or PLAN_DAYS[:5];idx=PLAN_DAYS.index(day)
+ for wk in range(int(week),length+1):
+  for d in selected:
+   if wk==int(week) and PLAN_DAYS.index(d)<=idx:continue
+   return str(wk),d
+ return None
+def preview_rollover(meso,week,day,dw,dd,ids):
+ selected={int(i) for i in ids};rows=[x for x in get_plan_sessions(meso) if x['week']==str(week) and x['day']==day and x['status']==STATUS_PENDING];dest={x['exercise'] for x in get_plan_sessions(meso) if x['week']==str(dw) and x['day']==dd and x['status'] in (STATUS_PENDING,STATUS_COMPLETED)};rolled=[x for x in rows if x['id'] in selected and x['exercise'] not in dest];dups=[x for x in rows if x['id'] in selected and x['exercise'] in dest];return {"source":rows,"rolled":rolled,"duplicates":dups,"skipped":[x for x in rows if x['id'] not in selected]+dups,"result_count":len(dest)+len(rolled)}
+def rollover_one_workout(meso,week,day,dw,dd,ids):
+ d=preview_rollover(meso,week,day,dw,dd,ids);move={x['id'] for x in d['rolled']};dups={x['id'] for x in d['duplicates']}
+ with get_db() as c:
+  c.execute('BEGIN IMMEDIATE')
+  for x in d['source']:
+   if x['id'] in move:c.execute("UPDATE workout_sessions SET week=?,day_of_week=?,schedule_exception=1,skip_reason=NULL WHERE id=? AND status=?",(str(dw),dd,x['id'],STATUS_PENDING))
+   else:c.execute("UPDATE workout_sessions SET status=?,skip_reason=? WHERE id=? AND status=?",(STATUS_SKIPPED,'rollover_destination_duplicate' if x['id'] in dups else 'missed_workout_rollover',x['id'],STATUS_PENDING))
+  c.commit()
+ return d
+def unexpected_future_placements(meso):return [x for x in get_plan_sessions(meso) if x['status']==STATUS_PENDING and x['day']!=x['origin_day'] and not x['exception']]
 def plan_diagnostics(meso):
-    rows=get_plan_sessions(meso);pending=[x for x in rows if x['status']==STATUS_PENDING];seen=set();duplicates=0
-    for x in pending:
-        key=(x['week'],x['day'],x['exercise']);duplicates+=int(key in seen);seen.add(key)
-    return {"pending":len(pending),"exceptions":sum(x['exception'] for x in pending),"unexpected":len(unexpected_future_placements(meso,1)),"duplicates":duplicates,"completed_protected":True}
+ p=[x for x in get_plan_sessions(meso) if x['status']==STATUS_PENDING];seen=set();dups=0
+ for x in p:k=(x['week'],x['day'],x['exercise']);dups+=int(k in seen);seen.add(k)
+ return {"pending":len(p),"exceptions":sum(x['exception'] for x in p),"unexpected":len(unexpected_future_placements(meso)),"duplicates":dups}
