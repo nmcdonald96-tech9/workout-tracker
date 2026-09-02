@@ -705,7 +705,7 @@ class ExerciseCard(ft.Card):
         chips_row.controls.append(self.plate_container)
         helper_zone = ft.Container(
             content=chips_row, margin=4,
-            visible=(not self.app.workout_focus_mode) or bool(regulation_msg) or bool(plate_text),
+            visible=(not self.app.workout_focus_mode) or bool(regulation_msg) or bool(plate_text) or bool(group_label),
         ) if chips_row.controls else ft.Container()
 
         # Softer utility buttons
@@ -910,9 +910,12 @@ class ExerciseCard(ft.Card):
                 set_data["done"] = False
                 set_data["completed_at"] = None
             self.autosave_pending_sets()
+            grouped_advanced = requested_value and self.app.advance_group_flow(self.db_id, set_idx + 1)
             all_done = bool(self.app.sets.get(self.db_id)) and all(bool(x.get("done")) for x in self.app.sets[self.db_id])
             if requested_value and set_idx == len(self.app.sets[self.db_id]) - 1 and all_done:
                 self.on_save(None)
+                return
+            if grouped_advanced:
                 return
             if requested_value and not exercise_was_started:
                 category_name = self.context.get("category") if self.context else None
@@ -1530,6 +1533,7 @@ class WorkoutTrackerApp:
                     ft.Row([
                         ft.ElevatedButton("🎯 Toggle Focus", on_click=self.toggle_workout_focus_mode, expand=True, style=btn_style),
                         ft.ElevatedButton("🛠 Diagnostics", on_click=self.open_diagnostics_dialog, expand=True, style=btn_style),
+                        ft.ElevatedButton("Diagnostic Export", on_click=self.open_privacy_diagnostics, expand=True, style=btn_style),
                     ], spacing=6),
                     ft.ElevatedButton("📊 Export History to CSV", on_click=self.export_to_csv, width=float('inf'), style=btn_style),
 
@@ -2398,6 +2402,11 @@ class WorkoutTrackerApp:
         if DEBUG_PERFORMANCE:
             print(f"[performance] rebuild_entire_display: {self.last_rebuild_ms:.1f} ms")
 
+    def open_privacy_diagnostics(self,e=None):
+        self.close_actions_menu();d=privacy_diagnostics();a=recent_audit(10)
+        text=f"IronCycle {d['app_version']}\nSchema {d['schema']}\nIntegrity: {d['integrity']}\n"+"\n".join(f"{k}: {v}" for k,v in d['counts'].items())+"\n\nRecent operational events:\n"+"\n".join(f"{ts} | {act}" for ts,act,details in a)
+        dialog=ft.AlertDialog(title=ft.Text("Privacy-Safe Diagnostics",weight="bold"),content=ft.Container(width=380,height=430,content=ft.Text(text,selectable=True,font_family="monospace",size=10)),actions=[ft.TextButton("Close",on_click=lambda ev:self.safe_close(dialog))]);self.safe_open(dialog)
+
     def open_diagnostics_dialog(self, e=None):
         self.close_actions_menu()
         integrity = "Unavailable"
@@ -2452,6 +2461,10 @@ class WorkoutTrackerApp:
             "Whole-exercise progression intelligence: enabled",
             "Superset timing analytics: enabled",
             "Structural CSV fields: enabled",
+            "Functional superset auto-navigation: enabled",
+            "Focus-mode group labels: enabled",
+            "Operational audit trail: enabled",
+            "Privacy-safe diagnostics: enabled",
         ]
         self.diagnostics_dialog = ft.AlertDialog(
             title=ft.Text("IronCycle Diagnostics", weight="bold"),
@@ -3636,6 +3649,21 @@ class WorkoutTrackerApp:
 
         self.pending_scroll_key = self.category_anchor_key(category_name)
         self.rebuild_entire_display()
+
+    def advance_group_flow(self, session_id, completed_set):
+        next_step=resolve_next_group_step(self.current_meso,self.current_week,self.current_day,session_id,completed_set)
+        if not next_step:return False
+        category=next_step["category"];target_id=next_step["session_id"]
+        with get_db() as conn:
+            for row in conn.execute("SELECT DISTINCT category FROM workout_sessions WHERE meso_number=? AND week=? AND day_of_week=?",(self.current_meso,self.current_week,self.current_day)).fetchall():
+                if row[0]:self.collapsed_categories[self.category_key(row[0])]=(row[0]!=category)
+        self.collapsed_categories[self.category_key(category)]=False
+        self.active_exercise_by_category[self.category_key(category)]=target_id
+        self.pending_scroll_key=self.exercise_anchor_key(target_id)
+        self.remount_main_canvas_on_rebuild=True
+        record_audit("superset_advance",f"{session_id} set {completed_set} -> {target_id} set {next_step['pending_set']}")
+        self.rebuild_entire_display()
+        return True
 
     def activate_exercise(self, category_name, session_id):
         if not category_name:

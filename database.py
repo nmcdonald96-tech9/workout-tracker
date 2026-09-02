@@ -93,6 +93,8 @@ def init_and_seed_db():
             "FOREIGN KEY(session_id) REFERENCES workout_sessions(id) ON DELETE CASCADE)"
         )
         cursor.execute("CREATE TABLE IF NOT EXISTS meso_names (meso_number INTEGER PRIMARY KEY, meso_label TEXT)")
+        cursor.execute("CREATE TABLE IF NOT EXISTS app_audit (id INTEGER PRIMARY KEY AUTOINCREMENT,created_at TEXT NOT NULL,action TEXT NOT NULL,details TEXT DEFAULT '')")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_audit_created ON app_audit(created_at)")
         
         cursor.execute(
             "CREATE TABLE IF NOT EXISTS readiness_logs ("
@@ -1289,3 +1291,35 @@ def superset_timing_analytics(meso,week,day):
             (round_recovery if current[1]==1 and prior[1]>1 else transitions).append(e['global_gap'])
     avg=lambda x:round(sum(x)/len(x)) if x else None
     return {'transitions':len(transitions),'average_transition':avg(transitions),'round_recoveries':len(round_recovery),'average_round_recovery':avg(round_recovery),'duration':timeline['elapsed']}
+
+
+# --- 1.34 FUNCTIONAL SUPERSET FLOW AND DATA SAFETY ---
+def resolve_next_group_step(meso,week,day,session_id,completed_set):
+    """Find the next eligible grouped exercise/set; bypass skipped, completed and exhausted members."""
+    with get_db() as c:
+        src=c.execute("SELECT exercise_group_id,group_position FROM workout_sessions WHERE id=?",(int(session_id),)).fetchone()
+        if not src or not src[0]:return None
+        members=c.execute("SELECT id,exercise,category,status,COALESCE(group_position,999),COALESCE(workout_order,id) FROM workout_sessions WHERE meso_number=? AND week=? AND day_of_week=? AND exercise_group_id=? ORDER BY COALESCE(group_position,999),COALESCE(workout_order,id)",(meso,str(week),day,src[0])).fetchall()
+        state={}
+        for sid,ex,cat,status,pos,order in members:
+            sets=c.execute("SELECT set_number,is_complete FROM workout_sets WHERE session_id=? ORDER BY set_number",(sid,)).fetchall()
+            pending=next((n for n,done in sets if not done),None)
+            state[sid]={'session_id':sid,'exercise':ex,'category':cat,'status':status,'position':pos,'pending_set':pending}
+    current=next((i for i,x in enumerate(members) if x[0]==int(session_id)),0)
+    for offset in range(1,len(members)+1):
+        candidate=state[members[(current+offset)%len(members)][0]]
+        if candidate['status']==STATUS_PENDING and candidate['pending_set'] is not None:
+            candidate['round_complete']=(current+offset)>=len(members);candidate['group_id']=src[0];return candidate
+    return None
+
+def record_audit(action,details=''):
+    with get_db() as c:c.execute("INSERT INTO app_audit(created_at,action,details) VALUES(?,?,?)",(datetime.now().isoformat(timespec='seconds'),str(action),str(details)));c.commit()
+
+def recent_audit(limit=50):
+    with get_db() as c:return c.execute("SELECT created_at,action,details FROM app_audit ORDER BY id DESC LIMIT ?",(int(limit),)).fetchall()
+
+def privacy_diagnostics():
+    with get_db() as c:
+        integrity=c.execute("PRAGMA integrity_check").fetchone()[0]
+        counts={t:c.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in ('workout_sessions','workout_sets','readiness_logs','meso_configs','app_audit')}
+    return {'app_version':APP_VERSION,'schema':DATABASE_SCHEMA_VERSION,'integrity':integrity,'counts':counts}
