@@ -664,7 +664,11 @@ class ExerciseCard(ft.Card):
         chips_row = ft.Row(spacing=6, wrap=True)
         active_pos, total_pos = WorkoutStateService.active_set_position(self.app.sets.get(self.db_id, []))
         action_text = WorkoutStateService.next_action(self.app.sets.get(self.db_id, []), self.status)
+        group_label=group_label_for_session(self.db_id)
+        if group_label: chips_row.controls.append(make_helper_chip(group_label, "purple900", "purple100"))
         chips_row.controls.append(make_helper_chip(f"SET {active_pos} OF {total_pos}", "blue900", "blue100"))
+        group_next=group_next_action(self.app.current_meso,self.app.current_week,self.app.current_day,self.db_id,active_pos) if group_label else None
+        if group_next: action_text=("Round complete • " if group_next["round_complete"] else "Next • ")+f"{group_next['exercise']} Set {group_next['set_number']}"
         chips_row.controls.append(make_helper_chip(action_text, "white10", "white70"))
         completed_times = [x.get("completed_at") for x in self.app.sets.get(self.db_id, []) if x.get("done") and x.get("completed_at")]
         if completed_times and self.status == STATUS_PENDING:
@@ -1562,9 +1566,52 @@ class WorkoutTrackerApp:
     def open_manage_active_meso(self,e=None):
         self.close_actions_menu();items=ft.ListView(expand=True,spacing=4,build_controls_on_demand=False);diag=plan_diagnostics(self.current_meso)
         for x in plan_overview(self.current_meso):items.controls.append(ft.Container(content=ft.Row([ft.Text(f"W{x['week']} {x['day']}",weight="bold",size=11,width=110),ft.Text(f"{x['completed']} complete • {x['pending']} pending • {x['skipped']} skipped"+(f" • {x['exceptions']} rolled" if x['exceptions'] else ""),size=9,color="cyan200" if x['exceptions'] else "white54",expand=True)]),bgcolor="white10",padding=7,border_radius=7))
-        tools=ft.Column(visible=False,controls=[ft.TextButton("Restore Future Schedule",on_click=lambda ev:self.show_snackbar("No unexpected future placements found." if not diag['unexpected'] else f"{diag['unexpected']} placement(s) need review.","cyan300")),ft.TextButton("Reset Pending Schedule",on_click=lambda ev:self.show_snackbar("Reset remains protected by a preview and safety snapshot.","cyan300")),ft.TextButton("Plan Diagnostics",on_click=lambda ev:self.open_plan_diagnostics())])
+        tools=ft.Column(visible=False,controls=[ft.TextButton("Restore Future Schedule",on_click=self.restore_future_schedule),ft.TextButton("Reset Pending Schedule",on_click=self.reset_pending_structure),ft.TextButton("Plan Diagnostics",on_click=lambda ev:self.open_plan_diagnostics())])
         def toggle(ev=None):tools.visible=not tools.visible;tools.update()
-        dialog=ft.AlertDialog(title=ft.Text("🗓️ Manage Active Meso",weight="bold"),content=ft.Container(width=390,height=540,content=ft.Column([ft.Text("CURRENT PLAN • newest week first",size=9,color="cyan300",weight="bold"),items,ft.ElevatedButton("Edit Schedule",on_click=lambda ev:self.show_snackbar("Workout ordering and groups are active in schema 13.","cyan300"),width=float('inf')),ft.ElevatedButton("Roll Missed Workout",on_click=lambda ev:[self.safe_close(dialog),self.open_missed_workout_rollover()],width=float('inf')),ft.TextButton("Plan Tools ▾",on_click=toggle),tools],expand=True,spacing=5)),actions=[ft.TextButton("Close",on_click=lambda ev:self.safe_close(dialog))],inset_padding=12,content_padding=14);self.safe_open(dialog)
+        dialog=ft.AlertDialog(title=ft.Text("🗓️ Manage Active Meso",weight="bold"),content=ft.Container(width=390,height=540,content=ft.Column([ft.Text("CURRENT PLAN • newest week first",size=9,color="cyan300",weight="bold"),items,ft.ElevatedButton("Edit Schedule",on_click=lambda ev:[self.safe_close(dialog),self.open_structure_editor()],width=float('inf')),ft.ElevatedButton("Roll Missed Workout",on_click=lambda ev:[self.safe_close(dialog),self.open_missed_workout_rollover()],width=float('inf')),ft.TextButton("Plan Tools ▾",on_click=toggle),tools],expand=True,spacing=5)),actions=[ft.TextButton("Close",on_click=lambda ev:self.safe_close(dialog))],inset_padding=12,content_padding=14);self.safe_open(dialog)
+
+    def open_structure_editor(self,e=None):
+        weeks=[w for w in self.get_existing_weeks() if str(w).isdigit()];week=ft.Dropdown(label='Week',value=str(self.current_week) if str(self.current_week).isdigit() else weeks[-1],options=[ft.dropdown.Option(w) for w in weeks],width=100);day=ft.Dropdown(label='Day',value=self.current_day,options=[ft.dropdown.Option(d) for d in self.ordered_day_names()],expand=True)
+        selected=set();list_col=ft.Column(spacing=4,scroll='auto',expand=True);status=ft.Text('',size=9,color='cyan200')
+        def rows():return [x for x in get_plan_sessions(self.current_meso) if x['week']==week.value and x['day']==day.value]
+        def refresh(ev=None):
+            selected.clear();list_col.controls.clear();group_letters={};letter=0
+            for x in rows():
+                gid=x.get('group_id');prefix=''
+                if gid:
+                    if gid not in group_letters:group_letters[gid]=chr(65+letter);letter+=1
+                    prefix=f"{group_letters[gid]}{x.get('group_position') or 1} "
+                cb=ft.Checkbox(value=False,disabled=x['status']!=STATUS_PENDING,on_change=lambda ev,sid=x['id']:(selected.add(sid) if ev.control.value else selected.discard(sid)))
+                controls=[cb,ft.Text(prefix+x['exercise'],size=10,expand=True),ft.Text(x['status'],size=8,color='green300' if x['status']==STATUS_COMPLETED else 'white54')]
+                if x['status']==STATUS_PENDING:controls += [ft.TextButton('▲',on_click=lambda ev,sid=x['id']:move(sid,-1)),ft.TextButton('▼',on_click=lambda ev,sid=x['id']:move(sid,1))]
+                list_col.controls.append(ft.Container(content=ft.Row(controls,spacing=2),bgcolor='white10',padding=4,border_radius=6))
+            status.value=f"{len(rows())} exercises • pending rows editable"
+            if ev is not None:
+                try:list_col.update();status.update()
+                except Exception:pass
+        def move(sid,d):
+            try:reorder_pending_exercise(self.current_meso,week.value,day.value,sid,d);refresh(True)
+            except Exception as err:self.show_snackbar(str(err),'red300')
+        def group(ev=None):
+            try:set_exercise_group(self.current_meso,week.value,day.value,[x['id'] for x in rows() if x['id'] in selected]);refresh(True);self.show_snackbar('Superset/circuit created.','green300')
+            except Exception as err:self.show_snackbar(str(err),'red300')
+        def ungroup(ev=None):
+            try:
+                if not selected:raise ValueError('Select a grouped exercise.')
+                clear_exercise_group(self.current_meso,week.value,day.value,next(iter(selected)));refresh(True);self.show_snackbar('Group removed.','green300')
+            except Exception as err:self.show_snackbar(str(err),'red300')
+        def save_future(ev=None):
+            save_structured_blueprint_from_week(self.current_meso,week.value);self.show_snackbar('Current structure saved for future pending weeks.','green300')
+        week.on_select=refresh;day.on_select=refresh
+        refresh();dialog=ft.AlertDialog(title=ft.Text('Workout Structure & Supersets',weight='bold'),content=ft.Container(width=410,height=560,content=ft.Column([ft.Row([week,day]),status,list_col,ft.Text('Select 2 for a superset or 3 for a circuit.',size=9,color='white54'),ft.Row([ft.ElevatedButton('Create Group',on_click=group,expand=True),ft.ElevatedButton('Ungroup',on_click=ungroup,expand=True)]),ft.TextButton('Use this structure for future pending weeks',on_click=save_future)],expand=True,spacing=5)),actions=[ft.TextButton('Done',on_click=lambda ev:[self.safe_close(dialog),self.sets.clear(),self.rebuild_entire_display()])],inset_padding=12);self.safe_open(dialog)
+    def restore_future_schedule(self,e=None):
+        try:
+            snap=self.create_short_session_snapshot();n=restore_future_structure(self.current_meso);self.sets.clear();self.rebuild_entire_display();self.show_snackbar(f'Restored {n} pending structure fields. Snapshot: {snap}','green300')
+        except Exception as err:self.show_snackbar(str(err),'red300')
+    def reset_pending_structure(self,e=None):
+        try:
+            snap=self.create_short_session_snapshot();n=restore_future_structure(self.current_meso);self.sets.clear();self.set_active_position();self.rebuild_navigation_headers();self.rebuild_entire_display();self.show_snackbar(f'Pending schedule reset from structured blueprint. {n} fields restored. Snapshot: {snap}','green300')
+        except Exception as err:self.show_snackbar(str(err),'red300')
 
     def open_missed_workout_rollover(self,e=None):
         rows=[x for x in get_plan_sessions(self.current_meso) if x['week']==str(self.current_week) and x['day']==self.current_day and x['status']==STATUS_PENDING]
@@ -1590,7 +1637,7 @@ class WorkoutTrackerApp:
         dialog=ft.AlertDialog(title=ft.Text("Roll Missed Workout",weight="bold"),content=ft.Container(width=390,height=460,content=ft.Column([ft.Text(f"W{self.current_week} {self.current_day} → W{dw} {dd}",weight="bold"),ft.Text("One-workout exception. Future weeks retain the recurring day.",size=10,color="green300"),ft.Column(checks,scroll="auto",expand=True),preview],expand=True)),actions=[ft.TextButton("Cancel",on_click=lambda ev:self.safe_close(dialog)),ft.ElevatedButton("Roll Selected & Skip Others",on_click=apply)],inset_padding=12);self.safe_open(dialog);refresh()
 
     def open_plan_diagnostics(self,e=None):
-        d=plan_diagnostics(self.current_meso);dialog=ft.AlertDialog(title=ft.Text("Plan Diagnostics",weight="bold"),content=ft.Text(f"Pending: {d['pending']}\nExceptions: {d['exceptions']}\nUnexpected: {d['unexpected']}\nDuplicates: {d['duplicates']}\nCompleted sessions protected: yes",font_family="monospace"),actions=[ft.TextButton("Close",on_click=lambda ev:self.safe_close(dialog))]);self.safe_open(dialog)
+        d=structure_diagnostics(self.current_meso);dialog=ft.AlertDialog(title=ft.Text("Plan Diagnostics",weight="bold"),content=ft.Text(f"Status: {'OK' if d['ok'] else 'Review'}\nPending: {d['pending']}\nExceptions: {d['exceptions']}\nUnexpected placements: {d['unexpected']}\nDuplicate exercises: {d['duplicates']}\nMissing order: {d['missing_order']}\nDuplicate order: {d['duplicate_order']}\nInvalid groups: {d['invalid_groups']}\nOrphan sets: {d['orphan_sets']}\nCompleted sessions protected: yes",font_family="monospace"),actions=[ft.TextButton("Close",on_click=lambda ev:self.safe_close(dialog))]);self.safe_open(dialog)
 
     def open_next_target_outcomes(self,decision):
         labels={"progress":"Progress","hold":"Hold","reduce":"Reduce","resume_normal":"Resume Normal"};groups={}
@@ -1608,8 +1655,19 @@ class WorkoutTrackerApp:
     def open_progress_reports_hub(self,e=None):
         self.close_actions_menu()
         def tile(icon,title,detail,fn):return ft.Container(content=ft.Row([ft.Text(icon,size=20,width=30),ft.Column([ft.Text(title,weight='bold',size=12),ft.Text(detail,size=9,color='white54')],expand=True),ft.Text('›',color='cyan300')]),bgcolor='white10',padding=10,border_radius=8,ink=True,on_click=lambda ev:[self.safe_close(dialog),fn()])
-        controls=[tile('📋','Latest Workout','Results and next-target outcomes',self.open_latest_workout_summary),tile('🔎','Progression Review','Exercise trends and load caps',self.open_progression_review),tile('🧭','Mesocycle Health','Completion, readiness, and next steps',self.open_meso_health),tile('📈','Mesocycle Performance','Load, reps, e1RM, volume, and rest',self.open_meso_report),tile('🏆','Strength Standards','Eligible lift comparisons',self.open_strength_standards)]
+        controls=[tile('🧠','Progression Intelligence','Whole-exercise decisions and set quality',self.open_progression_intelligence),tile('📋','Latest Workout','Results and next-target outcomes',self.open_latest_workout_summary),tile('🔎','Progression Review','Exercise trends and load caps',self.open_progression_review),tile('🧭','Mesocycle Health','Completion, readiness, and next steps',self.open_meso_health),tile('📈','Mesocycle Performance','Load, reps, e1RM, volume, and rest',self.open_meso_report),tile('🏆','Strength Standards','Eligible lift comparisons',self.open_strength_standards)]
         dialog=ft.AlertDialog(title=ft.Text('Progress & Reports',weight='bold'),content=ft.Container(width=390,height=470,content=ft.ListView(controls,spacing=7)),actions=[ft.TextButton('Close',on_click=lambda ev:self.safe_close(dialog))],inset_padding=12);self.safe_open(dialog)
+    def open_progression_intelligence(self,e=None):
+        with get_db() as conn:
+            ids=[r[0] for r in conn.execute("SELECT id FROM workout_sessions WHERE meso_number=? AND status='Completed' ORDER BY date DESC,id DESC LIMIT 40",(self.current_meso,)).fetchall()]
+        controls=[]
+        for sid in ids:
+            x=whole_exercise_progression_summary(sid)
+            if not x:continue
+            controls.append(ft.Container(content=ft.Column([ft.Text(x['exercise'],weight='bold',size=11),ft.Text(f"Next: {float(x['next_weight']):g} lb x {int(x['next_reps'])} • {x['decision'].replace('_',' ').title()}",size=10,color='cyan200'),ft.Text(f"{x['set_count']} sets • completion {x['completion']*100:.0f}% • lowest {x['lowest_set']*100:.0f}% • avg RPE {x['average_rpe']:.1f} • peak {x['peak_rpe']:.1f}",size=9,color='white54'),ft.Text(x['reason'],size=9,color='white70')],spacing=2),bgcolor='white10',padding=8,border_radius=7))
+        if not controls:controls=[ft.Text('No completed exercise data available.',color='white54')]
+        dialog=ft.AlertDialog(title=ft.Text('Progression Intelligence',weight='bold'),content=ft.Container(width=400,height=500,content=ft.ListView(controls,spacing=6)),actions=[ft.TextButton('Close',on_click=lambda ev:self.safe_close(dialog))],inset_padding=12);self.safe_open(dialog)
+
     def open_progression_review(self,e=None):
         rows=progression_review(self.current_meso);controls=[]
         for x in rows:controls.append(ft.Container(content=ft.Column([ft.Text(x['exercise'],weight='bold'),ft.Text(f"{x['status']} • {x['weight']:g} lb × {x['reps']} @ {x['rpe']:g}",size=9,color='cyan200'),ft.TextButton('Modify progression',on_click=lambda ev,n=x['exercise']:[self.safe_close(dialog),self.open_exercise_progression_editor(n)])],spacing=2),bgcolor='white10',padding=8,border_radius=7))
@@ -2388,6 +2446,12 @@ class WorkoutTrackerApp:
             "Compact exercise cards: enabled",
             "Static Android-safe warm-up guidance: enabled",
             "Setup notes location: exercise actions menu",
+            "Superset execution guidance: enabled",
+            "Structured blueprint compatibility: enabled",
+            "Plan integrity repair: enabled",
+            "Whole-exercise progression intelligence: enabled",
+            "Superset timing analytics: enabled",
+            "Structural CSV fields: enabled",
         ]
         self.diagnostics_dialog = ft.AlertDialog(
             title=ft.Text("IronCycle Diagnostics", weight="bold"),
@@ -3403,10 +3467,10 @@ class WorkoutTrackerApp:
             with get_db() as conn:
                 rows=conn.execute("""SELECT ws.date,ws.meso_number,ws.week,ws.day_of_week,ws.exercise,ws.category,s.set_number,
                     s.normal_target_weight,s.normal_target_reps,s.target_weight,s.target_reps,s.weight,s.reps,s.rpe,s.rest_seconds,s.completed_at,
-                    s.progression_decision,s.progression_reason_code,s.progression_reason,s.progression_settings_snapshot,ws.bodyweight_snapshot,ws.status
+                    s.progression_decision,s.progression_reason_code,s.progression_reason,s.progression_settings_snapshot,ws.bodyweight_snapshot,ws.status,ws.workout_order,ws.exercise_group_id,ws.group_position
                     FROM workout_sessions ws LEFT JOIN workout_sets s ON s.session_id=ws.id ORDER BY ws.date DESC,ws.id DESC,s.set_number""").fetchall()
             output=StringIO(); writer=csv.writer(output)
-            writer.writerow(["Date","Meso","Week","Day","Exercise","Category","Set","Normal Target Weight","Normal Target Reps","Today Target Weight","Today Target Reps","Actual Weight","Actual Reps","RPE","Rest Seconds","Completed At","Decision","Reason Code","Reason","Settings Snapshot","Bodyweight Snapshot","Status"])
+            writer.writerow(["Date","Meso","Week","Day","Exercise","Category","Set","Normal Target Weight","Normal Target Reps","Today Target Weight","Today Target Reps","Actual Weight","Actual Reps","RPE","Rest Seconds","Completed At","Decision","Reason Code","Reason","Settings Snapshot","Bodyweight Snapshot","Status","Workout Order","Group ID","Group Position"])
             writer.writerows(rows)
             self.export_field=ft.TextField(value=output.getvalue(),multiline=True,min_lines=8,max_lines=15,text_size=11,read_only=True)
             async def copy_csv_to_clipboard(ev):
@@ -3974,6 +4038,9 @@ class WorkoutTrackerApp:
         timeline=workout_timeline(self.current_meso,self.current_week,self.current_day)
         if timeline['events']:
             stats_col.controls.extend([ft.Text("Workout Timeline",size=14,color="cyan300",weight="bold"),ft.Text(f"Elapsed: {format_duration_seconds(timeline['elapsed'])} • Sets: {len(timeline['events'])}",size=12),ft.Text(f"Median interval: {format_duration_seconds(timeline['median']) or '—'} • Average: {format_duration_seconds(timeline['average']) or '—'} • Longest: {format_duration_seconds(timeline['longest']) or '—'}",size=10,color="white70")])
+        group_timing=superset_timing_analytics(self.current_meso,self.current_week,self.current_day)
+        if group_timing['transitions'] or group_timing['round_recoveries']:
+            stats_col.controls.append(ft.Text(f"Superset timing: {group_timing['transitions']} transitions avg {format_duration_seconds(group_timing['average_transition']) or '—'} • {group_timing['round_recoveries']} round recoveries avg {format_duration_seconds(group_timing['average_round_recovery']) or '—'}",size=10,color="purple200"))
 
         def outcome_card(key,label,color):
             return ft.Container(content=ft.Column([ft.Text(str(outcome_counts[key]),size=18,weight="bold",color=color),ft.Text(label,size=9,color="white54")],spacing=1,horizontal_alignment="center"),bgcolor="white10",border_radius=8,padding=8,expand=True,ink=outcome_counts[key]>0,on_click=(lambda ev,k=key:self.open_next_target_outcomes(k)) if outcome_counts[key]>0 else None)

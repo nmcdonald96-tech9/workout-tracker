@@ -1183,3 +1183,109 @@ def clear_exercise_group(meso,week,day,sid):
   r=c.execute("SELECT exercise_group_id FROM workout_sessions WHERE id=? AND status=?",(sid,STATUS_PENDING)).fetchone()
   if not r or not r[0]:return 0
   n=c.execute("UPDATE workout_sessions SET exercise_group_id=NULL,group_position=NULL WHERE meso_number=? AND week=? AND day_of_week=? AND exercise_group_id=? AND status=?",(meso,str(week),day,r[0],STATUS_PENDING)).rowcount;c.commit();return n
+
+
+# --- 1.31 SUPERSET EXECUTION AND PLAN INTEGRITY ---
+def group_label_for_session(session_id):
+    with get_db() as c:
+        row=c.execute("SELECT meso_number,week,day_of_week,exercise_group_id,group_position FROM workout_sessions WHERE id=?",(int(session_id),)).fetchone()
+        if not row or not row[3]:return None
+        groups=[r[0] for r in c.execute("SELECT exercise_group_id FROM workout_sessions WHERE meso_number=? AND week=? AND day_of_week=? AND exercise_group_id IS NOT NULL GROUP BY exercise_group_id ORDER BY MIN(COALESCE(workout_order,id))",row[:3]).fetchall()]
+    return f"{chr(65+groups.index(row[3]))}{int(row[4] or 1)}" if row[3] in groups else None
+
+def group_next_action(meso,week,day,session_id,set_number):
+    with get_db() as c:
+        row=c.execute("SELECT exercise_group_id,group_position FROM workout_sessions WHERE id=?",(int(session_id),)).fetchone()
+        if not row or not row[0]:return None
+        members=c.execute("SELECT id,exercise,group_position FROM workout_sessions WHERE meso_number=? AND week=? AND day_of_week=? AND exercise_group_id=? ORDER BY group_position,COALESCE(workout_order,id)",(meso,str(week),day,row[0])).fetchall()
+    i=next((i for i,x in enumerate(members) if x[0]==int(session_id)),0)
+    nxt=members[(i+1)%len(members)];round_no=int(set_number)+(1 if i==len(members)-1 else 0)
+    return {"session_id":nxt[0],"exercise":nxt[1],"set_number":round_no,"round_complete":i==len(members)-1}
+
+def structured_blueprint(meso):
+    with get_db() as c:row=c.execute("SELECT blueprint_json FROM meso_configs WHERE meso_number=?",(meso,)).fetchone()
+    try:bp=json.loads(row[0]) if row and row[0] else {}
+    except Exception:bp={}
+    out={}
+    for day,items in (bp.items() if isinstance(bp,dict) else []):
+        out[day]=[]
+        for pos,item in enumerate(items or [],1):
+            if isinstance(item,str):out[day].append({"exercise":item,"order":pos,"group":None,"group_position":None})
+            elif isinstance(item,dict) and item.get("exercise"):out[day].append({"exercise":item["exercise"],"order":int(item.get("order",pos)),"group":item.get("group"),"group_position":item.get("group_position")})
+    return out
+
+def save_structured_blueprint_from_week(meso,week):
+    with get_db() as c:
+        rows=c.execute("SELECT day_of_week,exercise,COALESCE(workout_order,id),exercise_group_id,group_position FROM workout_sessions WHERE meso_number=? AND week=? AND status=? ORDER BY day_of_week,COALESCE(workout_order,id),id",(meso,str(week),STATUS_PENDING)).fetchall();bp={}
+        for day,ex,order,gid,gpos in rows:bp.setdefault(day,[]).append({"exercise":ex,"order":order,"group":gid,"group_position":gpos})
+        c.execute("UPDATE meso_configs SET blueprint_json=? WHERE meso_number=?",(json.dumps(bp),meso));c.commit()
+    return bp
+
+def structure_diagnostics(meso):
+    with get_db() as c:
+        rows=c.execute("SELECT id,week,day_of_week,status,COALESCE(workout_order,0),exercise_group_id,group_position,exercise FROM workout_sessions WHERE meso_number=?",(meso,)).fetchall()
+        orphan_sets=c.execute("SELECT COUNT(*) FROM workout_sets s LEFT JOIN workout_sessions ws ON ws.id=s.session_id WHERE ws.id IS NULL").fetchone()[0]
+    missing_order=sum(r[4]<=0 for r in rows);duplicate_order=0;invalid_groups=0
+    slots={}
+    for r in rows:slots.setdefault((r[1],r[2]),[]).append(r)
+    for slot,items in slots.items():
+        vals=[x[4] for x in items if x[4]>0];duplicate_order+=len(vals)-len(set(vals))
+        groups={}
+        for x in items:
+            if x[5]:groups.setdefault(x[5],[]).append(x)
+        for members in groups.values():
+            positions=[x[6] for x in members];invalid_groups+=int(len(members) not in (2,3) or None in positions or len(set(positions))!=len(positions))
+    base=plan_diagnostics(meso)
+    return {**base,"missing_order":missing_order,"duplicate_order":duplicate_order,"invalid_groups":invalid_groups,"orphan_sets":orphan_sets,"ok":not any((base['unexpected'],base['duplicates'],missing_order,duplicate_order,invalid_groups,orphan_sets))}
+
+def restore_future_structure(meso):
+    bp=structured_blueprint(meso);changed=0
+    with get_db() as c:
+        c.execute("BEGIN IMMEDIATE")
+        for day,items in bp.items():
+            for item in items:
+                rows=c.execute("SELECT id FROM workout_sessions WHERE meso_number=? AND status=? AND exercise=? AND CAST(week AS INTEGER)>=1",(meso,STATUS_PENDING,item['exercise'])).fetchall()
+                for (sid,) in rows:
+                    changed+=c.execute("UPDATE workout_sessions SET day_of_week=?,schedule_origin_day=?,schedule_exception=0,workout_order=?,exercise_group_id=?,group_position=? WHERE id=? AND status=?",(day,day,item['order'],item['group'],item['group_position'],sid,STATUS_PENDING)).rowcount
+        c.commit()
+    return changed
+
+
+# --- 1.32 PROGRESSION INTELLIGENCE AND TRAINING ANALYTICS ---
+def whole_exercise_progression_summary(session_id):
+    with get_db() as c:
+        ws=c.execute("SELECT exercise,target_weight,target_reps,movement_type,bodyweight_snapshot FROM workout_sessions WHERE id=?",(int(session_id),)).fetchone()
+        rows=c.execute("SELECT weight,reps,rpe FROM workout_sets WHERE session_id=? AND is_complete=1 ORDER BY set_number",(int(session_id),)).fetchall()
+    if not ws or not rows:return None
+    exercise,tw,tr,mov,bw=ws;meta=EXERCISE_METADATA.get(exercise,{});settings=get_effective_progression_settings(exercise,mov or meta.get('movement_type','Isolation'),meta.get('equipment','Other'),get_user_age(),get_user_progression_profile())
+    metrics=evaluate_straight_set_session(rows,tw,tr,meta.get('equipment')=='Bodyweight',bw or get_user_bodyweight())
+    nw,nr,_=calculate_session_progression(rows,tw,tr,mov or 'Isolation',equipment_type=meta.get('equipment','Other'),is_bodyweight=meta.get('equipment')=='Bodyweight',bodyweight=bw or 0,age=get_user_age(),profile=get_user_progression_profile())
+    reason=metrics.get('reason','Whole-exercise performance evaluated.')
+    return {'exercise':exercise,'decision':metrics['decision'],'next_weight':nw,'next_reps':nr,'reason':reason,'set_count':metrics['set_count'],'completion':metrics['rep_completion_ratio'],'lowest_set':metrics['lowest_set_ratio'],'average_rpe':metrics['average_rpe'],'peak_rpe':metrics['peak_rpe'],'settings':settings}
+
+def week_comparison(meso,first_week,second_week,category=None):
+    q="""SELECT ws.week,ws.exercise,ws.category,ws.bodyweight_snapshot,s.weight,s.reps,s.rpe,s.rest_seconds,ws.exercise_group_id,s.completed_at FROM workout_sessions ws JOIN workout_sets s ON s.session_id=ws.id WHERE ws.meso_number=? AND ws.week IN (?,?) AND ws.status=? AND s.is_complete=1"""
+    args=[meso,str(first_week),str(second_week),STATUS_COMPLETED]
+    if category:q+=' AND ws.category=?';args.append(category)
+    with get_db() as c:rows=c.execute(q,args).fetchall()
+    out={str(first_week):{'volume':0,'sets':0,'rpe':[],'rest':[],'duration':0},str(second_week):{'volume':0,'sets':0,'rpe':[],'rest':[],'duration':0}}
+    stamps={str(first_week):[],str(second_week):[]}
+    for wk,ex,cat,bw,w,r,rpe,rest,gid,stamp in rows:
+        k=str(wk);is_bw=EXERCISE_METADATA.get(ex,{}).get('equipment')=='Bodyweight';out[k]['volume']+=((float(w or 0)+float(bw or get_user_bodyweight())) if is_bw else float(w or 0))*int(r or 0);out[k]['sets']+=1
+        if rpe is not None:out[k]['rpe'].append(float(rpe))
+        if rest is not None:out[k]['rest'].append(float(rest))
+        try:stamps[k].append(datetime.fromisoformat(stamp))
+        except Exception:pass
+    for k,v in out.items():
+        v['average_rpe']=round(sum(v['rpe'])/len(v['rpe']),2) if v['rpe'] else None;v['average_rest']=round(sum(v['rest'])/len(v['rest'])) if v['rest'] else None;v['duration']=int((max(stamps[k])-min(stamps[k])).total_seconds()) if len(stamps[k])>1 else 0;del v['rpe'];del v['rest']
+    return out
+
+def superset_timing_analytics(meso,week,day):
+    timeline=workout_timeline(meso,week,day);events=timeline['events'];transitions=[];round_recovery=[]
+    with get_db() as c:groups={r[0]:(r[1],r[2]) for r in c.execute("SELECT id,exercise_group_id,group_position FROM workout_sessions WHERE meso_number=? AND week=? AND day_of_week=?",(meso,str(week),day)).fetchall()}
+    for e in events:
+        current=groups.get(e['session_id']);prev=next((x for x in events if x['exercise']==e['previous_exercise'] and x['set_number']==e['previous_set']),None) if e['previous_exercise'] else None;prior=groups.get(prev['session_id']) if prev else None
+        if current and prior and current[0] and current[0]==prior[0] and e['global_gap'] is not None:
+            (round_recovery if current[1]==1 and prior[1]>1 else transitions).append(e['global_gap'])
+    avg=lambda x:round(sum(x)/len(x)) if x else None
+    return {'transitions':len(transitions),'average_transition':avg(transitions),'round_recoveries':len(round_recovery),'average_round_recovery':avg(round_recovery),'duration':timeline['elapsed']}
