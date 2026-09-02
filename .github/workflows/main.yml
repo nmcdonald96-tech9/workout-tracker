@@ -11,38 +11,80 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
-          
+          python-version: "3.10"
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; else pip install flet; fi
-          
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          else
+            pip install flet
+          fi
+
       - name: Python syntax check
         run: |
           python -m py_compile main.py database.py
-          
+
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.41.7'
-          
-      - name: Accept Android SDK Licenses
-        run: yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
-          
-      - name: Build
+          flutter-version: "3.41.7"
+
+      - name: Accept Android SDK licenses
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses || true
+
+      - name: Build APK
         run: |
           flet build apk --yes --product "IronCycle"
-          
-      # --- HARDENED FIX: Use a wildcard to guarantee it finds the APK ---
+
+      - name: Print package name and Microsoft Entra signature hash
+        shell: bash
+        run: |
+          set -e
+
+          APK_PATH="$(find . -type f -name "*.apk" | head -n 1)"
+
+          if [ -z "$APK_PATH" ]; then
+            echo "::error::No APK file was found."
+            exit 1
+          fi
+
+          echo "APK found at: $APK_PATH"
+          echo ""
+
+          echo "----- APK CERTIFICATE INFORMATION -----"
+          keytool -printcert -jarfile "$APK_PATH"
+          echo "----- END CERTIFICATE INFORMATION -----"
+          echo ""
+
+          SIGNATURE_HASH="$(
+            keytool -printcert -jarfile "$APK_PATH" \
+              | openssl sha1 -binary \
+              | openssl base64 -A
+          )"
+
+          echo "----- MICROSOFT ENTRA SIGNATURE HASH -----"
+          echo "$SIGNATURE_HASH"
+          echo "----- END MICROSOFT ENTRA SIGNATURE HASH -----"
+
+          echo ""
+          echo "Microsoft Entra Android configuration:"
+          echo "Package name: com.flet.workout_tracker"
+          echo "Signature hash: $SIGNATURE_HASH"
+
+          echo "ENTRA_SIGNATURE_HASH=$SIGNATURE_HASH" >> "$GITHUB_ENV"
+
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: app-apk
-          path: '**/*.apk'
+          path: "**/*.apk"
