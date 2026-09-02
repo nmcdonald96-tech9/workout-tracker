@@ -139,22 +139,12 @@ def init_and_seed_db():
                 conn.commit()
         cursor.execute("UPDATE workout_sessions SET schedule_origin_day=day_of_week WHERE schedule_origin_day IS NULL OR TRIM(schedule_origin_day)='' ")
         conn.commit()
-        # 1.29 workout structure: stable order and optional superset/circuit grouping.
         cursor.execute("PRAGMA table_info(workout_sessions)")
-        structure_columns = [info[1] for info in cursor.fetchall()]
-        for column_name, column_type in {
-            "workout_order": "INTEGER",
-            "exercise_group_id": "TEXT",
-            "group_position": "INTEGER",
-        }.items():
-            if column_name not in structure_columns:
-                cursor.execute(f"ALTER TABLE workout_sessions ADD COLUMN {column_name} {column_type}")
-        # Existing row order becomes the deterministic initial workout order.
-        slots = cursor.execute("SELECT DISTINCT meso_number,week,day_of_week FROM workout_sessions").fetchall()
-        for sm, sw, sd in slots:
-            ids = cursor.execute("SELECT id FROM workout_sessions WHERE meso_number=? AND week=? AND day_of_week=? ORDER BY COALESCE(workout_order,2147483647),id",(sm,sw,sd)).fetchall()
-            for pos, row in enumerate(ids, start=1):
-                cursor.execute("UPDATE workout_sessions SET workout_order=COALESCE(workout_order,?) WHERE id=?",(pos,row[0]))
+        structure_cols=[x[1] for x in cursor.fetchall()]
+        for n,t in {"workout_order":"INTEGER","exercise_group_id":"TEXT","group_position":"INTEGER"}.items():
+            if n not in structure_cols:cursor.execute(f"ALTER TABLE workout_sessions ADD COLUMN {n} {t}")
+        for sm,sw,sd in cursor.execute("SELECT DISTINCT meso_number,week,day_of_week FROM workout_sessions").fetchall():
+            for pos,row in enumerate(cursor.execute("SELECT id FROM workout_sessions WHERE meso_number=? AND week=? AND day_of_week=? ORDER BY COALESCE(workout_order,2147483647),id",(sm,sw,sd)).fetchall(),1):cursor.execute("UPDATE workout_sessions SET workout_order=COALESCE(workout_order,?) WHERE id=?",(pos,row[0]))
         conn.commit()
 
         # --- SAFE MIGRATION: REST TIME BETWEEN SETS ---
@@ -1037,7 +1027,7 @@ def exercise_exists(exercise_name):
 
 PLAN_DAYS=["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"]
 def get_plan_sessions(meso):
- with get_db() as c:rows=c.execute("SELECT id,week,day_of_week,exercise,category,status,COALESCE(schedule_origin_day,day_of_week),COALESCE(schedule_exception,0),skip_reason,COALESCE(workout_order,id),exercise_group_id,group_position FROM workout_sessions WHERE meso_number=? ORDER BY CASE WHEN week='Deload' THEN 999 ELSE CAST(week AS INTEGER) END,CASE day_of_week WHEN 'Monday' THEN 1 WHEN 'Tuesday' THEN 2 WHEN 'Wednesday' THEN 3 WHEN 'Thursday' THEN 4 WHEN 'Friday' THEN 5 WHEN 'Saturday' THEN 6 WHEN 'Sunday' THEN 7 ELSE 8 END,COALESCE(workout_order,id),id",(meso,)).fetchall()
+ with get_db() as c:rows=c.execute("SELECT id,week,day_of_week,exercise,category,status,COALESCE(schedule_origin_day,day_of_week),COALESCE(schedule_exception,0),skip_reason,COALESCE(workout_order,id),exercise_group_id,group_position FROM workout_sessions WHERE meso_number=? ORDER BY CASE WHEN week='Deload' THEN 999 ELSE CAST(week AS INTEGER) END,COALESCE(workout_order,id),id",(meso,)).fetchall()
  return [{"id":r[0],"week":r[1],"day":r[2],"exercise":r[3],"category":r[4],"status":r[5],"origin_day":r[6],"exception":bool(r[7]),"skip_reason":r[8],"workout_order":r[9],"group_id":r[10],"group_position":r[11]} for r in rows]
 def plan_overview(meso):
  out={}
@@ -1171,51 +1161,25 @@ def global_set_gap(meso,week,day,completed_at,exclude_session=None,exclude_set=N
     except:return None
 
 
-# --- 1.29 WORKOUT STRUCTURE AND SUPERSETS ---
-def _normalize_workout_order(conn, meso, week, day):
-    rows=conn.execute("SELECT id FROM workout_sessions WHERE meso_number=? AND week=? AND day_of_week=? ORDER BY COALESCE(workout_order,2147483647),id",(meso,str(week),day)).fetchall()
-    for pos,row in enumerate(rows,1):conn.execute("UPDATE workout_sessions SET workout_order=? WHERE id=?",(pos,row[0]))
-
 def reorder_pending_exercise(meso,week,day,session_id,direction):
-    if direction not in (-1,1):raise ValueError("Direction must be up or down.")
-    with get_db() as c:
-        c.execute("BEGIN IMMEDIATE");_normalize_workout_order(c,meso,week,day)
-        rows=c.execute("SELECT id,status,workout_order FROM workout_sessions WHERE meso_number=? AND week=? AND day_of_week=? ORDER BY workout_order,id",(meso,str(week),day)).fetchall()
-        idx=next((i for i,r in enumerate(rows) if r[0]==int(session_id)),None)
-        if idx is None:raise ValueError("Exercise is not in this workout.")
-        if rows[idx][1]!=STATUS_PENDING:raise ValueError("Completed or skipped exercises are order-locked.")
-        target=idx+direction
-        if target<0 or target>=len(rows):return False
-        if rows[target][1]!=STATUS_PENDING:raise ValueError("Cannot move across a completed or skipped exercise.")
-        a,b=rows[idx],rows[target]
-        c.execute("UPDATE workout_sessions SET workout_order=? WHERE id=?",(b[2],a[0]));c.execute("UPDATE workout_sessions SET workout_order=? WHERE id=?",(a[2],b[0]));c.commit();return True
-
-def set_exercise_group(meso,week,day,session_ids,group_id=None):
-    ids=[int(x) for x in session_ids]
-    if len(ids) not in (2,3):raise ValueError("Select two exercises for a superset or three for a circuit.")
-    gid=group_id or ("G"+datetime.now().strftime("%H%M%S%f"))
-    with get_db() as c:
-        c.execute("BEGIN IMMEDIATE")
-        marks=','.join('?'*len(ids));rows=c.execute(f"SELECT id,status FROM workout_sessions WHERE meso_number=? AND week=? AND day_of_week=? AND id IN ({marks})",(meso,str(week),day,*ids)).fetchall()
-        if len(rows)!=len(ids) or any(r[1]!=STATUS_PENDING for r in rows):raise ValueError("Only pending exercises in one workout can be grouped.")
-        for pos,sid in enumerate(ids,1):c.execute("UPDATE workout_sessions SET exercise_group_id=?,group_position=? WHERE id=?",(gid,pos,sid))
-        c.commit()
-    return gid
-
-def clear_exercise_group(meso,week,day,session_id):
-    with get_db() as c:
-        row=c.execute("SELECT exercise_group_id,status FROM workout_sessions WHERE id=? AND meso_number=? AND week=? AND day_of_week=?",(int(session_id),meso,str(week),day)).fetchone()
-        if not row or not row[0]:return 0
-        if row[1]!=STATUS_PENDING:raise ValueError("Completed groups are locked.")
-        count=c.execute("UPDATE workout_sessions SET exercise_group_id=NULL,group_position=NULL WHERE meso_number=? AND week=? AND day_of_week=? AND exercise_group_id=? AND status=?",(meso,str(week),day,row[0],STATUS_PENDING)).rowcount;c.commit();return count
-
-def workout_execution_sequence(meso,week,day):
-    with get_db() as c:rows=c.execute("SELECT id,exercise,status,COALESCE(workout_order,id),exercise_group_id,group_position FROM workout_sessions WHERE meso_number=? AND week=? AND day_of_week=? ORDER BY COALESCE(workout_order,id),id",(meso,str(week),day)).fetchall()
-    grouped={};out=[]
-    for r in rows:
-        if r[4]:grouped.setdefault(r[4],[]).append(r)
-        else:out.append({'session_id':r[0],'exercise':r[1],'status':r[2],'label':None,'group_id':None,'order':r[3]})
-    for gid,members in grouped.items():
-        members.sort(key=lambda r:(r[5] or 999,r[3]));letter=chr(65+len([x for x in out if x.get('group_id')]))
-        for i,r in enumerate(members,1):out.append({'session_id':r[0],'exercise':r[1],'status':r[2],'label':f'{letter}{i}','group_id':gid,'order':min(x[3] for x in members)+(i/100)})
-    return sorted(out,key=lambda x:x['order'])
+ with get_db() as c:
+  rows=c.execute("SELECT id,status FROM workout_sessions WHERE meso_number=? AND week=? AND day_of_week=? ORDER BY COALESCE(workout_order,id),id",(meso,str(week),day)).fetchall();i=next((i for i,x in enumerate(rows) if x[0]==int(session_id)),None);j=i+direction if i is not None else -1
+  if i is None or rows[i][1]!=STATUS_PENDING:raise ValueError("Only pending exercises can be reordered.")
+  if j<0 or j>=len(rows):return False
+  if rows[j][1]!=STATUS_PENDING:raise ValueError("Completed or skipped exercises are order-locked.")
+  c.execute("UPDATE workout_sessions SET workout_order=-1 WHERE id=?",(rows[i][0],));c.execute("UPDATE workout_sessions SET workout_order=? WHERE id=?",(i+1,rows[j][0]));c.execute("UPDATE workout_sessions SET workout_order=? WHERE id=?",(j+1,rows[i][0]));c.commit();return True
+def set_exercise_group(meso,week,day,ids):
+ ids=[int(x) for x in ids]
+ if len(ids) not in (2,3):raise ValueError("Select 2 exercises for a superset or 3 for a circuit.")
+ gid="G"+datetime.now().strftime("%H%M%S%f")
+ with get_db() as c:
+  for pos,sid in enumerate(ids,1):
+   if not c.execute("SELECT 1 FROM workout_sessions WHERE id=? AND meso_number=? AND week=? AND day_of_week=? AND status=?",(sid,meso,str(week),day,STATUS_PENDING)).fetchone():raise ValueError("Only pending exercises can be grouped.")
+   c.execute("UPDATE workout_sessions SET exercise_group_id=?,group_position=? WHERE id=?",(gid,pos,sid))
+  c.commit()
+ return gid
+def clear_exercise_group(meso,week,day,sid):
+ with get_db() as c:
+  r=c.execute("SELECT exercise_group_id FROM workout_sessions WHERE id=? AND status=?",(sid,STATUS_PENDING)).fetchone()
+  if not r or not r[0]:return 0
+  n=c.execute("UPDATE workout_sessions SET exercise_group_id=NULL,group_position=NULL WHERE meso_number=? AND week=? AND day_of_week=? AND exercise_group_id=? AND status=?",(meso,str(week),day,r[0],STATUS_PENDING)).rowcount;c.commit();return n

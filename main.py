@@ -68,30 +68,8 @@ def make_helper_chip(text, bgcolor, text_color):
         padding=4
     )
 
-class WarmupChip(ft.GestureDetector):
-    def __init__(self, text):
-        super().__init__()
-        self.text_elem = ft.Text(text, size=10, weight="bold", color="cyan100")
-        self.container = ft.Container(
-            content=self.text_elem,
-            bgcolor="cyan900",
-            border_radius=4,
-            padding=4,
-            opacity=1.0
-        )
-        self.content = self.container
-        self.on_tap = self.toggle
-
-    def toggle(self, e):
-        if self.container.opacity == 1.0:
-            self.container.opacity = 0.3
-            self.text_elem.style = ft.TextStyle(decoration=ft.TextDecoration.LINE_THROUGH)
-        else:
-            self.container.opacity = 1.0
-            self.text_elem.style = None
-        self.update()
-
-
+class WarmupChip(ft.Container):
+ def __init__(self,text):super().__init__(content=ft.Text(text,size=9,weight="bold",color="cyan100"),bgcolor="cyan900",border_radius=4,padding=3)
 class ExerciseCard(ft.Card):
     def __init__(self, db_id, exercise, tgt_w, tgt_r, status, mov_type, app_instance, context=None):
         super().__init__()
@@ -567,12 +545,12 @@ class ExerciseCard(ft.Card):
 
             set_is_done = bool(set_data.get("done"))
             complete_set_btn = ft.ElevatedButton(
-                content=ft.Text("✓ DONE" if set_is_done else ("COMPLETE & LOG" if idx == len(self.app.sets[self.db_id]) - 1 else "COMPLETE"), size=9, weight="bold"),
+                content=ft.Text("✓ DONE" if set_is_done else ("DONE + LOG" if idx == len(self.app.sets[self.db_id]) - 1 else "COMPLETE"), size=9, weight="bold"),
                 data=(not set_is_done),
                 disabled=(self.status == STATUS_COMPLETED),
                 on_click=self.make_set_done_handler(idx),
                 height=40,
-                width=102,
+                width=88,
                 style=ft.ButtonStyle(
                     bgcolor=COLOR_COMPLETE if set_is_done else COLOR_ACTIVE,
                     color="white",
@@ -609,7 +587,7 @@ class ExerciseCard(ft.Card):
                 )
             else:
                 row_container = ft.Container(
-                    content=set_row, padding=6, border_radius=8,
+                    content=set_row, padding=3, border_radius=8,
                     opacity=row_opacity, bgcolor=row_bgcolor
                 )
 
@@ -681,11 +659,6 @@ class ExerciseCard(ft.Card):
                 ], spacing=5)
             ], alignment="spaceBetween"),
             
-            # Bottom Floor: e1RM text and Notes Field
-            ft.Row([
-                ft.Text(f"{type_code}{e1rm_display_str}", size=11, color="white54"),
-                self.notes_field
-            ], alignment="spaceBetween", spacing=10, visible=not self.app.workout_focus_mode)
         ], spacing=4)
         
         chips_row = ft.Row(spacing=6, wrap=True)
@@ -709,15 +682,13 @@ class ExerciseCard(ft.Card):
             first_diag = self.set_progression_diagnostics[0]
             current_ref = recent_session_sets[0] if recent_session_sets else (self.tgt_w, self.tgt_r)
             clarity = progression_clarity(effective_settings, current_ref[0], current_ref[1], first_diag.get("next_weight", self.tgt_w), first_diag.get("next_reps", self.tgt_r), first_diag.get("reason_code"))
-            chips_row.controls.append(make_helper_chip(clarity["load"], "bluegrey900", "cyan100"))
-            chips_row.controls.append(make_helper_chip(clarity["reps"], "bluegrey900", "green100"))
+            chips_row.controls.append(make_helper_chip(f"Next: {float(first_diag.get('next_weight',self.tgt_w)):g} lb x {int(first_diag.get('next_reps',self.tgt_r))} • {str(first_diag.get('decision','hold')).replace('_',' ').title()}", "bluegrey900", "cyan100"))
         
         if self.mov_type == "Compound" and self.app.current_week != "Deload" and self.status == STATUS_PENDING:
             w1 = snap_weight(adj_w * WARMUP_PERCENT_1, eq_type)
             w2 = snap_weight(adj_w * WARMUP_PERCENT_2, eq_type)
             if not is_bw:
-                chips_row.controls.append(WarmupChip(f"Warm-Up: {w1}x5"))
-                chips_row.controls.append(WarmupChip(f"Warm-Up: {w2}x3"))
+                chips_row.controls.append(WarmupChip(f"Warm-up: {w1:g}x5 • {w2:g}x3"))
             
         if self.db_id in self.app.pr_celebrations:
             chips_row.controls.append(make_helper_chip("🎉 NEW PR!", "amber900", "amber100"))
@@ -745,12 +716,7 @@ class ExerciseCard(ft.Card):
             skip_btn = ft.TextButton(content=ft.Text("Skip", size=13, color="white54"), style=ft.ButtonStyle(padding=8), on_click=self.on_skip)
             
         # Premium primary action button
-        log_btn = ft.ElevatedButton(
-            content=ft.Text("LOG SETS", size=14, weight="w900", color="grey900"), 
-            on_click=self.on_save, 
-            height=44, 
-            style=ft.ButtonStyle(bgcolor="cyan300", shape=ft.RoundedRectangleBorder(radius=8))
-        )
+        log_btn=ft.TextButton(content=ft.Text("Log Sets",size=11,color="cyan300",weight="bold"),on_click=self.on_save,height=32,style=ft.ButtonStyle(padding=5))
 
         action_zone = ft.Row([
             ft.Row([delete_btn, skip_btn], spacing=0, visible=not self.app.workout_focus_mode),
@@ -771,11 +737,19 @@ class ExerciseCard(ft.Card):
         
         self.content = ft.Container(
             content=ft.Row([accent_bar, card_body], spacing=10),
-            padding=8 if self.app.ui_density == "compact" else 10,
+            padding=6 if self.app.ui_density == "compact" else 8,
             border_radius=8,
             bgcolor="white10"
         )
         self.margin = 4
+
+    def open_setup_notes_dialog(self,e=None):
+        with get_db() as c:r=c.execute("SELECT setup_notes FROM exercise_dict WHERE name=?",(self.exercise,)).fetchone()
+        field=ft.TextField(label="Setup notes",value=r[0] if r and r[0] else "",multiline=True,min_lines=3,max_lines=6)
+        def save(ev=None):
+            with get_db() as c:c.execute("UPDATE exercise_dict SET setup_notes=? WHERE name=?",((field.value or "").strip(),self.exercise));c.commit()
+            self.app.safe_close(dialog);self.app.show_snackbar("Setup notes saved.","green300")
+        dialog=ft.AlertDialog(title=ft.Text(f"Setup Notes: {self.exercise}",weight="bold"),content=field,actions=[ft.TextButton("Cancel",on_click=lambda ev:self.app.safe_close(dialog)),ft.ElevatedButton("Save",on_click=save)]);self.app.safe_open(dialog)
 
     def open_target_explanation(self, e=None):
         lines = []
@@ -813,6 +787,7 @@ class ExerciseCard(ft.Card):
         dialog = ft.AlertDialog(
             title=ft.Text(self.exercise, size=15, weight="bold"),
             content=ft.Column([
+                ft.TextButton("Setup notes", on_click=lambda ev: [self.app.safe_close(dialog), self.open_setup_notes_dialog()]),
                 ft.TextButton("Why this target?", on_click=lambda ev: [self.app.safe_close(dialog), self.open_target_explanation()]),
                 ft.TextButton("Repeat previous set", on_click=lambda ev: [self.app.safe_close(dialog), self.repeat_previous_set()]),
                 ft.TextButton("Progression history", on_click=lambda ev: [self.app.safe_close(dialog), self.open_progression_history()]),
@@ -1589,40 +1564,7 @@ class WorkoutTrackerApp:
         for x in plan_overview(self.current_meso):items.controls.append(ft.Container(content=ft.Row([ft.Text(f"W{x['week']} {x['day']}",weight="bold",size=11,width=110),ft.Text(f"{x['completed']} complete • {x['pending']} pending • {x['skipped']} skipped"+(f" • {x['exceptions']} rolled" if x['exceptions'] else ""),size=9,color="cyan200" if x['exceptions'] else "white54",expand=True)]),bgcolor="white10",padding=7,border_radius=7))
         tools=ft.Column(visible=False,controls=[ft.TextButton("Restore Future Schedule",on_click=lambda ev:self.show_snackbar("No unexpected future placements found." if not diag['unexpected'] else f"{diag['unexpected']} placement(s) need review.","cyan300")),ft.TextButton("Reset Pending Schedule",on_click=lambda ev:self.show_snackbar("Reset remains protected by a preview and safety snapshot.","cyan300")),ft.TextButton("Plan Diagnostics",on_click=lambda ev:self.open_plan_diagnostics())])
         def toggle(ev=None):tools.visible=not tools.visible;tools.update()
-        dialog=ft.AlertDialog(title=ft.Text("🗓️ Manage Active Meso",weight="bold"),content=ft.Container(width=390,height=540,content=ft.Column([ft.Text("CURRENT PLAN • newest week first",size=9,color="cyan300",weight="bold"),items,ft.ElevatedButton("Edit Schedule",on_click=lambda ev:[self.safe_close(dialog),self.open_workout_structure_editor()],width=float('inf')),ft.ElevatedButton("Roll Missed Workout",on_click=lambda ev:[self.safe_close(dialog),self.open_missed_workout_rollover()],width=float('inf')),ft.TextButton("Plan Tools ▾",on_click=toggle),tools],expand=True,spacing=5)),actions=[ft.TextButton("Close",on_click=lambda ev:self.safe_close(dialog))],inset_padding=12,content_padding=14);self.safe_open(dialog)
-
-    def open_workout_structure_editor(self,e=None):
-        rows=[x for x in get_plan_sessions(self.current_meso) if x['week']==str(self.current_week) and x['day']==self.current_day]
-        pending=[x for x in rows if x['status']==STATUS_PENDING]
-        if not pending:self.show_snackbar('No pending exercises are available to structure.','amber300');return
-        selected=set();list_col=ft.Column(spacing=5,scroll='auto',expand=True)
-        def rebuild_list():
-            list_col.controls.clear();ordered=[x for x in get_plan_sessions(self.current_meso) if x['week']==str(self.current_week) and x['day']==self.current_day]
-            group_letters={};next_letter=0
-            for x in ordered:
-                gid=x.get('group_id');label=''
-                if gid:
-                    if gid not in group_letters:group_letters[gid]=chr(65+next_letter);next_letter+=1
-                    label=f"{group_letters[gid]}{x.get('group_position') or ''} "
-                check=ft.Checkbox(value=x['id'] in selected,disabled=x['status']!=STATUS_PENDING,on_change=lambda ev,sid=x['id']:(selected.add(sid) if ev.control.value else selected.discard(sid)))
-                controls=[check,ft.Text(label+x['exercise'],size=11,weight='bold',expand=True),ft.Text(x['status'],size=9,color='green300' if x['status']==STATUS_COMPLETED else 'white54')]
-                if x['status']==STATUS_PENDING:controls.extend([ft.TextButton('▲',on_click=lambda ev,sid=x['id']:move(sid,-1)),ft.TextButton('▼',on_click=lambda ev,sid=x['id']:move(sid,1))])
-                list_col.controls.append(ft.Container(content=ft.Row(controls,spacing=3),bgcolor='white10',padding=5,border_radius=7))
-        def move(sid,direction):
-            try:reorder_pending_exercise(self.current_meso,self.current_week,self.current_day,sid,direction);rebuild_list();list_col.update()
-            except Exception as err:self.show_snackbar(str(err),'red300')
-        def group(ev=None):
-            try:
-                ids=[x['id'] for x in get_plan_sessions(self.current_meso) if x['week']==str(self.current_week) and x['day']==self.current_day and x['id'] in selected]
-                set_exercise_group(self.current_meso,self.current_week,self.current_day,ids);selected.clear();rebuild_list();list_col.update();self.show_snackbar('Workout group created.','green300')
-            except Exception as err:self.show_snackbar(str(err),'red300')
-        def ungroup(ev=None):
-            try:
-                if not selected:raise ValueError('Select one member of the group to ungroup.')
-                clear_exercise_group(self.current_meso,self.current_week,self.current_day,next(iter(selected)));selected.clear();rebuild_list();list_col.update();self.show_snackbar('Workout group removed.','green300')
-            except Exception as err:self.show_snackbar(str(err),'red300')
-        def close(ev=None):self.safe_close(dialog);self.sets.clear();self.rebuild_entire_display()
-        rebuild_list();dialog=ft.AlertDialog(title=ft.Text('Workout Structure & Supersets',weight='bold'),content=ft.Container(width=410,height=520,content=ft.Column([ft.Text(f"W{self.current_week} {self.current_day} • completed rows are locked",size=10,color='cyan300'),list_col,ft.Text('Select 2 exercises for a superset or 3 for a circuit.',size=9,color='white54'),ft.Row([ft.ElevatedButton('Create Group',on_click=group,expand=True),ft.ElevatedButton('Ungroup',on_click=ungroup,expand=True)],spacing=6)],expand=True)),actions=[ft.TextButton('Done',on_click=close)],inset_padding=12);self.safe_open(dialog)
+        dialog=ft.AlertDialog(title=ft.Text("🗓️ Manage Active Meso",weight="bold"),content=ft.Container(width=390,height=540,content=ft.Column([ft.Text("CURRENT PLAN • newest week first",size=9,color="cyan300",weight="bold"),items,ft.ElevatedButton("Edit Schedule",on_click=lambda ev:self.show_snackbar("Workout ordering and groups are active in schema 13.","cyan300"),width=float('inf')),ft.ElevatedButton("Roll Missed Workout",on_click=lambda ev:[self.safe_close(dialog),self.open_missed_workout_rollover()],width=float('inf')),ft.TextButton("Plan Tools ▾",on_click=toggle),tools],expand=True,spacing=5)),actions=[ft.TextButton("Close",on_click=lambda ev:self.safe_close(dialog))],inset_padding=12,content_padding=14);self.safe_open(dialog)
 
     def open_missed_workout_rollover(self,e=None):
         rows=[x for x in get_plan_sessions(self.current_meso) if x['week']==str(self.current_week) and x['day']==self.current_day and x['status']==STATUS_PENDING]
@@ -2443,7 +2385,9 @@ class WorkoutTrackerApp:
             "Readiness date collision guard: enabled",
             "Stable workout ordering: enabled",
             "Superset/circuit grouping: enabled",
-            "Group-aware execution sequence: enabled",
+            "Compact exercise cards: enabled",
+            "Static Android-safe warm-up guidance: enabled",
+            "Setup notes location: exercise actions menu",
         ]
         self.diagnostics_dialog = ft.AlertDialog(
             title=ft.Text("IronCycle Diagnostics", weight="bold"),
@@ -3838,9 +3782,7 @@ class WorkoutTrackerApp:
         def save_readiness(e=None):
             with get_db() as conn:
                 readiness_date=datetime.now().strftime("%Y-%m-%d")
-                conn.execute("DELETE FROM readiness_logs WHERE date=? OR (meso_number=? AND week=? AND day_of_week=?)",(readiness_date,self.current_meso,self.current_week,self.current_day))
-                conn.execute("INSERT INTO readiness_logs(date,sleep,joints,drive,diet,meso_number,week,day_of_week) VALUES(?,?,?,?,?,?,?,?)",(readiness_date,int(sleep_s.value),int(joint_s.value),int(drive_s.value),int(diet_s.value),self.current_meso,self.current_week,self.current_day))
-                conn.commit()
+                conn.execute("DELETE FROM readiness_logs WHERE date=? OR (meso_number=? AND week=? AND day_of_week=?)",(readiness_date,self.current_meso,self.current_week,self.current_day)); conn.execute("INSERT INTO readiness_logs(date,sleep,joints,drive,diet,meso_number,week,day_of_week) VALUES(?,?,?,?,?,?,?,?)",(readiness_date,int(sleep_s.value),int(joint_s.value),int(drive_s.value),int(diet_s.value),self.current_meso,self.current_week,self.current_day)); conn.commit()
             save_context(); self.show_snackbar("Readiness updated. Pending targets recalculated; completed sets preserved.",COLOR_SUCCESS); self.rebuild_entire_display()
         for slider in (sleep_s,joint_s,drive_s,diet_s): slider.on_change=update_preview
         note_field.on_blur=save_context; tag_checks=build_tag_controls(ft,SESSION_TAG_OPTIONS,selected_tags,save_context); update_preview()
