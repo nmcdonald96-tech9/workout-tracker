@@ -74,7 +74,7 @@ jobs:
 
           SHA1_HEX="$(
             "$APKSIGNER" verify --print-certs "$APK_PATH" \
-              | sed -n 's/^Signer #1 certificate SHA-1 digest: //p' \
+              | sed -n 's/^.*Signer: certificate SHA-1 digest: //p' \
               | head -n 1 \
               | tr -d ':[:space:]'
           )"
