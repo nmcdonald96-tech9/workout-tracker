@@ -2469,11 +2469,10 @@ class WorkoutTrackerApp:
             "Consolidated Backup Manager: enabled",
             "Verified restore pipeline: enabled",
             "Friendly recovery-point browser: enabled",
-            "Sync-ready UUID registry: enabled",
-            "Device registration: enabled",
-            "Provider-neutral sync package: enabled",
-            "Conflict-blocking merge preview: enabled",
-            "Pre-sync recovery and verification: enabled",
+            "Legacy restore before migration: enabled",
+            "Post-migration restore verification: enabled",
+            "Independent readiness collapse target: enabled",
+            "Sync-ready schema registry: enabled",
         ]
         self.diagnostics_dialog = ft.AlertDialog(
             title=ft.Text("IronCycle Diagnostics", weight="bold"),
@@ -2904,36 +2903,8 @@ class WorkoutTrackerApp:
 
     # --- TEXT-BASED BACKUP & RESTORE METHODS ---
 
-    def get_sync_storage_dir(self):
-        path=os.path.join(os.path.dirname(os.path.abspath(DB_PATH)),"sync_packages");os.makedirs(path,exist_ok=True);return path
-    def export_sync_package(self,e=None):
-        try:
-            package=create_sync_package();name=f"{datetime.now().strftime('%Y-%m-%d_%H%M%S')}__ironcycle.icsync";path=os.path.join(self.get_sync_storage_dir(),name)
-            with open(path,"w",encoding="utf-8") as f:json.dump(package,f,separators=(",",":"))
-            record_audit("sync_package_export",name);self.show_snackbar(f"Sync package created: {name}","green300")
-        except Exception as err:self.show_snackbar(f"Sync export failed: {err}","red300")
-    def browse_sync_packages(self,e=None):
-        files=sorted([x for x in os.listdir(self.get_sync_storage_dir()) if x.endswith('.icsync')],reverse=True)
-        if not files:self.show_snackbar("No local sync packages found.","amber300");return
-        buttons=[]
-        for name in files[:20]:buttons.append(ft.TextButton(name,on_click=lambda ev,n=name:self.preview_sync_file(n)))
-        dialog=ft.AlertDialog(title=ft.Text("Import Sync Package",weight="bold"),content=ft.Container(width=390,height=440,content=ft.ListView(buttons,spacing=4)),actions=[ft.TextButton("Close",on_click=lambda ev:self.safe_close(dialog))]);self.safe_open(dialog)
-    def preview_sync_file(self,name):
-        try:
-            with open(os.path.join(self.get_sync_storage_dir(),name),encoding="utf-8") as f:package=json.load(f)
-            plan=preview_sync_package(package);content=ft.Text(f"Device: {package.get('device_uuid','unknown')[:12]}\nCreated: {package.get('created_at')}\nNew: {plan['new']}\nUpdates: {plan['updates']}\nUnchanged: {plan['unchanged']}\nConflicts: {plan['conflicts']}\n\nConflicts block the merge and preserve both versions.",font_family="monospace",size=10)
-            def apply(ev=None):
-                try:
-                    backup_dir=self.get_backup_storage_dir();backup_name=f"{datetime.now().strftime('%Y-%m-%d_%H%M%S')}__pre-sync.icbackup"
-                    with open(os.path.join(backup_dir,backup_name),"w",encoding="utf-8") as f:f.write(self.create_backup_string())
-                    result=apply_sync_package(package);verify=verify_restored_database(DB_PATH)
-                    if not verify['ok']:raise ValueError(f"Post-sync verification failed: {verify}")
-                    record_audit("sync_package_applied",f"{name}: {result['new']} new, {result['updates']} updates");self.safe_close(dialog);self.sets.clear();self.rebuild_entire_display();self.show_snackbar("Sync package applied and verified.","green300")
-                except Exception as err:self.show_snackbar(str(err),"red300")
-            dialog=ft.AlertDialog(title=ft.Text("Cloud Sync Preview",weight="bold"),content=content,actions=[ft.TextButton("Cancel",on_click=lambda ev:self.safe_close(dialog)),ft.ElevatedButton("Apply Merge",on_click=apply,disabled=plan['conflicts']>0)]);self.safe_open(dialog)
-        except Exception as err:self.show_snackbar(f"Sync preview failed: {err}","red300")
     def open_cloud_sync_preview(self,e=None):
-        st=sync_status();dialog=ft.AlertDialog(title=ft.Text("Cloud Sync Preview",weight="bold"),content=ft.Column([ft.Text(f"Transport: {st['provider']}",color="cyan300"),ft.Text(f"Device: {st['device_label']}\nID: {st['device_uuid'][:12]}…\nTracked records: {st['records']}\nLast merge: {st['last_sync_at'] or 'Never'}",font_family="monospace",size=10),ft.Text("This preview validates record-level merging before a live provider is connected.",size=10,color="white54")],tight=True),actions=[ft.TextButton("Export Package",on_click=lambda ev:[self.safe_close(dialog),self.export_sync_package()]),ft.TextButton("Import Package",on_click=lambda ev:[self.safe_close(dialog),self.browse_sync_packages()]),ft.TextButton("Close",on_click=lambda ev:self.safe_close(dialog))]);self.safe_open(dialog)
+        st=sync_status();dialog=ft.AlertDialog(title=ft.Text("Cloud Sync Preview",weight="bold"),content=ft.Text(f"Transport: {st['provider']}\nDevice: {st['device_label']}\nID: {st['device_uuid'][:12]}…\nTracked records: {st['records']}\nLast sync: {st['last_sync_at'] or 'Never'}",font_family="monospace"),actions=[ft.TextButton("Close",on_click=lambda ev:self.safe_close(dialog))]);self.safe_open(dialog)
 
     def open_backup_manager(self,e=None):
         self.close_actions_menu();style=ft.ButtonStyle(padding=10)
@@ -2944,9 +2915,6 @@ class WorkoutTrackerApp:
             ft.Row([ft.ElevatedButton("Export",on_click=lambda ev:[self.safe_close(dialog),self.handle_wifi_export_click()],expand=True,style=style),ft.ElevatedButton("Import",on_click=lambda ev:[self.safe_close(dialog),self.handle_wifi_import_click()],expand=True,style=style)]),
             ft.Divider(),ft.Text("BACKUP CODE",size=10,weight="bold",color="cyan300"),
             ft.Row([ft.ElevatedButton("Copy Code",on_click=lambda ev:[self.safe_close(dialog),self.handle_backup_click()],expand=True,style=style),ft.ElevatedButton("Paste Code",on_click=lambda ev:[self.safe_close(dialog),self.handle_restore_click()],expand=True,style=style)]),
-            ft.Divider(),ft.Text("CLOUD SYNC PREVIEW",size=10,weight="bold",color="cyan300"),
-            ft.ElevatedButton("Open Sync Preview",on_click=lambda ev:[self.safe_close(dialog),self.open_cloud_sync_preview()],width=float('inf'),style=style),
-            ft.Text("Provider-neutral local packages. No live cloud account is connected yet.",size=9,color="white54"),
             ft.Text("New recovery points use .icbackup. Legacy .txt backups remain supported.",size=9,color="white54")
         ],spacing=7,scroll="auto")),actions=[ft.TextButton("Privacy-Safe View",on_click=lambda ev:[self.safe_close(dialog),self.open_privacy_diagnostics()]),ft.TextButton("Close",on_click=lambda ev:self.safe_close(dialog))]);self.safe_open(dialog)
 
@@ -3483,7 +3451,7 @@ class WorkoutTrackerApp:
             with open(temp_db_path, "wb") as f:
                 f.write(decompressed_db)
             self.backup_service.validate_database(temp_db_path)
-            verification = verify_restored_database(temp_db_path)
+            verification = verify_restored_database(temp_db_path, allow_legacy=True)
             if not verification["ok"]:
                 raise ValueError(f"Restore verification failed: integrity={verification['integrity']}, missing={verification['missing']}, orphan sets={verification['orphan_sets']}")
 
@@ -3513,6 +3481,9 @@ class WorkoutTrackerApp:
 
             os.replace(temp_db_path, DB_PATH)
             init_and_seed_db()
+            post_verification = verify_restored_database(DB_PATH)
+            if not post_verification["ok"]:
+                raise ValueError(f"Post-migration verification failed: {post_verification}")
 
             with get_db() as conn:
                 cursor = conn.cursor()
@@ -3520,7 +3491,7 @@ class WorkoutTrackerApp:
                 self.current_meso = latest_meso if latest_meso else 1
 
             # --- UPDATED: Let the user know the Undo file exists ---
-            self.show_snackbar("Database Restored! (Undo snapshot saved)", color="green300")
+            self.show_snackbar(f"Database restored, migrated to schema {DATABASE_SCHEMA_VERSION}, and verified. Integrity: {post_verification['integrity']}", color="green300")
             self.set_active_position()
             self.build_ui_shell()
             self.rebuild_navigation_headers()
@@ -3919,7 +3890,7 @@ class WorkoutTrackerApp:
         normalized = sum(float(v or 0) for v in initial) / 2.0
         adjustment = get_readiness_adjustment(sum(int(v or 3) for v in initial[:3]), int(initial[1] or 3), "Compound")
         adjustment_text = "No adjustment" if adjustment["reduction_pct"] <= 0 else f"Up to -{adjustment['reduction_pct']*100:g}% load, -{adjustment['rep_drop']} reps"
-        header=ft.Container(content=ft.Row([ft.Text("SESSION READINESS",size=9,weight="bold",color=COLOR_INFO),ft.Text(f"{normalized:.1f}/10",size=10,weight="bold",color="green300" if normalized>=8.5 else "amber300" if normalized>=7 else "red300"),ft.TextButton(f"{self.current_display_mode()}",on_click=self.open_display_mode,style=ft.ButtonStyle(padding=2)),ft.Text(adjustment_text,size=9,color=COLOR_MUTED,expand=True,text_align="right"),ft.Text("▼" if self.context_collapsed else "▲",size=11,color=COLOR_INFO)],spacing=5),padding=6)
+        header=ft.Row([ft.Container(content=ft.Row([ft.Text("SESSION READINESS",size=9,weight="bold",color=COLOR_INFO),ft.Text(f"{normalized:.1f}/10",size=10,weight="bold",color="green300" if normalized>=8.5 else "amber300" if normalized>=7 else "red300"),ft.Text(adjustment_text,size=9,color=COLOR_MUTED,expand=True,text_align="right"),ft.Text("▼" if self.context_collapsed else "▲",size=11,color=COLOR_INFO)],spacing=5),padding=6,ink=True,on_click=self.toggle_context_panel,expand=True),ft.TextButton(f"{self.current_display_mode()}",on_click=self.open_display_mode,style=ft.ButtonStyle(padding=2))],spacing=3)
         if self.context_collapsed: return ft.Container(content=header,bgcolor="white5",border_radius=8)
         sleep_s=ft.Slider(min=1,max=5,divisions=4,value=int(initial[0] or 3),label="{value}"); joint_s=ft.Slider(min=1,max=5,divisions=4,value=int(initial[1] or 3),label="{value}"); drive_s=ft.Slider(min=1,max=5,divisions=4,value=int(initial[2] or 3),label="{value}"); diet_s=ft.Slider(min=1,max=5,divisions=4,value=int(initial[3] or 3),label="{value}")
         preview=ft.Text("",size=10,color="cyan200",weight="bold")
