@@ -2,6 +2,8 @@ import sqlite3
 import os
 import contextlib
 import json
+import uuid
+import hashlib
 from datetime import datetime
 
 from constants import *
@@ -95,6 +97,17 @@ def init_and_seed_db():
         cursor.execute("CREATE TABLE IF NOT EXISTS meso_names (meso_number INTEGER PRIMARY KEY, meso_label TEXT)")
         cursor.execute("CREATE TABLE IF NOT EXISTS app_audit (id INTEGER PRIMARY KEY AUTOINCREMENT,created_at TEXT NOT NULL,action TEXT NOT NULL,details TEXT DEFAULT '')")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_audit_created ON app_audit(created_at)")
+        # 1.40 provider-neutral sync registry. Local integer keys remain intact.
+        cursor.execute("CREATE TABLE IF NOT EXISTS sync_devices(device_uuid TEXT PRIMARY KEY,device_label TEXT,created_at TEXT,last_sync_at TEXT)")
+        cursor.execute("CREATE TABLE IF NOT EXISTS sync_records(table_name TEXT NOT NULL,local_key TEXT NOT NULL,record_uuid TEXT NOT NULL UNIQUE,content_hash TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,deleted_at TEXT,sync_revision INTEGER NOT NULL DEFAULT 1,origin_device TEXT,PRIMARY KEY(table_name,local_key))")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_sync_records_uuid ON sync_records(record_uuid)")
+        cursor.execute("CREATE TABLE IF NOT EXISTS sync_state(state_key TEXT PRIMARY KEY,state_value TEXT)")
+        device=cursor.execute("SELECT device_uuid FROM sync_devices ORDER BY created_at LIMIT 1").fetchone()
+        if not device:
+            device_uuid=str(uuid.uuid4());cursor.execute("INSERT INTO sync_devices(device_uuid,device_label,created_at) VALUES(?,?,?)",(device_uuid,"Android Device",datetime.now().isoformat(timespec="seconds")))
+        else:device_uuid=device[0]
+        cursor.execute("INSERT OR IGNORE INTO sync_state(state_key,state_value) VALUES('provider','local-preview')")
+
         
         cursor.execute(
             "CREATE TABLE IF NOT EXISTS readiness_logs ("
@@ -1293,33 +1306,111 @@ def superset_timing_analytics(meso,week,day):
     return {'transitions':len(transitions),'average_transition':avg(transitions),'round_recoveries':len(round_recovery),'average_round_recovery':avg(round_recovery),'duration':timeline['elapsed']}
 
 
-# --- 1.34 FUNCTIONAL SUPERSET FLOW AND DATA SAFETY ---
+# --- 1.35 WORKOUT FLOW AND DATA MANAGEMENT ---
 def resolve_next_group_step(meso,week,day,session_id,completed_set):
-    """Find the next eligible grouped exercise/set; bypass skipped, completed and exhausted members."""
     with get_db() as c:
-        src=c.execute("SELECT exercise_group_id,group_position FROM workout_sessions WHERE id=?",(int(session_id),)).fetchone()
+        src=c.execute("SELECT exercise_group_id FROM workout_sessions WHERE id=?",(int(session_id),)).fetchone()
         if not src or not src[0]:return None
-        members=c.execute("SELECT id,exercise,category,status,COALESCE(group_position,999),COALESCE(workout_order,id) FROM workout_sessions WHERE meso_number=? AND week=? AND day_of_week=? AND exercise_group_id=? ORDER BY COALESCE(group_position,999),COALESCE(workout_order,id)",(meso,str(week),day,src[0])).fetchall()
-        state={}
-        for sid,ex,cat,status,pos,order in members:
+        members=c.execute("SELECT id,exercise,category,status,COALESCE(group_position,999) FROM workout_sessions WHERE meso_number=? AND week=? AND day_of_week=? AND exercise_group_id=? ORDER BY COALESCE(group_position,999),COALESCE(workout_order,id)",(meso,str(week),day,src[0])).fetchall()
+        current=next((i for i,x in enumerate(members) if x[0]==int(session_id)),0)
+        for offset in range(1,len(members)+1):
+            sid,exercise,category,status,pos=members[(current+offset)%len(members)]
+            if status!=STATUS_PENDING:continue
             sets=c.execute("SELECT set_number,is_complete FROM workout_sets WHERE session_id=? ORDER BY set_number",(sid,)).fetchall()
-            pending=next((n for n,done in sets if not done),None)
-            state[sid]={'session_id':sid,'exercise':ex,'category':cat,'status':status,'position':pos,'pending_set':pending}
-    current=next((i for i,x in enumerate(members) if x[0]==int(session_id)),0)
-    for offset in range(1,len(members)+1):
-        candidate=state[members[(current+offset)%len(members)][0]]
-        if candidate['status']==STATUS_PENDING and candidate['pending_set'] is not None:
-            candidate['round_complete']=(current+offset)>=len(members);candidate['group_id']=src[0];return candidate
+            # Untouched group members have no rows yet and must still resolve to Set 1.
+            pending=next((n for n,done in sets if not done),None) if sets else 1
+            if pending is not None:return {'session_id':sid,'exercise':exercise,'category':category,'pending_set':pending,'round_complete':(current+offset)>=len(members)}
     return None
-
 def record_audit(action,details=''):
-    with get_db() as c:c.execute("INSERT INTO app_audit(created_at,action,details) VALUES(?,?,?)",(datetime.now().isoformat(timespec='seconds'),str(action),str(details)));c.commit()
-
-def recent_audit(limit=50):
+    with get_db() as c:
+        c.execute("INSERT INTO app_audit(created_at,action,details) VALUES(?,?,?)",(datetime.now().isoformat(timespec='seconds'),action,details));c.execute("DELETE FROM app_audit WHERE id NOT IN (SELECT id FROM app_audit ORDER BY id DESC LIMIT 500)");c.commit()
+def recent_audit(limit=20):
     with get_db() as c:return c.execute("SELECT created_at,action,details FROM app_audit ORDER BY id DESC LIMIT ?",(int(limit),)).fetchall()
-
 def privacy_diagnostics():
     with get_db() as c:
-        integrity=c.execute("PRAGMA integrity_check").fetchone()[0]
-        counts={t:c.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in ('workout_sessions','workout_sets','readiness_logs','meso_configs','app_audit')}
-    return {'app_version':APP_VERSION,'schema':DATABASE_SCHEMA_VERSION,'integrity':integrity,'counts':counts}
+        integrity=c.execute("PRAGMA integrity_check").fetchone()[0];counts={t:c.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in ('workout_sessions','workout_sets','readiness_logs','meso_configs','app_audit')}
+    return {'version':APP_VERSION,'schema':DATABASE_SCHEMA_VERSION,'integrity':integrity,'counts':counts}
+
+
+def verify_restored_database(path):
+    import sqlite3
+    required={'workout_sessions':{'workout_order','exercise_group_id','group_position'},'workout_sets':{'session_id','set_number'},'meso_configs':{'meso_number'},'readiness_logs':{'date'},'app_audit':{'action'}}
+    c=sqlite3.connect(path)
+    try:
+        integrity=c.execute('PRAGMA integrity_check').fetchone()[0]
+        missing=[]
+        for table,cols in required.items():
+            present={r[1] for r in c.execute(f'PRAGMA table_info({table})').fetchall()}
+            if not present:missing.append(table)
+            else:missing.extend(f'{table}.{x}' for x in cols-present)
+        orphan_sets=c.execute('SELECT COUNT(*) FROM workout_sets s LEFT JOIN workout_sessions w ON w.id=s.session_id WHERE w.id IS NULL').fetchone()[0]
+        invalid_groups=c.execute("SELECT COUNT(*) FROM workout_sessions WHERE exercise_group_id IS NOT NULL AND group_position IS NULL").fetchone()[0]
+        return {'ok':integrity=='ok' and not missing and orphan_sets==0,'integrity':integrity,'missing':missing,'orphan_sets':orphan_sets,'invalid_groups':invalid_groups}
+    finally:c.close()
+
+
+# --- 1.40 SYNC-READY DATA MODEL AND LOCAL CLOUD PREVIEW ---
+SYNC_TABLES={
+ 'exercise_dict':'name','workout_sessions':'id','workout_sets':'id','readiness_logs':'date',
+ 'meso_configs':'meso_number','meso_names':'meso_number','user_settings':'setting_key'
+}
+SYNC_NAMESPACE=uuid.UUID('0fe4b273-ec77-4de7-9f7a-88fc0df6c841')
+def _sync_device(conn):
+ r=conn.execute("SELECT device_uuid FROM sync_devices ORDER BY created_at LIMIT 1").fetchone();return r[0]
+def _row_dict(cursor,row):return {d[0]:row[i] for i,d in enumerate(cursor.description)}
+def _hash_record(data):return hashlib.sha256(json.dumps(data,sort_keys=True,default=str,separators=(',',':')).encode()).hexdigest()
+def refresh_sync_registry():
+ now=datetime.now().isoformat(timespec='seconds');count=0
+ with get_db() as c:
+  device=_sync_device(c)
+  for table,key in SYNC_TABLES.items():
+   cur=c.execute(f"SELECT * FROM {table}")
+   for row in cur.fetchall():
+    data=_row_dict(cur,row);local=str(data[key]);h=_hash_record(data);rid=str(uuid.uuid5(SYNC_NAMESPACE,f'{table}:{local}'))
+    old=c.execute("SELECT content_hash,sync_revision FROM sync_records WHERE table_name=? AND local_key=?",(table,local)).fetchone()
+    if old:
+     if old[0]!=h:c.execute("UPDATE sync_records SET content_hash=?,updated_at=?,sync_revision=?,origin_device=? WHERE table_name=? AND local_key=?",(h,now,int(old[1])+1,device,table,local))
+    else:c.execute("INSERT INTO sync_records(table_name,local_key,record_uuid,content_hash,created_at,updated_at,origin_device) VALUES(?,?,?,?,?,?,?)",(table,local,rid,h,now,now,device))
+    count+=1
+  c.commit()
+ return count
+def create_sync_package():
+ refresh_sync_registry()
+ with get_db() as c:
+  device=_sync_device(c);records=[]
+  for table,key in SYNC_TABLES.items():
+   cur=c.execute(f"SELECT * FROM {table}")
+   for row in cur.fetchall():
+    data=_row_dict(cur,row);meta=c.execute("SELECT record_uuid,content_hash,updated_at,deleted_at,sync_revision,origin_device FROM sync_records WHERE table_name=? AND local_key=?",(table,str(data[key]))).fetchone()
+    records.append({'table':table,'key':str(data[key]),'uuid':meta[0],'hash':meta[1],'updated_at':meta[2],'deleted_at':meta[3],'revision':meta[4],'origin_device':meta[5],'data':data})
+  return {'format':'ironcycle-sync-v1','app_version':APP_VERSION,'schema':DATABASE_SCHEMA_VERSION,'device_uuid':device,'created_at':datetime.now().isoformat(timespec='seconds'),'records':records}
+def preview_sync_package(package):
+ if package.get('format')!='ironcycle-sync-v1':raise ValueError('Unsupported sync package format.')
+ if int(package.get('schema',0))>DATABASE_SCHEMA_VERSION:raise ValueError('Sync package requires a newer schema.')
+ refresh_sync_registry();newer=[];conflicts=[];unchanged=0
+ with get_db() as c:
+  for r in package.get('records',[]):
+   local=c.execute("SELECT content_hash,sync_revision,origin_device FROM sync_records WHERE record_uuid=?",(r['uuid'],)).fetchone()
+   if not local:newer.append(r)
+   elif local[0]==r['hash']:unchanged+=1
+   elif int(r.get('revision',1))>int(local[1]):newer.append(r)
+   else:conflicts.append(r)
+ return {'new':len([r for r in newer if int(r.get('revision',1))==1]),'updates':len([r for r in newer if int(r.get('revision',1))>1]),'conflicts':len(conflicts),'unchanged':unchanged,'automatic':newer,'conflict_records':conflicts}
+def apply_sync_package(package):
+ plan=preview_sync_package(package)
+ if plan['conflicts']:raise ValueError(f"{plan['conflicts']} conflict(s) require review; no data was changed.")
+ order=['exercise_dict','user_settings','meso_names','meso_configs','workout_sessions','workout_sets','readiness_logs'];by={t:[] for t in order}
+ for r in plan['automatic']:
+  if r['table'] in by:by[r['table']].append(r)
+ with get_db() as c:
+  c.execute('BEGIN IMMEDIATE')
+  for table in order:
+   for r in by[table]:
+    data=r['data'];cols=list(data);marks=','.join('?'*len(cols));updates=','.join(f'{x}=excluded.{x}' for x in cols if x!=SYNC_TABLES[table])
+    c.execute(f"INSERT INTO {table}({','.join(cols)}) VALUES({marks}) ON CONFLICT({SYNC_TABLES[table]}) DO UPDATE SET {updates}",[data[x] for x in cols])
+  c.execute("UPDATE sync_devices SET last_sync_at=? WHERE device_uuid=?",(datetime.now().isoformat(timespec='seconds'),_sync_device(c)));c.commit()
+ refresh_sync_registry();return plan
+def sync_status():
+ with get_db() as c:
+  d=c.execute("SELECT device_uuid,device_label,last_sync_at FROM sync_devices ORDER BY created_at LIMIT 1").fetchone();n=c.execute("SELECT COUNT(*) FROM sync_records").fetchone()[0]
+ return {'device_uuid':d[0],'device_label':d[1],'last_sync_at':d[2],'records':n,'provider':'Local package preview'}

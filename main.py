@@ -910,13 +910,12 @@ class ExerciseCard(ft.Card):
                 set_data["done"] = False
                 set_data["completed_at"] = None
             self.autosave_pending_sets()
-            grouped_advanced = requested_value and self.app.advance_group_flow(self.db_id, set_idx + 1)
+            grouped_advanced=requested_value and self.app.advance_group_flow(self.db_id,set_idx+1)
             all_done = bool(self.app.sets.get(self.db_id)) and all(bool(x.get("done")) for x in self.app.sets[self.db_id])
             if requested_value and set_idx == len(self.app.sets[self.db_id]) - 1 and all_done:
                 self.on_save(None)
                 return
-            if grouped_advanced:
-                return
+            if grouped_advanced:return
             if requested_value and not exercise_was_started:
                 category_name = self.context.get("category") if self.context else None
                 self.app.activate_exercise(category_name, self.db_id)  # rebuilds internally
@@ -1530,21 +1529,14 @@ class WorkoutTrackerApp:
                     ft.Text("SETTINGS & DATA", size=10, weight="bold", color="cyan300"),
                     ft.ElevatedButton("👤 Profile Settings", on_click=self.open_settings_dialog, width=float('inf'), style=btn_style),
                     ft.ElevatedButton("📚 Exercise Library", on_click=self.menu_manage_dict, width=float('inf'), style=btn_style),
-                    ft.Row([
-                        ft.ElevatedButton("🎯 Toggle Focus", on_click=self.toggle_workout_focus_mode, expand=True, style=btn_style),
-                        ft.ElevatedButton("🛠 Diagnostics", on_click=self.open_diagnostics_dialog, expand=True, style=btn_style),
-                        ft.ElevatedButton("Diagnostic Export", on_click=self.open_privacy_diagnostics, expand=True, style=btn_style),
-                    ], spacing=6),
+                    ft.ElevatedButton("🛠 Diagnostics & Support", on_click=self.open_diagnostics_dialog, width=float('inf'), style=btn_style),
                     ft.ElevatedButton("📊 Export History to CSV", on_click=self.export_to_csv, width=float('inf'), style=btn_style),
 
                     ft.Divider(height=10, color="white10"),
 
-                    # --- COMPACTED BACKUPS & TRANSFERS SECTION ---
+                    # --- BACKUP MANAGER ---
                     ft.Text("BACKUPS & TRANSFERS", size=10, weight="bold", color="cyan300"),
-                    ft.Row([
-                        ft.ElevatedButton("💾 Save Local", on_click=self.handle_local_backup_click, expand=True, style=btn_style),
-                        ft.ElevatedButton("📂 Load Local", on_click=self.handle_local_restore_click, expand=True, style=btn_style),
-                    ], spacing=6),
+                    ft.ElevatedButton("Backup Manager", on_click=self.open_backup_manager, width=float('inf'), style=btn_style),
                     ft.Row([
                         ft.ElevatedButton("📡 WiFi Export", on_click=self.handle_wifi_export_click, expand=True, style=btn_style),
                         ft.ElevatedButton("🛰️ WiFi Import", on_click=self.handle_wifi_import_click, expand=True, style=btn_style),
@@ -1681,7 +1673,7 @@ class WorkoutTrackerApp:
         h=mesocycle_health(self.current_meso);text=f"Completion: {h['completion']:.1f}% ({h['completed']}/{h['total']})\nPending: {h['pending']} • Skipped: {h['skipped']}\nOne-workout exceptions: {h['exceptions']}\nRollover skips: {h['roll_skips']}\nReadiness average: {h['readiness'] if h['readiness'] is not None else 'Not logged'}"
         dialog=ft.AlertDialog(title=ft.Text('Mesocycle Health & Next Step',weight='bold'),content=ft.Text(text,size=11),actions=[ft.TextButton('Close',on_click=lambda ev:self.safe_close(dialog)),ft.ElevatedButton('Open Meso Report',on_click=lambda ev:[self.safe_close(dialog),self.open_meso_report()])]);self.safe_open(dialog)
     def create_short_session_snapshot(self):
-        n=f"pre_short_session_auto_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt";open(os.path.join(self.get_backup_storage_dir(),n),'w',encoding='utf-8').write(self.create_backup_string());return n
+        n=f"{datetime.now().strftime('%Y-%m-%d_%H%M%S')}__short-session.icbackup";open(os.path.join(self.get_backup_storage_dir(),n),'w',encoding='utf-8').write(self.create_backup_string());return n
     def open_short_session(self,e=None):
         rows=[x for x in get_plan_sessions(self.current_meso) if x['week']==str(self.current_week) and x['day']==self.current_day and x['status']==STATUS_PENDING]
         if not rows:self.show_snackbar('No pending exercises are available.','amber300');return
@@ -1758,6 +1750,16 @@ class WorkoutTrackerApp:
             self.safe_close(self.actions_menu_dialog)
             # DO NOT set it to None here. We need to remember it so we can guarantee it closes later!
             
+    def current_display_mode(self):
+        if self.workout_focus_mode and self.ui_density=="compact":return "FOCUS"
+        if not self.workout_focus_mode and self.ui_density=="compact":return "COMPACT"
+        if not self.workout_focus_mode and self.ui_density=="comfortable":return "FULL"
+        return "CUSTOM"
+    def open_display_mode(self,e=None):
+        def choose(mode):
+            values={"FULL":(False,"comfortable"),"COMPACT":(False,"compact"),"FOCUS":(True,"compact")};self.workout_focus_mode,self.ui_density=values[mode];self.save_setting("workout_focus_mode","1" if self.workout_focus_mode else "0");self.save_setting("ui_density",self.ui_density);record_audit("display_mode_changed",mode);self.safe_close(dialog);self.rebuild_entire_display()
+        dialog=ft.AlertDialog(title=ft.Text("Workout View",weight="bold"),content=ft.Column([ft.ElevatedButton("Full",on_click=lambda ev:choose("FULL"),width=float('inf')),ft.ElevatedButton("Compact",on_click=lambda ev:choose("COMPACT"),width=float('inf')),ft.ElevatedButton("Focus",on_click=lambda ev:choose("FOCUS"),width=float('inf'))],tight=True),actions=[ft.TextButton("Cancel",on_click=lambda ev:self.safe_close(dialog))]);self.safe_open(dialog)
+
     def open_settings_dialog(self, e=None):
         self.close_actions_menu()
         current_bw = get_user_bodyweight()
@@ -2403,9 +2405,7 @@ class WorkoutTrackerApp:
             print(f"[performance] rebuild_entire_display: {self.last_rebuild_ms:.1f} ms")
 
     def open_privacy_diagnostics(self,e=None):
-        self.close_actions_menu();d=privacy_diagnostics();a=recent_audit(10)
-        text=f"IronCycle {d['app_version']}\nSchema {d['schema']}\nIntegrity: {d['integrity']}\n"+"\n".join(f"{k}: {v}" for k,v in d['counts'].items())+"\n\nRecent operational events:\n"+"\n".join(f"{ts} | {act}" for ts,act,details in a)
-        dialog=ft.AlertDialog(title=ft.Text("Privacy-Safe Diagnostics",weight="bold"),content=ft.Container(width=380,height=430,content=ft.Text(text,selectable=True,font_family="monospace",size=10)),actions=[ft.TextButton("Close",on_click=lambda ev:self.safe_close(dialog))]);self.safe_open(dialog)
+        self.close_actions_menu();d=privacy_diagnostics();rows=recent_audit(10);text=f"IronCycle {d['version']}\nSchema {d['schema']}\nIntegrity: {d['integrity']}\n"+"\n".join(f"{k}: {v}" for k,v in d['counts'].items())+"\n\nRecent events:\n"+"\n".join(f"{ts} | {act}" for ts,act,detail in rows);dialog=ft.AlertDialog(title=ft.Text("Privacy-Safe Diagnostics",weight="bold"),content=ft.Container(width=380,height=430,content=ft.Text(text,selectable=True,font_family="monospace",size=10)),actions=[ft.TextButton("Close",on_click=lambda ev:self.safe_close(dialog))]);self.safe_open(dialog)
 
     def open_diagnostics_dialog(self, e=None):
         self.close_actions_menu()
@@ -2461,10 +2461,19 @@ class WorkoutTrackerApp:
             "Whole-exercise progression intelligence: enabled",
             "Superset timing analytics: enabled",
             "Structural CSV fields: enabled",
-            "Functional superset auto-navigation: enabled",
-            "Focus-mode group labels: enabled",
-            "Operational audit trail: enabled",
-            "Privacy-safe diagnostics: enabled",
+            "First-transition superset fallback: enabled",
+            "Workout View presets: enabled",
+            "ICBACKUP format with legacy TXT restore: enabled",
+            "Newest-first backup sorting: enabled",
+            "Quick Actions compact layout: enabled",
+            "Consolidated Backup Manager: enabled",
+            "Verified restore pipeline: enabled",
+            "Friendly recovery-point browser: enabled",
+            "Sync-ready UUID registry: enabled",
+            "Device registration: enabled",
+            "Provider-neutral sync package: enabled",
+            "Conflict-blocking merge preview: enabled",
+            "Pre-sync recovery and verification: enabled",
         ]
         self.diagnostics_dialog = ft.AlertDialog(
             title=ft.Text("IronCycle Diagnostics", weight="bold"),
@@ -2895,6 +2904,60 @@ class WorkoutTrackerApp:
 
     # --- TEXT-BASED BACKUP & RESTORE METHODS ---
 
+    def get_sync_storage_dir(self):
+        path=os.path.join(os.path.dirname(os.path.abspath(DB_PATH)),"sync_packages");os.makedirs(path,exist_ok=True);return path
+    def export_sync_package(self,e=None):
+        try:
+            package=create_sync_package();name=f"{datetime.now().strftime('%Y-%m-%d_%H%M%S')}__ironcycle.icsync";path=os.path.join(self.get_sync_storage_dir(),name)
+            with open(path,"w",encoding="utf-8") as f:json.dump(package,f,separators=(",",":"))
+            record_audit("sync_package_export",name);self.show_snackbar(f"Sync package created: {name}","green300")
+        except Exception as err:self.show_snackbar(f"Sync export failed: {err}","red300")
+    def browse_sync_packages(self,e=None):
+        files=sorted([x for x in os.listdir(self.get_sync_storage_dir()) if x.endswith('.icsync')],reverse=True)
+        if not files:self.show_snackbar("No local sync packages found.","amber300");return
+        buttons=[]
+        for name in files[:20]:buttons.append(ft.TextButton(name,on_click=lambda ev,n=name:self.preview_sync_file(n)))
+        dialog=ft.AlertDialog(title=ft.Text("Import Sync Package",weight="bold"),content=ft.Container(width=390,height=440,content=ft.ListView(buttons,spacing=4)),actions=[ft.TextButton("Close",on_click=lambda ev:self.safe_close(dialog))]);self.safe_open(dialog)
+    def preview_sync_file(self,name):
+        try:
+            with open(os.path.join(self.get_sync_storage_dir(),name),encoding="utf-8") as f:package=json.load(f)
+            plan=preview_sync_package(package);content=ft.Text(f"Device: {package.get('device_uuid','unknown')[:12]}\nCreated: {package.get('created_at')}\nNew: {plan['new']}\nUpdates: {plan['updates']}\nUnchanged: {plan['unchanged']}\nConflicts: {plan['conflicts']}\n\nConflicts block the merge and preserve both versions.",font_family="monospace",size=10)
+            def apply(ev=None):
+                try:
+                    backup_dir=self.get_backup_storage_dir();backup_name=f"{datetime.now().strftime('%Y-%m-%d_%H%M%S')}__pre-sync.icbackup"
+                    with open(os.path.join(backup_dir,backup_name),"w",encoding="utf-8") as f:f.write(self.create_backup_string())
+                    result=apply_sync_package(package);verify=verify_restored_database(DB_PATH)
+                    if not verify['ok']:raise ValueError(f"Post-sync verification failed: {verify}")
+                    record_audit("sync_package_applied",f"{name}: {result['new']} new, {result['updates']} updates");self.safe_close(dialog);self.sets.clear();self.rebuild_entire_display();self.show_snackbar("Sync package applied and verified.","green300")
+                except Exception as err:self.show_snackbar(str(err),"red300")
+            dialog=ft.AlertDialog(title=ft.Text("Cloud Sync Preview",weight="bold"),content=content,actions=[ft.TextButton("Cancel",on_click=lambda ev:self.safe_close(dialog)),ft.ElevatedButton("Apply Merge",on_click=apply,disabled=plan['conflicts']>0)]);self.safe_open(dialog)
+        except Exception as err:self.show_snackbar(f"Sync preview failed: {err}","red300")
+    def open_cloud_sync_preview(self,e=None):
+        st=sync_status();dialog=ft.AlertDialog(title=ft.Text("Cloud Sync Preview",weight="bold"),content=ft.Column([ft.Text(f"Transport: {st['provider']}",color="cyan300"),ft.Text(f"Device: {st['device_label']}\nID: {st['device_uuid'][:12]}…\nTracked records: {st['records']}\nLast merge: {st['last_sync_at'] or 'Never'}",font_family="monospace",size=10),ft.Text("This preview validates record-level merging before a live provider is connected.",size=10,color="white54")],tight=True),actions=[ft.TextButton("Export Package",on_click=lambda ev:[self.safe_close(dialog),self.export_sync_package()]),ft.TextButton("Import Package",on_click=lambda ev:[self.safe_close(dialog),self.browse_sync_packages()]),ft.TextButton("Close",on_click=lambda ev:self.safe_close(dialog))]);self.safe_open(dialog)
+
+    def open_backup_manager(self,e=None):
+        self.close_actions_menu();style=ft.ButtonStyle(padding=10)
+        dialog=ft.AlertDialog(title=ft.Text("Backup Manager",weight="bold"),content=ft.Container(width=390,height=500,content=ft.Column([
+            ft.Text("LOCAL RECOVERY POINTS",size=10,weight="bold",color="cyan300"),
+            ft.Row([ft.ElevatedButton("Create Backup",on_click=lambda ev:[self.safe_close(dialog),self.handle_local_backup_click()],expand=True,style=style),ft.ElevatedButton("Browse Backups",on_click=lambda ev:[self.safe_close(dialog),self.handle_local_restore_click()],expand=True,style=style)]),
+            ft.Divider(),ft.Text("WI-FI TRANSFER",size=10,weight="bold",color="cyan300"),
+            ft.Row([ft.ElevatedButton("Export",on_click=lambda ev:[self.safe_close(dialog),self.handle_wifi_export_click()],expand=True,style=style),ft.ElevatedButton("Import",on_click=lambda ev:[self.safe_close(dialog),self.handle_wifi_import_click()],expand=True,style=style)]),
+            ft.Divider(),ft.Text("BACKUP CODE",size=10,weight="bold",color="cyan300"),
+            ft.Row([ft.ElevatedButton("Copy Code",on_click=lambda ev:[self.safe_close(dialog),self.handle_backup_click()],expand=True,style=style),ft.ElevatedButton("Paste Code",on_click=lambda ev:[self.safe_close(dialog),self.handle_restore_click()],expand=True,style=style)]),
+            ft.Divider(),ft.Text("CLOUD SYNC PREVIEW",size=10,weight="bold",color="cyan300"),
+            ft.ElevatedButton("Open Sync Preview",on_click=lambda ev:[self.safe_close(dialog),self.open_cloud_sync_preview()],width=float('inf'),style=style),
+            ft.Text("Provider-neutral local packages. No live cloud account is connected yet.",size=9,color="white54"),
+            ft.Text("New recovery points use .icbackup. Legacy .txt backups remain supported.",size=9,color="white54")
+        ],spacing=7,scroll="auto")),actions=[ft.TextButton("Privacy-Safe View",on_click=lambda ev:[self.safe_close(dialog),self.open_privacy_diagnostics()]),ft.TextButton("Close",on_click=lambda ev:self.safe_close(dialog))]);self.safe_open(dialog)
+
+    def backup_reason_label(self,name):
+        n=name.lower()
+        if 'short-session' in n:return 'Before Short Session'
+        if 'pre-restore' in n:return 'Before Restore'
+        if 'schedule' in n or 'structure' in n:return 'Before Schedule Change'
+        if 'manual' in n:return 'Manual Backup'
+        return 'Legacy Recovery Point'
+
     def get_backup_storage_dir(self):
         db_dir = os.path.dirname(os.path.abspath(DB_PATH))
         backup_dir = os.path.join(db_dir, "backups")
@@ -2911,7 +2974,7 @@ class WorkoutTrackerApp:
         try:
             encoded_str = self.create_backup_string()
             backup_dir = self.get_backup_storage_dir()
-            filename = f"IronCycle_v{APP_VERSION}_schema{DATABASE_SCHEMA_VERSION}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+            filename = f"{datetime.now().strftime('%Y-%m-%d_%H%M%S')}__manual.icbackup"
             backup_path = os.path.join(backup_dir, filename)
 
             with open(backup_path, "w", encoding="utf-8") as f:
@@ -2949,7 +3012,7 @@ class WorkoutTrackerApp:
             
             if os.path.exists(backup_dir):
                 for name in os.listdir(backup_dir):
-                    if name.lower().endswith(".txt"):
+                    if name.lower().endswith((".icbackup", ".txt")):
                         path = os.path.join(backup_dir, name)
                         if os.path.isfile(path):
                             files.append((name, path, os.path.getmtime(path), os.path.getsize(path)))
@@ -2963,11 +3026,12 @@ class WorkoutTrackerApp:
                 self.safe_open(self.no_backups_dialog)
                 return
 
-            files.sort(key=lambda x: x[2], reverse=True)
+            files.sort(key=lambda x: (x[2], x[0]), reverse=True)
             restore_buttons = []
             for name, path, mtime, size in files[:20]:
-                ts = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M")
-                label = f"{name}  •  {ts}  •  {size:,} bytes"
+                ts = datetime.fromtimestamp(mtime).strftime("%b %d, %Y • %I:%M %p")
+                kind = "Automatic" if any(x in name.lower() for x in ("pre-","short-session","schedule","structure")) else "Manual"
+                label = f"{ts}\n{self.backup_reason_label(name)} • {kind}\n{size/1024:.0f} KB • newest first"
                 restore_buttons.append(
                     ft.TextButton(
                         content=ft.Text(label, size=11),
@@ -3419,12 +3483,15 @@ class WorkoutTrackerApp:
             with open(temp_db_path, "wb") as f:
                 f.write(decompressed_db)
             self.backup_service.validate_database(temp_db_path)
+            verification = verify_restored_database(temp_db_path)
+            if not verification["ok"]:
+                raise ValueError(f"Restore verification failed: integrity={verification['integrity']}, missing={verification['missing']}, orphan sets={verification['orphan_sets']}")
 
             # --- NEW: AUTOMATIC PRE-RESTORE SNAPSHOT (THE UNDO BUTTON) ---
             try:
                 pre_restore_str = self.create_backup_string()
                 backup_dir = self.get_backup_storage_dir()
-                auto_filename = f"pre_restore_auto_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+                auto_filename = f"{datetime.now().strftime('%Y-%m-%d_%H%M%S')}__pre-restore.icbackup"
                 with open(os.path.join(backup_dir, auto_filename), "w", encoding="utf-8") as f:
                     f.write(pre_restore_str)
             except Exception as auto_err:
@@ -3650,20 +3717,14 @@ class WorkoutTrackerApp:
         self.pending_scroll_key = self.category_anchor_key(category_name)
         self.rebuild_entire_display()
 
-    def advance_group_flow(self, session_id, completed_set):
-        next_step=resolve_next_group_step(self.current_meso,self.current_week,self.current_day,session_id,completed_set)
-        if not next_step:return False
-        category=next_step["category"];target_id=next_step["session_id"]
+    def advance_group_flow(self,session_id,completed_set):
+        nxt=resolve_next_group_step(self.current_meso,self.current_week,self.current_day,session_id,completed_set)
+        if not nxt:return False
         with get_db() as conn:
-            for row in conn.execute("SELECT DISTINCT category FROM workout_sessions WHERE meso_number=? AND week=? AND day_of_week=?",(self.current_meso,self.current_week,self.current_day)).fetchall():
-                if row[0]:self.collapsed_categories[self.category_key(row[0])]=(row[0]!=category)
-        self.collapsed_categories[self.category_key(category)]=False
-        self.active_exercise_by_category[self.category_key(category)]=target_id
-        self.pending_scroll_key=self.exercise_anchor_key(target_id)
-        self.remount_main_canvas_on_rebuild=True
-        record_audit("superset_advance",f"{session_id} set {completed_set} -> {target_id} set {next_step['pending_set']}")
-        self.rebuild_entire_display()
-        return True
+            cats=[r[0] for r in conn.execute("SELECT DISTINCT category FROM workout_sessions WHERE meso_number=? AND week=? AND day_of_week=?",(self.current_meso,self.current_week,self.current_day)).fetchall() if r[0]]
+        for dcat in cats:self.collapsed_categories[self.category_key(dcat)]=(dcat!=nxt['category'])
+        self.collapsed_categories[self.category_key(nxt['category'])]=False;self.active_exercise_by_category[self.category_key(nxt['category'])]=nxt['session_id'];self.pending_scroll_key=self.exercise_anchor_key(nxt['session_id']);self.remount_main_canvas_on_rebuild=True
+        record_audit('superset_advance',f"{session_id} set {completed_set} -> {nxt['session_id']} set {nxt['pending_set']}");self.rebuild_entire_display();return True
 
     def activate_exercise(self, category_name, session_id):
         if not category_name:
@@ -3858,7 +3919,7 @@ class WorkoutTrackerApp:
         normalized = sum(float(v or 0) for v in initial) / 2.0
         adjustment = get_readiness_adjustment(sum(int(v or 3) for v in initial[:3]), int(initial[1] or 3), "Compound")
         adjustment_text = "No adjustment" if adjustment["reduction_pct"] <= 0 else f"Up to -{adjustment['reduction_pct']*100:g}% load, -{adjustment['rep_drop']} reps"
-        header=ft.Container(content=ft.Row([ft.Text("SESSION READINESS",size=9,weight="bold",color=COLOR_INFO),ft.Text(f"{normalized:.1f}/10",size=10,weight="bold",color="green300" if normalized>=8.5 else "amber300" if normalized>=7 else "red300"),ft.Text(adjustment_text,size=9,color=COLOR_MUTED,expand=True,text_align="right"),ft.Text("▼" if self.context_collapsed else "▲",size=11,color=COLOR_INFO)],spacing=7),padding=6,ink=True,on_click=self.toggle_context_panel)
+        header=ft.Container(content=ft.Row([ft.Text("SESSION READINESS",size=9,weight="bold",color=COLOR_INFO),ft.Text(f"{normalized:.1f}/10",size=10,weight="bold",color="green300" if normalized>=8.5 else "amber300" if normalized>=7 else "red300"),ft.TextButton(f"{self.current_display_mode()}",on_click=self.open_display_mode,style=ft.ButtonStyle(padding=2)),ft.Text(adjustment_text,size=9,color=COLOR_MUTED,expand=True,text_align="right"),ft.Text("▼" if self.context_collapsed else "▲",size=11,color=COLOR_INFO)],spacing=5),padding=6)
         if self.context_collapsed: return ft.Container(content=header,bgcolor="white5",border_radius=8)
         sleep_s=ft.Slider(min=1,max=5,divisions=4,value=int(initial[0] or 3),label="{value}"); joint_s=ft.Slider(min=1,max=5,divisions=4,value=int(initial[1] or 3),label="{value}"); drive_s=ft.Slider(min=1,max=5,divisions=4,value=int(initial[2] or 3),label="{value}"); diet_s=ft.Slider(min=1,max=5,divisions=4,value=int(initial[3] or 3),label="{value}")
         preview=ft.Text("",size=10,color="cyan200",weight="bold")
