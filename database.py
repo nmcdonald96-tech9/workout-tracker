@@ -1355,15 +1355,3 @@ def create_sync_package():
 def preview_sync_package(p):
     if p.get('format')!='ironcycle-sync-v1':raise ValueError('Unsupported sync package format.')
     return {'new':0,'updates':0,'unchanged':len(p.get('records',[])),'conflicts':0}
-
-
-def queue_cloud_backup(reason):
- with get_db() as c:
-  r=c.execute("SELECT id FROM cloud_backup_queue WHERE status IN ('pending','uploading','failed') ORDER BY id DESC LIMIT 1").fetchone()
-  now=datetime.now().isoformat(timespec='seconds')
-  if r:c.execute("UPDATE cloud_backup_queue SET reason=?,queued_at=?,status='pending',last_error=NULL WHERE id=?",(reason,now,r[0]))
-  else:c.execute("INSERT INTO cloud_backup_queue(reason,queued_at) VALUES(?,?)",(reason,now))
-  c.commit()
-def cloud_backup_queue_status():
- with get_db() as c:r=c.execute("SELECT id,reason,queued_at,status,attempt_count,last_error FROM cloud_backup_queue ORDER BY id DESC LIMIT 1").fetchone()
- return {'id':r[0],'reason':r[1],'queued_at':r[2],'status':r[3],'attempt_count':r[4],'last_error':r[5]} if r else None
