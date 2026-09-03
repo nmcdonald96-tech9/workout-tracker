@@ -1,4 +1,4 @@
-"""MSAL-backed OneDrive App Folder transport for IronCycle 1.41.7."""
+"""MSAL-backed OneDrive App Folder transport for IronCycle 1.41.9."""
 import hashlib, json, os, threading, time, urllib.error, urllib.parse, urllib.request
 from datetime import datetime, timezone
 import msal
@@ -8,7 +8,7 @@ AUTHORITY="https://login.microsoftonline.com/common"
 GRAPH="https://graph.microsoft.com/v1.0"
 SCOPES=["Files.ReadWrite.AppFolder", "User.Read"]
 VERIFY_URI_FALLBACK="https://microsoft.com/devicelogin"
-CACHE_FORMAT_VERSION=4
+CACHE_FORMAT_VERSION=5
 
 class OneDriveError(RuntimeError):
  def __init__(self,message,status=None,stage=None,graph_code=None,request_id=None,www_authenticate=None):
@@ -17,7 +17,7 @@ class OneDriveError(RuntimeError):
 
 class OneDriveService:
  def __init__(self,cache_path,pending_path):
-  self.cache_path,self.pending_path=cache_path,pending_path;self.cache_marker=cache_path+".v4";self._migrate_once();self.cache=msal.SerializableTokenCache()
+  self.cache_path,self.pending_path=cache_path,pending_path;self.cache_marker=cache_path+".v5";self._migrate_once();self.cache=msal.SerializableTokenCache()
   if os.path.exists(cache_path):
    try:self.cache.deserialize(open(cache_path,encoding='utf-8').read())
    except Exception:pass
@@ -84,18 +84,33 @@ class OneDriveService:
    raise OneDriveError(f'HTTP {e.code}: {msg}',status=e.code,stage=stage,graph_code=graph_code,request_id=e.headers.get('request-id'),www_authenticate=e.headers.get('WWW-Authenticate'))
   except urllib.error.URLError as e:raise OneDriveError(f'Network unavailable: {e.reason}')
  def _graph(self,path,data=None,method=None,ctype=None,stage=None):return self._json(GRAPH+path,self.acquire_token(),data,method,ctype,stage)
- def latest_manifest(self):return self._graph('/me/drive/special/approot:/latest.json:/content',stage='manifest')
+ def latest_manifest(self):
+  metadata=self._graph('/me/drive/special/approot:/latest.json?$select=id,name,size,@microsoft.graph.downloadUrl',stage='manifest_metadata')
+  url=metadata.get('@microsoft.graph.downloadUrl')
+  if not url:raise OneDriveError('OneDrive did not provide a manifest download URL.',stage='manifest_download')
+  try:
+   with urllib.request.urlopen(urllib.request.Request(url),timeout=60) as response:raw=response.read()
+  except urllib.error.HTTPError as e:raise OneDriveError(f'HTTP {e.code}: manifest download failed',status=e.code,stage='manifest_download',request_id=e.headers.get('request-id'),www_authenticate=e.headers.get('WWW-Authenticate'))
+  except urllib.error.URLError as e:raise OneDriveError(f'Network unavailable: {e.reason}',stage='manifest_download')
+  try:manifest=json.loads(raw.decode('utf-8'))
+  except Exception as e:raise OneDriveError(f'Invalid latest.json: {e}',stage='manifest_parse')
+  required=('format','backup_file','created_at','schema_version','sha256')
+  missing=[key for key in required if not manifest.get(key)]
+  if missing:raise OneDriveError('latest.json is missing: '+', '.join(missing),stage='manifest_validate')
+  if manifest.get('format')!='ironcycle-cloud-backup-v1':raise OneDriveError('Unsupported cloud manifest format.',stage='manifest_validate')
+  return manifest
  def verify_connection(self):
   stages=[]
   identity=self._graph('/me?$select=id',stage='identity');stages.append({'stage':'identity','ok':bool(identity.get('id'))})
   drive=self._graph('/me/drive?$select=id,driveType',stage='drive');stages.append({'stage':'drive','ok':bool(drive.get('id'))})
   root=self._graph('/me/drive/special/approot',stage='approot');stages.append({'stage':'approot','ok':bool(root.get('id'))})
-  manifest=None
+  manifest=None;manifest_error=None
   try:manifest=self.latest_manifest();stages.append({'stage':'manifest','ok':True})
   except OneDriveError as e:
-   if e.status==404 or 'itemnotfound' in str(e).lower():stages.append({'stage':'manifest','ok':True,'missing':True})
-   else:raise
-  return {'ok':all(x.get('ok') for x in stages),'checked_at':datetime.now(timezone.utc).isoformat(timespec='seconds'),'manifest':manifest,'stages':stages}
+   manifest_error={'stage':e.stage or 'manifest','status':e.status,'graph_code':e.graph_code,'request_id':e.request_id,'message':str(e)}
+   stages.append({'stage':'manifest','ok':False,'missing':e.status==404 or 'itemnotfound' in str(e).lower()})
+  connection_ok=all(x.get('ok') for x in stages if x.get('stage')!='manifest')
+  return {'ok':connection_ok,'checked_at':datetime.now(timezone.utc).isoformat(timespec='seconds'),'manifest':manifest,'manifest_error':manifest_error,'stages':stages}
  def upload_backup(self,text,reason,version,schema):
   with self._io_lock:
    stamp=datetime.now(timezone.utc).strftime('%Y-%m-%d_%H%M%S');safe=''.join(c if c.isalnum() or c=='-' else '-' for c in reason.lower()).strip('-') or 'manual';name=f'{stamp}__{safe}.icbackup';raw=text.encode();digest=hashlib.sha256(raw).hexdigest();q=urllib.parse.quote(name,safe='')
