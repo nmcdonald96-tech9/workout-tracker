@@ -1,5 +1,2 @@
-# IronCycle Android runtime dependencies
-# Keep this file at the repository root with main.py.
-
 flet==0.86.5
 msal>=1.31,<2
