@@ -2475,8 +2475,9 @@ class WorkoutTrackerApp:
             "Opaque MSAL access-token handling: enabled",
             "Device-flow duplicate completion guard: enabled",
             "Cloud actions gated by Graph verification: enabled",
-            "Preauthenticated latest.json download: enabled",
-            "Connection independent of manifest availability: enabled",
+            "Explicit Graph 302 Location downloads: enabled",
+            "Remote manifest reload after restart: enabled",
+            "Restore gated by confirmed remote manifest: enabled",
         ]
         self.diagnostics_dialog = ft.AlertDialog(
             title=ft.Text("IronCycle Diagnostics", weight="bold"),
