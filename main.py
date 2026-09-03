@@ -5,6 +5,7 @@ import traceback
 import json
 import time
 import asyncio
+import inspect
 from datetime import datetime
 import csv
 from io import StringIO
@@ -2471,9 +2472,10 @@ class WorkoutTrackerApp:
             "Post-migration restore verification: enabled",
             "Independent readiness collapse target: enabled",
             "Sync-ready schema registry: enabled",
-            "MSAL common authority: enabled",
-            "Device-flow expiry validation: enabled",
-            "Single device-flow completion worker: enabled",
+            "Qualified Microsoft Graph scope: enabled",
+            "JWT audience and scope validation: enabled",
+            "Awaited Android URL launcher: enabled",
+            "MSAL cache v2 migration: enabled",
         ]
         self.diagnostics_dialog = ft.AlertDialog(
             title=ft.Text("IronCycle Diagnostics", weight="bold"),
@@ -2907,10 +2909,12 @@ class WorkoutTrackerApp:
     def open_cloud_sync_preview(self,e=None):
         st=sync_status();dialog=ft.AlertDialog(title=ft.Text("Cloud Sync Preview",weight="bold"),content=ft.Text(f"Transport: {st['provider']}\nDevice: {st['device_label']}\nID: {st['device_uuid'][:12]}…\nTracked records: {st['records']}\nLast sync: {st['last_sync_at'] or 'Never'}",font_family="monospace"),actions=[ft.TextButton("Close",on_click=lambda ev:self.safe_close(dialog))]);self.safe_open(dialog)
 
-    def open_external_url(self,url):
-        try:return self.page.launch_url(url)
-        except Exception:
-            import webbrowser;return webbrowser.open(url)
+    async def open_external_url(self,e=None,url=None):
+        target=url or 'https://microsoft.com/devicelogin'
+        try:
+            result=self.page.launch_url(target)
+            if inspect.isawaitable(result):await result
+        except Exception as err:self.show_snackbar(f"Could not open browser: {err}. Use {target}","amber300")
     def on_app_lifecycle_state_change(self,e):
         state=str(getattr(getattr(e,'state',None),'name',getattr(e,'state',''))).upper()
         if state in ('SHOW','RESTART','RESUME') and self.onedrive.pending_flow() and not self._cloud_signin_running:self.finish_onedrive_signin()
@@ -2922,14 +2926,15 @@ class WorkoutTrackerApp:
     def connect_onedrive(self,e=None,force_new=False):
         try:
             flow=self.onedrive.begin_device_flow(force_new=force_new);uri=flow.get('verification_uri') or 'https://microsoft.com/devicelogin';expires=max(0,int(flow.get('expires_at',0)-time.time()))
-            self.onedrive_connect_dialog=ft.AlertDialog(title=ft.Text("Connect OneDrive",weight="bold"),content=ft.Column([ft.Text("Open Microsoft sign-in and enter this code:"),ft.Text(flow.get('user_code',''),size=24,weight='bold',color='cyan300',selectable=True),ft.Text(uri,size=10,selectable=True),ft.Text(f"Code expires in about {expires//60} minutes.",size=10,color='white54'),ft.ElevatedButton("Open Microsoft Sign-In",on_click=lambda ev:self.open_external_url(uri)),ft.ElevatedButton("I Completed Sign-In",on_click=self.finish_onedrive_signin),ft.TextButton("Generate New Code",on_click=self.generate_new_onedrive_code)],tight=True,spacing=7),actions=[ft.TextButton("Cancel",on_click=lambda ev:[self.onedrive.clear_pending(),self.safe_close(self.onedrive_connect_dialog)])]);self.safe_open(self.onedrive_connect_dialog)
+            async def launch(ev):await self.open_external_url(ev,uri)
+            self.onedrive_connect_dialog=ft.AlertDialog(title=ft.Text("Connect OneDrive",weight="bold"),content=ft.Column([ft.Text("Open Microsoft sign-in and enter this code:"),ft.Text(flow.get('user_code',''),size=24,weight='bold',color='cyan300',selectable=True),ft.Text(uri,size=10,selectable=True),ft.Text(f"Code expires in about {expires//60} minutes.",size=10,color='white54'),ft.ElevatedButton("Open Microsoft Sign-In",on_click=launch),ft.ElevatedButton("I Completed Sign-In",on_click=self.finish_onedrive_signin),ft.TextButton("Generate New Code",on_click=self.generate_new_onedrive_code)],tight=True,spacing=7),actions=[ft.TextButton("Cancel",on_click=lambda ev:[self.onedrive.clear_pending(),self.safe_close(self.onedrive_connect_dialog)])]);self.safe_open(self.onedrive_connect_dialog)
         except Exception as err:self.show_snackbar(f"Microsoft sign-in could not start: {err}","red300")
     def finish_onedrive_signin(self,e=None):
         if self._cloud_signin_running:self.show_snackbar("Microsoft sign-in completion is already running.","cyan300");return
         self._cloud_signin_running=True
         def worker():
             try:
-                self.onedrive.complete_device_flow();self.show_snackbar("Microsoft token acquired and cached. Verifying OneDrive...","cyan300");self.verify_onedrive_connection(show_result=True)
+                self.onedrive.complete_device_flow();self.show_snackbar("Microsoft Graph token acquired and validated. Verifying OneDrive...","cyan300");self.verify_onedrive_connection(show_result=True)
                 try:self.safe_close(self.onedrive_connect_dialog)
                 except Exception:pass
             except Exception as err:self.cloud_state='reconnect_required';self.show_snackbar(f"Microsoft sign-in failed: {err}","red300")
@@ -2947,8 +2952,8 @@ class WorkoutTrackerApp:
                 result=self.onedrive.verify_connection();self.cloud_state='verified';self.cloud_last_checked=result['checked_at'];self.cloud_manifest=result.get('manifest')
                 if show_result:self.show_snackbar("Graph verification succeeded. OneDrive is connected.","green300")
             except Exception as err:
-                self.cloud_state='reconnect_required' if ('401' in str(err) or 'reconnect required' in str(err).lower()) else 'offline'
-                if show_result:self.show_snackbar(f"Microsoft token exists, but Graph verification failed: {err}","amber300")
+                self.cloud_state='reconnect_required' if ('401' in str(err) or 'reconnect required' in str(err).lower() or 'audience' in str(err).lower() or 'permission' in str(err).lower()) else 'offline'
+                if show_result:self.show_snackbar(f"Graph verification failed: {err}","amber300")
             self.refresh_cloud_panel()
         try:self.page.run_thread(worker)
         except Exception:threading.Thread(target=worker,daemon=True).start()
