@@ -25,7 +25,7 @@ from app.compatibility import compatible_checkbox
 from components.session_context_panel import build_tag_controls
 from app.application import ApplicationFoundation
 from services.backup_service import BackupService
-from onedrive_service import OneDriveService, OneDriveError
+from onedrive_service import OneDriveService
 
 class WorkoutStateService:
  @staticmethod
@@ -1162,7 +1162,6 @@ class ExerciseCard(ft.Card):
             print(f"[on_save] rebuild_navigation_headers failed: {nav_err}")
 
         # Unconditional — runs regardless of what happened above.
-        self.app.queue_and_run_cloud_backup("workout-complete")
         self.app.rebuild_entire_display()
 
 
@@ -1221,8 +1220,7 @@ class WorkoutTrackerApp:
         self.foundation = ApplicationFoundation()
         self.foundation.sync(self)
         self.backup_service = BackupService(MAX_BACKUP_TEXT_BYTES, MAX_DECOMPRESSED_DB_BYTES)
-        token_path=os.path.join(os.path.dirname(os.path.abspath(DB_PATH)),"onedrive_token.json")
-        self.onedrive=OneDriveService(token_path)
+        self.onedrive=OneDriveService(os.path.join(os.path.dirname(os.path.abspath(DB_PATH)),"onedrive_token.json"))
         self._cloud_backup_running=False
         self.build_ui_shell()
         self.rebuild_navigation_headers()
@@ -2478,9 +2476,7 @@ class WorkoutTrackerApp:
             "Post-migration restore verification: enabled",
             "Independent readiness collapse target: enabled",
             "Sync-ready schema registry: enabled",
-            "OneDrive App Folder cloud backup: enabled",
-            "Cloud reinstall recovery: enabled",
-            "Cloud credentials stored outside workout database: yes",
+            "OneDrive AADSTS70016 polling guard: enabled",
         ]
         self.diagnostics_dialog = ft.AlertDialog(
             title=ft.Text("IronCycle Diagnostics", weight="bold"),
@@ -2914,57 +2910,37 @@ class WorkoutTrackerApp:
     def open_cloud_sync_preview(self,e=None):
         st=sync_status();dialog=ft.AlertDialog(title=ft.Text("Cloud Sync Preview",weight="bold"),content=ft.Text(f"Transport: {st['provider']}\nDevice: {st['device_label']}\nID: {st['device_uuid'][:12]}…\nTracked records: {st['records']}\nLast sync: {st['last_sync_at'] or 'Never'}",font_family="monospace"),actions=[ft.TextButton("Close",on_click=lambda ev:self.safe_close(dialog))]);self.safe_open(dialog)
 
-    def cloud_backup_status_text(self):
-        queued=cloud_backup_queue_status()
-        if not self.onedrive.is_connected():return "Not connected"
-        if queued and queued.get("status") in ("pending","uploading","failed"):return f"{queued['status'].title()}: {queued['reason']}"
-        return "Connected"
     def connect_onedrive(self,e=None):
         try:
-            device=self.onedrive.begin_device_code();code=device.get("user_code","");uri=device.get("verification_uri") or "https://microsoft.com/devicelogin"
-            dialog=ft.AlertDialog(title=ft.Text("Connect OneDrive",weight="bold"),content=ft.Column([ft.Text("Open the Microsoft sign-in page and enter this code:"),ft.Text(code,size=24,weight="bold",color="cyan300",selectable=True),ft.Text(uri,size=11,color="white70",selectable=True),ft.Text("IronCycle requests access only to its OneDrive App Folder.",size=10,color="white54")],tight=True,spacing=8),actions=[ft.TextButton("Close",on_click=lambda ev:self.safe_close(dialog))]);self.safe_open(dialog)
-            def wait_for_auth():
-                try:self.onedrive.complete_device_code(device);self.safe_close(dialog);self.show_snackbar("OneDrive connected. You can back up now.","green300")
+            d=self.onedrive.begin_device_code();dialog=ft.AlertDialog(title=ft.Text("Connect OneDrive",weight="bold"),content=ft.Column([ft.Text("Open the Microsoft sign-in page and enter this code:"),ft.Text(d.get("user_code",""),size=24,weight="bold",color="cyan300",selectable=True),ft.Text(d.get("verification_uri","https://microsoft.com/devicelogin"),selectable=True),ft.Text("Waiting for Microsoft authorization. Keep this window open.",color="cyan200")],tight=True),actions=[ft.TextButton("Close",on_click=lambda ev:self.safe_close(dialog))]);self.safe_open(dialog)
+            def wait():
+                try:self.onedrive.complete_device_code(d);self.safe_close(dialog);self.show_snackbar("OneDrive connected and tokens saved.","green300")
                 except Exception as err:self.show_snackbar(f"OneDrive connection failed: {err}","red300")
-            self.page.run_thread(wait_for_auth)
+            self.page.run_thread(wait)
         except Exception as err:self.show_snackbar(f"Could not start OneDrive sign-in: {err}","red300")
-    def queue_and_run_cloud_backup(self,reason="manual",e=None):
+    def cloud_backup_now(self,reason="manual",e=None):
         queue_cloud_backup(reason)
-        if not self.onedrive.is_connected():self.show_snackbar("Cloud backup queued. Connect OneDrive to upload it.","amber300");return
+        if not self.onedrive.is_connected():self.show_snackbar("Cloud backup queued. Connect OneDrive first.","amber300");return
         if self._cloud_backup_running:return
         self._cloud_backup_running=True
         def run():
-            try:
-                with get_db() as c:
-                    row=c.execute("SELECT id,reason FROM cloud_backup_queue WHERE status='pending' ORDER BY id LIMIT 1").fetchone()
-                    if not row:return
-                    c.execute("UPDATE cloud_backup_queue SET status='uploading',attempt_count=attempt_count+1 WHERE id=?",(row[0],));c.commit()
-                manifest=self.onedrive.upload_backup(self.create_backup_string(),row[1],APP_VERSION,DATABASE_SCHEMA_VERSION)
-                with get_db() as c:c.execute("UPDATE cloud_backup_queue SET status='verified',last_error=NULL WHERE id=?",(row[0],));c.execute("INSERT OR REPLACE INTO sync_state(state_key,state_value) VALUES('last_cloud_backup',?)",(manifest['created_at'],));c.commit()
-                self.show_snackbar("OneDrive backup uploaded and verified.","green300")
-            except Exception as err:
-                with get_db() as c:c.execute("UPDATE cloud_backup_queue SET status='failed',last_error=? WHERE status='uploading'",(str(err),));c.commit()
-                self.show_snackbar(f"Cloud backup pending retry: {err}","amber300")
+            try:self.onedrive.upload_backup(self.create_backup_string(),reason,APP_VERSION,DATABASE_SCHEMA_VERSION);self.show_snackbar("OneDrive backup uploaded and verified.","green300")
+            except Exception as err:self.show_snackbar(f"Cloud backup pending retry: {err}","amber300")
             finally:self._cloud_backup_running=False
-        try:self.page.run_thread(run)
-        except Exception:threading.Thread(target=run,daemon=True).start()
-    def restore_latest_onedrive(self,e=None):
+        self.page.run_thread(run)
+    def cloud_restore_latest(self,e=None):
         if not self.onedrive.is_connected():self.show_snackbar("Connect OneDrive first.","amber300");return
-        def download():
-            try:
-                raw,manifest=self.onedrive.download_latest();self._pending_restore_str=raw;self.show_snackbar(f"Downloaded cloud backup from {manifest.get('created_at','unknown date')}. Review restore warning.","cyan300");self.trigger_external_restore_warning()
-            except Exception as err:self.show_snackbar(f"Cloud restore download failed: {err}","red300")
-        try:self.page.run_thread(download)
-        except Exception:threading.Thread(target=download,daemon=True).start()
+        def run():
+            try:self._pending_restore_str,self._cloud_manifest=self.onedrive.download_latest();self.trigger_external_restore_warning()
+            except Exception as err:self.show_snackbar(f"Cloud restore failed: {err}","red300")
+        self.page.run_thread(run)
     def open_onedrive_cloud_backup(self,e=None):
-        status=self.cloud_backup_status_text();connected=self.onedrive.is_connected()
-        dialog=ft.AlertDialog(title=ft.Text("OneDrive Cloud Backup",weight="bold"),content=ft.Container(width=390,content=ft.Column([ft.Text(f"Status: {status}",color="cyan200" if connected else "amber300"),ft.Text("Cloud backups survive APK replacement. Reconnect this Microsoft account after reinstalling to restore the latest verified recovery point.",size=10,color="white70"),ft.ElevatedButton("Back Up Now",on_click=lambda ev:[self.safe_close(dialog),self.queue_and_run_cloud_backup("manual")],disabled=not connected,width=float('inf')),ft.ElevatedButton("Restore Latest",on_click=lambda ev:[self.safe_close(dialog),self.restore_latest_onedrive()],disabled=not connected,width=float('inf')),ft.ElevatedButton("Connect OneDrive" if not connected else "Reconnect OneDrive",on_click=lambda ev:[self.safe_close(dialog),self.connect_onedrive()],width=float('inf')),ft.TextButton("Disconnect",on_click=lambda ev:[self.onedrive.disconnect(),self.safe_close(dialog),self.show_snackbar("OneDrive disconnected.","cyan300")],visible=connected)],spacing=7,tight=True)),actions=[ft.TextButton("Close",on_click=lambda ev:self.safe_close(dialog))]);self.safe_open(dialog)
+        connected=self.onedrive.is_connected();dialog=ft.AlertDialog(title=ft.Text("OneDrive Cloud Backup",weight="bold"),content=ft.Column([ft.Text("Status: "+("Connected" if connected else "Not connected")),ft.ElevatedButton("Back Up Now",disabled=not connected,on_click=lambda ev:[self.safe_close(dialog),self.cloud_backup_now()]),ft.ElevatedButton("Restore Latest",disabled=not connected,on_click=lambda ev:[self.safe_close(dialog),self.cloud_restore_latest()]),ft.ElevatedButton("Connect OneDrive",on_click=lambda ev:[self.safe_close(dialog),self.connect_onedrive()])],tight=True),actions=[ft.TextButton("Close",on_click=lambda ev:self.safe_close(dialog))]);self.safe_open(dialog)
     def open_backup_manager(self,e=None):
         self.close_actions_menu();style=ft.ButtonStyle(padding=10)
         dialog=ft.AlertDialog(title=ft.Text("Backup Manager",weight="bold"),content=ft.Container(width=390,height=500,content=ft.Column([
             ft.Text("CLOUD BACKUP",size=10,weight="bold",color="cyan300"),
             ft.ElevatedButton("OneDrive Cloud Backup",on_click=lambda ev:[self.safe_close(dialog),self.open_onedrive_cloud_backup()],width=float('inf'),style=style),
-            ft.Text("Durable across APK replacement. Local recovery points remain temporary.",size=9,color="white54"),
             ft.Divider(),
             ft.Text("LOCAL RECOVERY POINTS",size=10,weight="bold",color="cyan300"),
             ft.Row([ft.ElevatedButton("Create Backup",on_click=lambda ev:[self.safe_close(dialog),self.handle_local_backup_click()],expand=True,style=style),ft.ElevatedButton("Browse Backups",on_click=lambda ev:[self.safe_close(dialog),self.handle_local_restore_click()],expand=True,style=style)]),
@@ -3554,7 +3530,6 @@ class WorkoutTrackerApp:
             self.rebuild_navigation_headers()
             self.rebuild_entire_display()
             
-            self.queue_and_run_cloud_backup("restore-complete")
             # --- ONLY DELETE TEMP FILE AFTER ABSOLUTE SUCCESS ---
             try:
                 if os.path.exists(temp_db_path):
@@ -3965,7 +3940,7 @@ class WorkoutTrackerApp:
             with get_db() as conn:
                 readiness_date=datetime.now().strftime("%Y-%m-%d")
                 conn.execute("DELETE FROM readiness_logs WHERE date=? OR (meso_number=? AND week=? AND day_of_week=?)",(readiness_date,self.current_meso,self.current_week,self.current_day)); conn.execute("INSERT INTO readiness_logs(date,sleep,joints,drive,diet,meso_number,week,day_of_week) VALUES(?,?,?,?,?,?,?,?)",(readiness_date,int(sleep_s.value),int(joint_s.value),int(drive_s.value),int(diet_s.value),self.current_meso,self.current_week,self.current_day)); conn.commit()
-            save_context(); self.queue_and_run_cloud_backup("readiness-update"); self.show_snackbar("Readiness updated. Pending targets recalculated; completed sets preserved.",COLOR_SUCCESS); self.rebuild_entire_display()
+            save_context(); self.show_snackbar("Readiness updated. Pending targets recalculated; completed sets preserved.",COLOR_SUCCESS); self.rebuild_entire_display()
         for slider in (sleep_s,joint_s,drive_s,diet_s): slider.on_change=update_preview
         note_field.on_blur=save_context; tag_checks=build_tag_controls(ft,SESSION_TAG_OPTIONS,selected_tags,save_context); update_preview()
         sliders=ft.Column([ft.Row([ft.Column([ft.Text("Sleep",size=10),sleep_s],expand=True),ft.Column([ft.Text("Joints",size=10),joint_s],expand=True)]),ft.Row([ft.Column([ft.Text("Drive",size=10),drive_s],expand=True),ft.Column([ft.Text("Diet",size=10),diet_s],expand=True)])],spacing=2)

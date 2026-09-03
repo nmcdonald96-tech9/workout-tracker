@@ -100,8 +100,7 @@ def init_and_seed_db():
         cursor.execute("CREATE TABLE IF NOT EXISTS sync_devices(device_uuid TEXT PRIMARY KEY,device_label TEXT,created_at TEXT,last_sync_at TEXT)")
         cursor.execute("CREATE TABLE IF NOT EXISTS sync_records(table_name TEXT,local_key TEXT,record_uuid TEXT UNIQUE,content_hash TEXT,created_at TEXT,updated_at TEXT,deleted_at TEXT,sync_revision INTEGER DEFAULT 1,origin_device TEXT,PRIMARY KEY(table_name,local_key))")
         cursor.execute("CREATE TABLE IF NOT EXISTS sync_state(state_key TEXT PRIMARY KEY,state_value TEXT)")
-        cursor.execute("CREATE TABLE IF NOT EXISTS cloud_backup_queue(id INTEGER PRIMARY KEY AUTOINCREMENT,reason TEXT NOT NULL,queued_at TEXT NOT NULL,status TEXT DEFAULT 'pending',attempt_count INTEGER DEFAULT 0,last_error TEXT,next_retry_at TEXT)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_cloud_queue_status ON cloud_backup_queue(status,queued_at)")
+        cursor.execute("CREATE TABLE IF NOT EXISTS cloud_backup_queue(id INTEGER PRIMARY KEY AUTOINCREMENT,reason TEXT,queued_at TEXT,status TEXT DEFAULT 'pending',attempt_count INTEGER DEFAULT 0,last_error TEXT)")
         if not cursor.execute("SELECT 1 FROM sync_devices LIMIT 1").fetchone():cursor.execute("INSERT INTO sync_devices VALUES(?,?,?,NULL)",(str(uuid.uuid4()),"Android Device",datetime.now().isoformat(timespec="seconds")))
         
         cursor.execute(
@@ -1359,14 +1358,11 @@ def preview_sync_package(p):
 
 
 def queue_cloud_backup(reason):
-    now=datetime.now().isoformat(timespec="seconds")
-    with get_db() as c:
-        existing=c.execute("SELECT id FROM cloud_backup_queue WHERE status IN ('pending','uploading') ORDER BY id DESC LIMIT 1").fetchone()
-        if existing:c.execute("UPDATE cloud_backup_queue SET reason=?,queued_at=?,status='pending' WHERE id=?",(str(reason),now,existing[0]))
-        else:c.execute("INSERT INTO cloud_backup_queue(reason,queued_at,status) VALUES(?,?,'pending')",(str(reason),now))
-        c.commit()
-
+ with get_db() as c:
+  r=c.execute("SELECT id FROM cloud_backup_queue WHERE status IN ('pending','uploading','failed') ORDER BY id DESC LIMIT 1").fetchone()
+  if r:c.execute("UPDATE cloud_backup_queue SET reason=?,queued_at=?,status='pending' WHERE id=?",(reason,datetime.now().isoformat(timespec='seconds'),r[0]))
+  else:c.execute("INSERT INTO cloud_backup_queue(reason,queued_at) VALUES(?,?)",(reason,datetime.now().isoformat(timespec='seconds')))
+  c.commit()
 def cloud_backup_queue_status():
-    with get_db() as c:
-        row=c.execute("SELECT id,reason,queued_at,status,attempt_count,last_error FROM cloud_backup_queue ORDER BY id DESC LIMIT 1").fetchone()
-    return {'id':row[0],'reason':row[1],'queued_at':row[2],'status':row[3],'attempt_count':row[4],'last_error':row[5]} if row else None
+ with get_db() as c:r=c.execute("SELECT id,reason,status,last_error FROM cloud_backup_queue ORDER BY id DESC LIMIT 1").fetchone()
+ return {'id':r[0],'reason':r[1],'status':r[2],'last_error':r[3]} if r else None
