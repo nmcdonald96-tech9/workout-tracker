@@ -6,15 +6,18 @@ import msal
 CLIENT_ID="cab9c010-af5e-4d42-918f-51ae4a6ebdd8"
 AUTHORITY="https://login.microsoftonline.com/common"
 GRAPH="https://graph.microsoft.com/v1.0"
-SCOPES=["https://graph.microsoft.com/Files.ReadWrite.AppFolder"]
+SCOPES=["Files.ReadWrite.AppFolder", "User.Read"]
 VERIFY_URI_FALLBACK="https://microsoft.com/devicelogin"
-CACHE_FORMAT_VERSION=3
+CACHE_FORMAT_VERSION=4
 
-class OneDriveError(RuntimeError): pass
+class OneDriveError(RuntimeError):
+ def __init__(self,message,status=None,stage=None,graph_code=None,request_id=None,www_authenticate=None):
+  super().__init__(message);self.status=status;self.stage=stage;self.graph_code=graph_code;self.request_id=request_id;self.www_authenticate=www_authenticate
+
 
 class OneDriveService:
  def __init__(self,cache_path,pending_path):
-  self.cache_path,self.pending_path=cache_path,pending_path;self.cache_marker=cache_path+".v3";self._migrate_once();self.cache=msal.SerializableTokenCache()
+  self.cache_path,self.pending_path=cache_path,pending_path;self.cache_marker=cache_path+".v4";self._migrate_once();self.cache=msal.SerializableTokenCache()
   if os.path.exists(cache_path):
    try:self.cache.deserialize(open(cache_path,encoding='utf-8').read())
    except Exception:pass
@@ -64,7 +67,7 @@ class OneDriveService:
   if not r or 'access_token' not in r:raise OneDriveError('Reconnect required: '+((r or {}).get('error_description') or (r or {}).get('error') or 'silent token acquisition failed'))
   # Access tokens are opaque to clients. Microsoft Graph is the authority that validates them.
   return r['access_token']
- def _json(self,url,token=None,data=None,method=None,ctype=None):
+ def _json(self,url,token=None,data=None,method=None,ctype=None,stage=None):
   h={}
   if token:h['Authorization']='Bearer '+token
   if ctype:h['Content-Type']=ctype
@@ -75,16 +78,24 @@ class OneDriveService:
    raw=e.read().decode('utf-8','replace')
    try:p=json.loads(raw);x=p.get('error');msg=x.get('message') if isinstance(x,dict) else p.get('error_description') or x or raw
    except Exception:msg=raw
-   raise OneDriveError(f'HTTP {e.code}: {msg}')
+   graph_code=None
+   try:graph_code=(p.get('error') or {}).get('code') if isinstance(p.get('error'),dict) else None
+   except Exception:pass
+   raise OneDriveError(f'HTTP {e.code}: {msg}',status=e.code,stage=stage,graph_code=graph_code,request_id=e.headers.get('request-id'),www_authenticate=e.headers.get('WWW-Authenticate'))
   except urllib.error.URLError as e:raise OneDriveError(f'Network unavailable: {e.reason}')
- def _graph(self,path,data=None,method=None,ctype=None):return self._json(GRAPH+path,self.acquire_token(),data,method,ctype)
- def latest_manifest(self):return self._graph('/me/drive/special/approot:/latest.json:/content')
+ def _graph(self,path,data=None,method=None,ctype=None,stage=None):return self._json(GRAPH+path,self.acquire_token(),data,method,ctype,stage)
+ def latest_manifest(self):return self._graph('/me/drive/special/approot:/latest.json:/content',stage='manifest')
  def verify_connection(self):
-  root=self._graph('/me/drive/special/approot');manifest=None
-  try:manifest=self.latest_manifest()
+  stages=[]
+  identity=self._graph('/me?$select=id',stage='identity');stages.append({'stage':'identity','ok':bool(identity.get('id'))})
+  drive=self._graph('/me/drive?$select=id,driveType',stage='drive');stages.append({'stage':'drive','ok':bool(drive.get('id'))})
+  root=self._graph('/me/drive/special/approot',stage='approot');stages.append({'stage':'approot','ok':bool(root.get('id'))})
+  manifest=None
+  try:manifest=self.latest_manifest();stages.append({'stage':'manifest','ok':True})
   except OneDriveError as e:
-   if '404' not in str(e) and 'itemnotfound' not in str(e).lower():raise
-  return {'ok':bool(root.get('id')),'checked_at':datetime.now(timezone.utc).isoformat(timespec='seconds'),'manifest':manifest}
+   if e.status==404 or 'itemnotfound' in str(e).lower():stages.append({'stage':'manifest','ok':True,'missing':True})
+   else:raise
+  return {'ok':all(x.get('ok') for x in stages),'checked_at':datetime.now(timezone.utc).isoformat(timespec='seconds'),'manifest':manifest,'stages':stages}
  def upload_backup(self,text,reason,version,schema):
   with self._io_lock:
    stamp=datetime.now(timezone.utc).strftime('%Y-%m-%d_%H%M%S');safe=''.join(c if c.isalnum() or c=='-' else '-' for c in reason.lower()).strip('-') or 'manual';name=f'{stamp}__{safe}.icbackup';raw=text.encode();digest=hashlib.sha256(raw).hexdigest();q=urllib.parse.quote(name,safe='')

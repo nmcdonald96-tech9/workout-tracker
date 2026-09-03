@@ -26,7 +26,7 @@ from app.compatibility import compatible_checkbox
 from components.session_context_panel import build_tag_controls
 from app.application import ApplicationFoundation
 from services.backup_service import BackupService
-from onedrive_service import OneDriveService
+from onedrive_service import OneDriveService, OneDriveError
 
 class WorkoutStateService:
  @staticmethod
@@ -1223,7 +1223,7 @@ class WorkoutTrackerApp:
         self.backup_service = BackupService(MAX_BACKUP_TEXT_BYTES, MAX_DECOMPRESSED_DB_BYTES)
         cloud_dir=os.path.dirname(os.path.abspath(DB_PATH))
         self.onedrive=OneDriveService(os.path.join(cloud_dir,"msal_cache.json"),os.path.join(cloud_dir,"onedrive_pending.json"))
-        self.cloud_state="not_connected";self.cloud_last_checked=None;self.cloud_manifest=None;self._cloud_restore_running=False;self._cloud_signin_running=False
+        self.cloud_state="not_connected";self.cloud_last_checked=None;self.cloud_manifest=None;self.cloud_stages=[];self._cloud_restore_running=False;self._cloud_signin_running=False
         try:self.page.on_app_lifecycle_state_change=self.on_app_lifecycle_state_change
         except Exception:pass
         self.build_ui_shell()
@@ -2473,6 +2473,9 @@ class WorkoutTrackerApp:
             "Independent readiness collapse target: enabled",
             "Sync-ready schema registry: enabled",
             "Opaque MSAL access-token handling: enabled",
+            "Graph staged verification: identity/drive/approot",
+            "MSAL short delegated scopes: enabled",
+            "Privacy-safe Graph request diagnostics: enabled",
             "Device-flow duplicate completion guard: enabled",
             "Cloud actions gated by Graph verification: enabled",
         ]
@@ -2946,17 +2949,20 @@ class WorkoutTrackerApp:
         except Exception:self._cloud_signin_running=False;self.show_snackbar("Could not start Microsoft sign-in completion.","red300")
     def refresh_cloud_panel(self):
         try:
-            self.cloud_status_text.value={'verified':'● Connected and verified','checking':'◌ Checking OneDrive','reconnect_required':'● Reconnect required','offline':'● Offline','not_connected':'○ Not connected'}.get(self.cloud_state,'○ Not connected');self.cloud_status_text.color='green300' if self.cloud_state=='verified' else 'amber300';m=self.cloud_manifest or {};self.cloud_manifest_text.value=(f"{m.get('created_at')} • {m.get('reason','backup')} • {int(m.get('size',0))/1024:.1f} KB • schema {m.get('schema_version','?')}" if m else 'No remote recovery manifest loaded');verified=self.cloud_state=='verified';self.cloud_backup_button.disabled=not verified;self.cloud_restore_button.disabled=not verified;self.cloud_status_text.update();self.cloud_manifest_text.update();self.cloud_backup_button.update();self.cloud_restore_button.update()
+            self.cloud_status_text.value={'verified':'● Connected and verified','checking':'◌ Checking OneDrive','reconnect_required':'● Reconnect required','offline':'● Offline','not_connected':'○ Not connected'}.get(self.cloud_state,'○ Not connected');self.cloud_status_text.color='green300' if self.cloud_state=='verified' else 'amber300';m=self.cloud_manifest or {};stages=' • '.join(f"{x.get('stage')}: {'OK' if x.get('ok') else 'FAIL'}" for x in self.cloud_stages);self.cloud_manifest_text.value=((f"{m.get('created_at')} • {m.get('reason','backup')} • {int(m.get('size',0))/1024:.1f} KB • schema {m.get('schema_version','?')}" if m else 'No remote recovery manifest loaded')+(f"\n{stages}" if stages else ''));verified=self.cloud_state=='verified';self.cloud_backup_button.disabled=not verified;self.cloud_restore_button.disabled=not verified;self.cloud_status_text.update();self.cloud_manifest_text.update();self.cloud_backup_button.update();self.cloud_restore_button.update()
         except Exception:pass
     def verify_onedrive_connection(self,e=None,show_result=True):
         self.cloud_state='checking';self.refresh_cloud_panel()
         def worker():
             try:
-                result=self.onedrive.verify_connection();self.cloud_state='verified';self.cloud_last_checked=result['checked_at'];self.cloud_manifest=result.get('manifest')
+                result=self.onedrive.verify_connection();self.cloud_state='verified';self.cloud_last_checked=result['checked_at'];self.cloud_manifest=result.get('manifest');self.cloud_stages=result.get('stages',[])
                 if show_result:self.show_snackbar("Graph verification succeeded. OneDrive is connected.","green300")
             except Exception as err:
                 self.cloud_state='reconnect_required' if ('401' in str(err) or 'reconnect required' in str(err).lower()) else 'offline'
-                if show_result:self.show_snackbar(f"Graph verification failed: {err}","amber300")
+                detail=f"Graph {getattr(err,'stage',None) or 'request'} failed: {err}"
+                if getattr(err,'graph_code',None):detail+=f" • code {err.graph_code}"
+                if getattr(err,'request_id',None):detail+=f" • request {err.request_id}"
+                if show_result:self.show_snackbar(detail,"amber300")
             self.refresh_cloud_panel()
         try:self.page.run_thread(worker)
         except Exception:threading.Thread(target=worker,daemon=True).start()
