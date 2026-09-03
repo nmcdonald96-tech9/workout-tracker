@@ -1360,9 +1360,10 @@ def preview_sync_package(p):
 def queue_cloud_backup(reason):
  with get_db() as c:
   r=c.execute("SELECT id FROM cloud_backup_queue WHERE status IN ('pending','uploading','failed') ORDER BY id DESC LIMIT 1").fetchone()
-  if r:c.execute("UPDATE cloud_backup_queue SET reason=?,queued_at=?,status='pending' WHERE id=?",(reason,datetime.now().isoformat(timespec='seconds'),r[0]))
-  else:c.execute("INSERT INTO cloud_backup_queue(reason,queued_at) VALUES(?,?)",(reason,datetime.now().isoformat(timespec='seconds')))
+  now=datetime.now().isoformat(timespec='seconds')
+  if r:c.execute("UPDATE cloud_backup_queue SET reason=?,queued_at=?,status='pending',last_error=NULL WHERE id=?",(reason,now,r[0]))
+  else:c.execute("INSERT INTO cloud_backup_queue(reason,queued_at) VALUES(?,?)",(reason,now))
   c.commit()
 def cloud_backup_queue_status():
- with get_db() as c:r=c.execute("SELECT id,reason,status,last_error FROM cloud_backup_queue ORDER BY id DESC LIMIT 1").fetchone()
- return {'id':r[0],'reason':r[1],'status':r[2],'last_error':r[3]} if r else None
+ with get_db() as c:r=c.execute("SELECT id,reason,queued_at,status,attempt_count,last_error FROM cloud_backup_queue ORDER BY id DESC LIMIT 1").fetchone()
+ return {'id':r[0],'reason':r[1],'queued_at':r[2],'status':r[3],'attempt_count':r[4],'last_error':r[5]} if r else None
