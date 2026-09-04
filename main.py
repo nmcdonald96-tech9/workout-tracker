@@ -687,7 +687,7 @@ class ExerciseCard(ft.Card):
             first_diag = self.set_progression_diagnostics[0]
             current_ref = recent_session_sets[0] if recent_session_sets else (self.tgt_w, self.tgt_r)
             clarity = progression_clarity(effective_settings, current_ref[0], current_ref[1], first_diag.get("next_weight", self.tgt_w), first_diag.get("next_reps", self.tgt_r), first_diag.get("reason_code"))
-            chips_row.controls.append(make_helper_chip(f"Next: {float(first_diag.get('next_weight',self.tgt_w)):g} lb x {int(first_diag.get('next_reps',self.tgt_r))} • {str(first_diag.get('decision','hold')).replace('_',' ').title()}", "bluegrey900", "cyan100"))
+            decision_label={'progress':'Advanced','hold':'Held','reduce':'Reduced','resume_normal':'Resumed normal'}.get(str(first_diag.get('decision','hold')),str(first_diag.get('decision','hold')).replace('_',' ').title());chips_row.controls.append(make_helper_chip(f"Progression: {decision_label}", "bluegrey900", "cyan100"))
         
         if self.mov_type == "Compound" and self.app.current_week != "Deload" and self.status == STATUS_PENDING:
             w1 = snap_weight(adj_w * WARMUP_PERCENT_1, eq_type)
@@ -730,7 +730,10 @@ class ExerciseCard(ft.Card):
         ], alignment="spaceBetween")
 
         density_scale = 0.78 if self.app.ui_density == "compact" else 1.0
-        detailed_zone=ft.Container(content=ft.Column([ft.Text("SETUP: "+(saved_note or "No setup notes"),size=9,color="white54"),ft.Text(f"TARGET CONTEXT: {float(base_target_w):g} lb x {int(base_target_r)} • normal {float(self.normal_set_targets[0]['w']):g} x {int(self.normal_set_targets[0]['r'])}",size=9,color="cyan200")],spacing=2),visible=self.app.ui_density=="detailed",bgcolor="white5",padding=5,border_radius=6)
+        previous_line=(f"PREVIOUS: {past_w_list[0]} lb x {past_r_list[0]}"+(f" @ RPE {past_rpe_list[0]}" if past_rpe_list and past_rpe_list[0] else "")) if past_w_list and past_r_list else "PREVIOUS: No completed result"
+        normal=self.normal_set_targets[0];today=self.set_targets[0];detail_controls=[ft.Text("SETUP: "+(saved_note or "No setup notes"),size=9,color="white54"),ft.Text(f"TODAY'S TARGET: {float(today['w']):g} lb x {int(today['r'])}",size=9,color="cyan200"),ft.Text(previous_line,size=9,color="white70")]
+        if normal!=today:detail_controls.append(ft.Text(f"NORMAL TARGET: {float(normal['w']):g} lb x {int(normal['r'])} • temporary readiness reduction",size=9,color="amber200"))
+        detailed_zone=ft.Container(content=ft.Column(detail_controls,spacing=2),visible=self.app.ui_density=="detailed",bgcolor="white5",padding=5,border_radius=6)
         card_body = ft.Column([
             title_zone,
             detailed_zone,
@@ -1143,6 +1146,7 @@ class ExerciseCard(ft.Card):
 
         if self.db_id in self.app.sets:
             del self.app.sets[self.db_id]
+        self.app.schedule_automatic_cloud_backup("automatic: exercise completed")
 
         if is_new_pr:
             self.app.pr_celebrations[self.db_id] = True
@@ -1236,7 +1240,7 @@ class WorkoutTrackerApp:
         self.backup_service = BackupService(MAX_BACKUP_TEXT_BYTES, MAX_DECOMPRESSED_DB_BYTES)
         cloud_dir=os.path.dirname(os.path.abspath(DB_PATH))
         self.onedrive=OneDriveService(os.path.join(cloud_dir,"msal_cache.json"),os.path.join(cloud_dir,"onedrive_pending.json"))
-        self.cloud_state="not_connected";self.cloud_last_checked=None;self.cloud_manifest=None;self.cloud_manifest_error=None;self.cloud_stages=[];self._cloud_restore_running=False;self._cloud_signin_running=False
+        self.cloud_state="not_connected";self.cloud_last_checked=None;self.cloud_manifest=None;self.cloud_manifest_error=None;self.cloud_stages=[];self._cloud_restore_running=False;self._cloud_signin_running=False;self.auto_cloud_backup=self.get_bool_setting('automatic_onedrive_backup',False);self.cloud_testing_mode=self.get_bool_setting('cloud_testing_mode',False);self._auto_backup_timer=None;self._auto_backup_running=False
         try:self.page.on_app_lifecycle_state_change=self.on_app_lifecycle_state_change
         except Exception:pass
         self.build_ui_shell()
@@ -1579,49 +1583,29 @@ class WorkoutTrackerApp:
         dialog=ft.AlertDialog(title=ft.Text("🗓️ Manage Active Meso",weight="bold"),content=ft.Container(width=390,height=540,content=ft.Column([ft.Text("CURRENT PLAN • newest week first",size=9,color="cyan300",weight="bold"),items,ft.ElevatedButton("Workout Structure & Supersets",on_click=lambda ev:[self.safe_close(dialog),self.open_structure_editor()],width=float('inf')),ft.ElevatedButton("Roll Missed Workout",on_click=lambda ev:[self.safe_close(dialog),self.open_missed_workout_rollover()],width=float('inf')),ft.TextButton("Plan Tools ▾",on_click=toggle),tools],expand=True,spacing=5)),actions=[ft.TextButton("Close",on_click=lambda ev:self.safe_close(dialog))],inset_padding=12,content_padding=14);self.safe_open(dialog)
 
     def open_structure_editor(self,e=None,source_session_id=None):
-        weeks=[x for x in self.get_existing_weeks() if str(x).isdigit()];week=ft.Dropdown(label='Week',value=str(self.current_week) if str(self.current_week).isdigit() else weeks[-1],options=[ft.dropdown.Option(x) for x in weeks],width=100);day=ft.Dropdown(label='Day',value=self.current_day,options=[ft.dropdown.Option(x) for x in self.ordered_day_names()],expand=True)
-        selected=set([int(source_session_id)]) if source_session_id else set();list_col=ft.Column(spacing=4,scroll='auto',expand=True);status=ft.Text('',size=9,color='cyan200')
+        weeks=[x for x in self.get_existing_weeks() if str(x).isdigit()];week=ft.Dropdown(label='Week',value=str(self.current_week) if str(self.current_week).isdigit() else weeks[-1],options=[ft.dropdown.Option(x) for x in weeks],width=100);day=ft.Dropdown(label='Day',value=self.current_day,options=[ft.dropdown.Option(x) for x in self.ordered_day_names()],expand=True);selected=set([int(source_session_id)]) if source_session_id else set();items=ft.Column(scroll='auto',expand=True,spacing=4)
         def rows():return [x for x in get_plan_sessions(self.current_meso) if x['week']==week.value and x['day']==day.value]
         def refresh(ev=None):
-            if not source_session_id:selected.clear()
-            list_col.controls.clear();group_letters={};letter=0;by_cat={}
-            for x in rows():by_cat.setdefault(x['category'] or 'General',[]).append(x)
-            ordered=sorted(by_cat,key=category_sort_key)
-            for cat in ordered:
-                items=sorted(by_cat[cat],key=lambda x:(x['status']!=STATUS_PENDING,x['workout_order'],x['id']))
-                list_col.controls.append(ft.Container(content=ft.Text(f"{cat.upper()} • {len(items)}",size=10,weight='bold',color='cyan200'),padding=ft.Padding.only(top=7,bottom=2)))
-                for x in items:
-                    gid=x.get('group_id');prefix=''
-                    if gid:
-                        if gid not in group_letters:group_letters[gid]=chr(65+letter);letter+=1
-                        prefix=f"{group_letters[gid]}{x.get('group_position') or 1} "
-                    cb=ft.Checkbox(value=x['id'] in selected,disabled=x['status']!=STATUS_PENDING,on_change=lambda ev,sid=x['id']:(selected.add(sid) if ev.control.value else selected.discard(sid)))
-                    controls=[cb,ft.Text(prefix+x['exercise'],size=10,expand=True),ft.Text(x['status'],size=8,color='green300' if x['status']==STATUS_COMPLETED else 'white54')]
+            items.controls.clear();by={}
+            for x in rows():by.setdefault(x['category'] or 'General',[]).append(x)
+            for cat in sorted(by,key=category_sort_key):
+                items.controls.append(ft.Text(f"{cat.upper()} • {len(by[cat])}",size=10,weight='bold',color='cyan200'))
+                for x in sorted(by[cat],key=lambda y:(y['status']!=STATUS_PENDING,y['workout_order'],y['id'])):
+                    gid=x.get('group_id');label=(f"A{x.get('group_position') or 1} " if gid else '')+x['exercise'];cb=ft.Checkbox(value=x['id'] in selected,disabled=x['status']!=STATUS_PENDING,on_change=lambda ev,sid=x['id']:(selected.add(sid) if ev.control.value else selected.discard(sid)));controls=[cb,ft.Text(label,size=10,expand=True)]
                     if x['status']==STATUS_PENDING:
                         controls += [ft.TextButton('Card ↑',on_click=lambda ev,sid=x['id']:move_card(sid,-1)),ft.TextButton('Card ↓',on_click=lambda ev,sid=x['id']:move_card(sid,1))]
-                        if gid:controls += [ft.TextButton('A↑',tooltip='Earlier superset position',on_click=lambda ev,sid=x['id']:move_group(sid,-1)),ft.TextButton('A↓',tooltip='Later superset position',on_click=lambda ev,sid=x['id']:move_group(sid,1))]
-                    list_col.controls.append(ft.Container(content=ft.Row(controls,spacing=1),bgcolor='white10',padding=4,border_radius=6))
-            status.value=f"{len(rows())} exercises • grouped by muscle"
+                        if gid:controls += [ft.TextButton('A↑',on_click=lambda ev,sid=x['id']:move_group(sid,-1)),ft.TextButton('A↓',on_click=lambda ev,sid=x['id']:move_group(sid,1))]
+                    items.controls.append(ft.Container(content=ft.Row(controls,spacing=1),bgcolor='white10',padding=4,border_radius=6))
             if ev is not None:
-                try:list_col.update();status.update()
-                except Exception:pass
-        def move_card(sid,d):
-            try:reorder_pending_exercise_in_category(self.current_meso,week.value,day.value,sid,d);refresh(True)
-            except Exception as err:self.show_snackbar(str(err),'red300')
-        def move_group(sid,d):
-            try:set_group_member_position(self.current_meso,week.value,day.value,sid,d);refresh(True)
-            except Exception as err:self.show_snackbar(str(err),'red300')
-        def group(ev=None):
-            try:set_exercise_group(self.current_meso,week.value,day.value,[x['id'] for x in rows() if x['id'] in selected]);refresh(True);self.show_snackbar('Superset/circuit created.','green300')
-            except Exception as err:self.show_snackbar(str(err),'red300')
+                try:items.update()
+                except:pass
+        def move_card(sid,d):reorder_pending_exercise_in_category(self.current_meso,week.value,day.value,sid,d);refresh(True)
+        def move_group(sid,d):set_group_member_position(self.current_meso,week.value,day.value,sid,d);refresh(True)
+        def group(ev=None):set_exercise_group(self.current_meso,week.value,day.value,[x['id'] for x in rows() if x['id'] in selected]);enqueue_cloud_backup('automatic: workout structure changed');self.schedule_automatic_cloud_backup();refresh(True)
         def ungroup(ev=None):
-            try:
-                if not selected:raise ValueError('Select a grouped exercise.')
-                clear_exercise_group(self.current_meso,week.value,day.value,next(iter(selected)));refresh(True);self.show_snackbar('Group removed.','green300')
-            except Exception as err:self.show_snackbar(str(err),'red300')
-        def save_future(ev=None):save_structured_blueprint_from_week(self.current_meso,week.value);self.show_snackbar('Current structure saved for future pending weeks.','green300')
-        week.on_select=refresh;day.on_select=refresh;refresh()
-        dialog=ft.AlertDialog(title=ft.Text('Workout Structure & Supersets',weight='bold'),content=ft.Container(width=420,height=570,content=ft.Column([ft.Row([week,day]),status,list_col,ft.Text('Card arrows move within the muscle group. A arrows change A1/A2/A3 execution order.',size=9,color='white54'),ft.Row([ft.ElevatedButton('Create Group',on_click=group,expand=True),ft.ElevatedButton('Ungroup',on_click=ungroup,expand=True)]),ft.TextButton('Use this structure for future pending weeks',on_click=save_future)],expand=True,spacing=5)),actions=[ft.TextButton('Done',on_click=lambda ev:[self.safe_close(dialog),self.sets.clear(),self.rebuild_entire_display()])],inset_padding=12);self.safe_open(dialog)
+            if not selected:self.show_snackbar('Select a grouped exercise.','amber300');return
+            clear_exercise_group(self.current_meso,week.value,day.value,next(iter(selected)));enqueue_cloud_backup('automatic: workout structure changed');self.schedule_automatic_cloud_backup();refresh(True)
+        week.on_select=refresh;day.on_select=refresh;refresh();dialog=ft.AlertDialog(title=ft.Text('Workout Structure & Supersets',weight='bold'),content=ft.Container(width=420,height=570,content=ft.Column([ft.Row([week,day]),items,ft.Text('Card arrows move within a muscle group. A arrows change execution order.',size=9,color='white54'),ft.Row([ft.ElevatedButton('Create Group',on_click=group,expand=True),ft.ElevatedButton('Ungroup',on_click=ungroup,expand=True)])],expand=True)),actions=[ft.TextButton('Done',on_click=lambda ev:[self.safe_close(dialog),self.sets.clear(),self.rebuild_entire_display()])]);self.safe_open(dialog)
     def restore_future_schedule(self,e=None):
         try:
             snap=self.create_short_session_snapshot();n=restore_future_structure(self.current_meso);self.sets.clear();self.rebuild_entire_display();self.show_snackbar(f'Restored {n} pending structure fields. Snapshot: {snap}','green300')
@@ -1773,15 +1757,14 @@ class WorkoutTrackerApp:
             # DO NOT set it to None here. We need to remember it so we can guarantee it closes later!
             
     def current_display_mode(self):
-        if self.workout_focus_mode:return "FOCUS"
-        return "DETAILED" if self.ui_density=="detailed" else "STANDARD"
+        if self.workout_focus_mode:return 'FOCUS'
+        return 'DETAILED' if self.ui_density=='detailed' else 'STANDARD'
     def open_display_mode(self,e=None):
         current=self.current_display_mode()
-        def choose(mode):
-            values={"STANDARD":(False,"compact"),"FOCUS":(True,"compact"),"DETAILED":(False,"detailed")};self.workout_focus_mode,self.ui_density=values[mode];self.save_setting("workout_focus_mode","1" if self.workout_focus_mode else "0");self.save_setting("ui_density",self.ui_density);record_audit("display_mode_changed",mode);self.safe_close(dialog);self.rebuild_entire_display()
-        def b(label,mode,detail):
-            selected=current==mode;return ft.ElevatedButton(content=ft.Column([ft.Text(("✓ " if selected else "")+label,weight="bold"),ft.Text(detail,size=9,color="white70")],spacing=1,horizontal_alignment="center"),on_click=lambda ev,m=mode:choose(m),width=float('inf'),style=ft.ButtonStyle(bgcolor="cyan700" if selected else "white10",color="white",padding=8))
-        dialog=ft.AlertDialog(title=ft.Text('Workout View',weight='bold'),content=ft.Column([ft.Text(f"Current mode: {current.title()}",size=10,color='cyan300'),b('Standard','STANDARD','Compact everyday training layout'),b('Focus','FOCUS','Active execution with secondary controls hidden'),b('Detailed','DETAILED','Shows setup notes and expanded target context')],tight=True,spacing=6),actions=[ft.TextButton('Cancel',on_click=lambda ev:self.safe_close(dialog))]);self.safe_open(dialog)
+        def choose(m):
+            self.workout_focus_mode,self.ui_density={'STANDARD':(False,'compact'),'FOCUS':(True,'compact'),'DETAILED':(False,'detailed')}[m];self.save_setting('workout_focus_mode','1' if self.workout_focus_mode else '0');self.save_setting('ui_density',self.ui_density);self.safe_close(dialog);self.rebuild_entire_display()
+        def b(m,detail):return ft.ElevatedButton(('✓ ' if current==m else '')+m.title(),on_click=lambda ev,x=m:choose(x),width=float('inf'))
+        dialog=ft.AlertDialog(title=ft.Text('Workout View'),content=ft.Column([b('STANDARD',''),b('FOCUS',''),b('DETAILED','')],tight=True),actions=[ft.TextButton('Cancel',on_click=lambda ev:self.safe_close(dialog))]);self.safe_open(dialog)
     def open_settings_dialog(self, e=None):
         self.close_actions_menu()
         current_bw = get_user_bodyweight()
@@ -1792,7 +1775,7 @@ class WorkoutTrackerApp:
         self.density_dropdown = ft.Dropdown(
             label="Display density",
             value=self.ui_density,
-            options=[ft.dropdown.Option(key="compact",text="Standard"),ft.dropdown.Option(key="detailed",text="Detailed")],
+            options=[ft.dropdown.Option("comfortable"), ft.dropdown.Option("compact")],
         )
         
         self.bw_input = ft.TextField(label="Bodyweight (Lbs)", value=str(current_bw), keyboard_type=ft.KeyboardType.NUMBER, expand=True)
@@ -1831,7 +1814,7 @@ class WorkoutTrackerApp:
                 new_profile = int(self.profile_slider.value)
                 new_sex = self.sex_dropdown.value or "Male"
                 new_focus_mode = bool(self.focus_mode_switch.value)
-                new_density = self.density_dropdown.value or "compact"
+                new_density = self.density_dropdown.value or "comfortable"
                 with get_db() as conn:
                     cursor = conn.cursor()
                     cursor.execute("INSERT OR REPLACE INTO user_settings (setting_key, setting_value) VALUES ('bodyweight', ?)", (str(new_bw),))
@@ -3008,9 +2991,30 @@ class WorkoutTrackerApp:
             finally:self._cloud_restore_running=False
         try:self.page.run_task(job)
         except Exception:self._cloud_restore_running=False;self.show_snackbar("Could not start cloud restore.","red300")
+    def schedule_automatic_cloud_backup(self,reason=None):
+        if not self.auto_cloud_backup or self.cloud_testing_mode:return
+        if reason:enqueue_cloud_backup(reason)
+        if self._auto_backup_timer:
+            try:self._auto_backup_timer.cancel()
+            except:pass
+        self._auto_backup_timer=threading.Timer(8.0,self.run_automatic_cloud_backup);self._auto_backup_timer.daemon=True;self._auto_backup_timer.start()
+    def run_automatic_cloud_backup(self):
+        if self._auto_backup_running or not self.auto_cloud_backup or self.cloud_testing_mode or self.cloud_state!='verified':return
+        row=next_cloud_backup()
+        if not row:return
+        self._auto_backup_running=True
+        try:self.onedrive.upload_backup(self.create_backup_string(),row[1],APP_VERSION,DATABASE_SCHEMA_VERSION);finish_cloud_backup(row[0]);self.cloud_last_checked=datetime.now().isoformat(timespec='seconds')
+        except Exception as err:finish_cloud_backup(row[0],err)
+        finally:self._auto_backup_running=False
+    def create_protected_cloud_backup(self,e=None):
+        if self.cloud_state!='verified':self.show_snackbar('Verify OneDrive first.','amber300');return
+        def worker():
+            try:self.onedrive.upload_backup(self.create_backup_string(),'protected: known-good recovery point',APP_VERSION,DATABASE_SCHEMA_VERSION);self.show_snackbar('Protected recovery point created.','green300')
+            except Exception as err:self.show_snackbar(f'Protected backup failed: {err}','red300')
+        self.page.run_thread(worker)
     def open_onedrive_cloud_backup(self,e=None):
         self.cloud_status_text=ft.Text('',color='amber300');self.cloud_manifest_text=ft.Text('',size=10,color='white70');self.cloud_backup_button=ft.ElevatedButton("Back Up Now",on_click=self.cloud_backup_now,disabled=True);self.cloud_restore_button=ft.ElevatedButton("Restore Latest",on_click=self.cloud_restore_latest,disabled=True)
-        self.cloud_dialog=ft.AlertDialog(title=ft.Text("OneDrive Cloud Backup",weight="bold"),content=ft.Column([self.cloud_status_text,ft.Text("Latest cloud recovery:",size=10,weight='bold',color='cyan300'),self.cloud_manifest_text,ft.ElevatedButton("Check Connection",on_click=self.verify_onedrive_connection),self.cloud_backup_button,self.cloud_restore_button,ft.ElevatedButton("Connect / Reconnect",on_click=lambda ev:[self.safe_close(self.cloud_dialog),self.connect_onedrive()])],tight=True,spacing=7),actions=[ft.TextButton("Close",on_click=lambda ev:self.safe_close(self.cloud_dialog))]);self.safe_open(self.cloud_dialog);self.refresh_cloud_panel()
+        auto_switch=ft.Switch(label='Automatic OneDrive Backup',value=self.auto_cloud_backup,on_change=lambda ev:[setattr(self,'auto_cloud_backup',bool(ev.control.value)),self.save_setting('automatic_onedrive_backup','1' if ev.control.value else '0')]);test_switch=ft.Switch(label='Testing Mode: pause automatic backups',value=self.cloud_testing_mode,on_change=lambda ev:[setattr(self,'cloud_testing_mode',bool(ev.control.value)),self.save_setting('cloud_testing_mode','1' if ev.control.value else '0')]);self.cloud_dialog=ft.AlertDialog(title=ft.Text("OneDrive Cloud Backup",weight="bold"),content=ft.Column([self.cloud_status_text,auto_switch,test_switch,ft.Text('Automatic backup defaults Off. Manual backup always remains available.',size=9,color='white54'),ft.Text("Latest cloud recovery:",size=10,weight='bold',color='cyan300'),self.cloud_manifest_text,ft.ElevatedButton("Check Connection",on_click=self.verify_onedrive_connection),self.cloud_backup_button,ft.ElevatedButton('Create Protected Recovery Point',on_click=self.create_protected_cloud_backup),self.cloud_restore_button,ft.ElevatedButton("Connect / Reconnect",on_click=lambda ev:[self.safe_close(self.cloud_dialog),self.connect_onedrive()])],tight=True,spacing=7),actions=[ft.TextButton("Close",on_click=lambda ev:self.safe_close(self.cloud_dialog))]);self.safe_open(self.cloud_dialog);self.refresh_cloud_panel()
         if self.onedrive.has_account():self.verify_onedrive_connection(show_result=False)
     def open_backup_manager(self,e=None):
         self.close_actions_menu();style=ft.ButtonStyle(padding=10)
@@ -6277,8 +6281,7 @@ class WorkoutTrackerApp:
                     key=lambda row: (
                         1 if row[4] != STATUS_PENDING else 0,
                         0 if row[0] == active_id and row[4] == STATUS_PENDING else 1,
-                        row[7],
-                        original_row_index.get(row[0], 999),
+                        row[7], original_row_index.get(row[0], 999),
                     )
                 )
                 

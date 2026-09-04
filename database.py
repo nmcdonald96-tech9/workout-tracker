@@ -1199,27 +1199,32 @@ def clear_exercise_group(meso,week,day,sid):
 
 CATEGORY_DISPLAY_ORDER=["Chest","Back","Shoulders","Quads","Hamstrings","Glutes","Calves","Biceps","Triceps","Forearms","Abs","General","Custom"]
 def category_sort_key(category):
-    try:return (CATEGORY_DISPLAY_ORDER.index(category),str(category))
-    except ValueError:return (len(CATEGORY_DISPLAY_ORDER),str(category))
+ try:return (CATEGORY_DISPLAY_ORDER.index(category),str(category))
+ except ValueError:return (len(CATEGORY_DISPLAY_ORDER),str(category))
 def reorder_pending_exercise_in_category(meso,week,day,session_id,direction):
-    """Move a pending card only among pending exercises in its category."""
-    with get_db() as c:
-        c.execute('BEGIN IMMEDIATE')
-        src=c.execute("SELECT category,status FROM workout_sessions WHERE id=? AND meso_number=? AND week=? AND day_of_week=?",(int(session_id),meso,str(week),day)).fetchone()
-        if not src or src[1]!=STATUS_PENDING:c.rollback();raise ValueError("Only pending exercises can be reordered.")
-        rows=c.execute("SELECT id,COALESCE(workout_order,id) FROM workout_sessions WHERE meso_number=? AND week=? AND day_of_week=? AND category=? AND status=? ORDER BY COALESCE(workout_order,id),id",(meso,str(week),day,src[0],STATUS_PENDING)).fetchall()
-        i=next((i for i,r in enumerate(rows) if r[0]==int(session_id)),None);j=(i+int(direction)) if i is not None else -1
-        if i is None or j<0 or j>=len(rows):c.rollback();return False
-        a,b=rows[i],rows[j];c.execute("UPDATE workout_sessions SET workout_order=? WHERE id=?",(b[1],a[0]));c.execute("UPDATE workout_sessions SET workout_order=? WHERE id=?",(a[1],b[0]));c.commit();return True
+ with get_db() as c:
+  c.execute("BEGIN IMMEDIATE");src=c.execute("SELECT category,status FROM workout_sessions WHERE id=? AND meso_number=? AND week=? AND day_of_week=?",(int(session_id),meso,str(week),day)).fetchone()
+  if not src or src[1]!=STATUS_PENDING:c.rollback();raise ValueError("Only pending exercises can be reordered.")
+  rows=c.execute("SELECT id,COALESCE(workout_order,id) FROM workout_sessions WHERE meso_number=? AND week=? AND day_of_week=? AND category=? AND status=? ORDER BY COALESCE(workout_order,id),id",(meso,str(week),day,src[0],STATUS_PENDING)).fetchall();i=next((i for i,r in enumerate(rows) if r[0]==int(session_id)),None);j=i+int(direction) if i is not None else -1
+  if i is None or j<0 or j>=len(rows):c.rollback();return False
+  a,b=rows[i],rows[j];c.execute("UPDATE workout_sessions SET workout_order=? WHERE id=?",(b[1],a[0]));c.execute("UPDATE workout_sessions SET workout_order=? WHERE id=?",(a[1],b[0]));c.commit();return True
 def set_group_member_position(meso,week,day,session_id,direction):
-    """Swap execution positions without changing card order."""
-    with get_db() as c:
-        c.execute('BEGIN IMMEDIATE');row=c.execute("SELECT exercise_group_id,group_position,status FROM workout_sessions WHERE id=? AND meso_number=? AND week=? AND day_of_week=?",(int(session_id),meso,str(week),day)).fetchone()
-        if not row or not row[0]:c.rollback();raise ValueError("Select a grouped exercise.")
-        if row[2]!=STATUS_PENDING:c.rollback();raise ValueError("Only pending group members can change position.")
-        target=int(row[1] or 1)+int(direction);other=c.execute("SELECT id,status FROM workout_sessions WHERE meso_number=? AND week=? AND day_of_week=? AND exercise_group_id=? AND group_position=?",(meso,str(week),day,row[0],target)).fetchone()
-        if not other:c.rollback();return False
-        c.execute("UPDATE workout_sessions SET group_position=-1 WHERE id=?",(int(session_id),));c.execute("UPDATE workout_sessions SET group_position=? WHERE id=?",(int(row[1]),other[0]));c.execute("UPDATE workout_sessions SET group_position=? WHERE id=?",(target,int(session_id)));c.commit();return True
+ with get_db() as c:
+  c.execute("BEGIN IMMEDIATE");r=c.execute("SELECT exercise_group_id,group_position,status FROM workout_sessions WHERE id=?",(int(session_id),)).fetchone()
+  if not r or not r[0] or r[2]!=STATUS_PENDING:c.rollback();raise ValueError("Select a pending grouped exercise.")
+  target=int(r[1] or 1)+int(direction);o=c.execute("SELECT id FROM workout_sessions WHERE meso_number=? AND week=? AND day_of_week=? AND exercise_group_id=? AND group_position=? AND status=?",(meso,str(week),day,r[0],target,STATUS_PENDING)).fetchone()
+  if not o:c.rollback();return False
+  c.execute("UPDATE workout_sessions SET group_position=-1 WHERE id=?",(int(session_id),));c.execute("UPDATE workout_sessions SET group_position=? WHERE id=?",(int(r[1]),o[0]));c.execute("UPDATE workout_sessions SET group_position=? WHERE id=?",(target,int(session_id)));c.commit();return True
+def enqueue_cloud_backup(reason):
+ with get_db() as c:
+  c.execute("UPDATE cloud_backup_queue SET status='coalesced' WHERE status='pending'");c.execute("INSERT INTO cloud_backup_queue(reason,queued_at,status,attempt_count) VALUES(?,?, 'pending',0)",(str(reason),datetime.now().isoformat(timespec='seconds')));c.commit()
+def next_cloud_backup():
+ with get_db() as c:return c.execute("SELECT id,reason,attempt_count FROM cloud_backup_queue WHERE status='pending' ORDER BY id DESC LIMIT 1").fetchone()
+def finish_cloud_backup(queue_id,error=None):
+ with get_db() as c:
+  if error:c.execute("UPDATE cloud_backup_queue SET status='pending',attempt_count=attempt_count+1,last_error=? WHERE id=?",(str(error)[:500],int(queue_id)))
+  else:c.execute("UPDATE cloud_backup_queue SET status='done',last_error=NULL WHERE id=?",(int(queue_id),))
+  c.commit()
 # --- 1.31 SUPERSET EXECUTION AND PLAN INTEGRITY ---
 def group_label_for_session(session_id):
     with get_db() as c:
@@ -1328,19 +1333,16 @@ def superset_timing_analytics(meso,week,day):
 
 # --- 1.35 WORKOUT FLOW AND DATA MANAGEMENT ---
 def resolve_next_group_step(meso,week,day,session_id,completed_set):
-    with get_db() as c:
-        src=c.execute("SELECT exercise_group_id FROM workout_sessions WHERE id=?",(int(session_id),)).fetchone()
-        if not src or not src[0]:return None
-        members=c.execute("SELECT id,exercise,category,status,COALESCE(group_position,999) FROM workout_sessions WHERE meso_number=? AND week=? AND day_of_week=? AND exercise_group_id=? ORDER BY COALESCE(group_position,999),COALESCE(workout_order,id)",(meso,str(week),day,src[0])).fetchall()
-        current=next((i for i,x in enumerate(members) if x[0]==int(session_id)),0)
-        for offset in range(1,len(members)+1):
-            sid,exercise,category,status,pos=members[(current+offset)%len(members)]
-            if status!=STATUS_PENDING:continue
-            sets=c.execute("SELECT set_number,is_complete FROM workout_sets WHERE session_id=? ORDER BY set_number",(sid,)).fetchall()
-            # Untouched group members have no rows yet and must still resolve to Set 1.
-            pending=next((n for n,done in sets if not done),None) if sets else 1
-            if pending is not None:return {'session_id':sid,'exercise':exercise,'category':category,'pending_set':pending,'round_complete':(current+offset)>=len(members)}
-    return None
+ with get_db() as c:
+  src=c.execute("SELECT exercise_group_id,COALESCE(group_position,999) FROM workout_sessions WHERE id=?",(int(session_id),)).fetchone()
+  if not src or not src[0]:return None
+  members=c.execute("SELECT id,exercise,category,status,COALESCE(group_position,999) FROM workout_sessions WHERE meso_number=? AND week=? AND day_of_week=? AND exercise_group_id=? ORDER BY COALESCE(group_position,999)",(meso,str(week),day,src[0])).fetchall();cand=[]
+  for sid,ex,cat,status,pos in members:
+   if status!=STATUS_PENDING:continue
+   sets=c.execute("SELECT set_number,is_complete FROM workout_sets WHERE session_id=? ORDER BY set_number",(sid,)).fetchall();pending=next((int(n) for n,d in sets if not d),None) if sets else 1
+   if pending is not None:cand.append({'session_id':sid,'exercise':ex,'category':cat,'pending_set':pending,'position':int(pos)})
+ if not cand:return None
+ key=(int(completed_set or 0),int(src[1]));ordered=sorted(cand,key=lambda x:(x['pending_set'],x['position']));nxt=next((x for x in ordered if (x['pending_set'],x['position'])>key),ordered[0]);out={k:v for k,v in nxt.items() if k!='position'};out['round_complete']=(nxt['pending_set'],nxt['position'])<=key or nxt['pending_set']>int(completed_set or 0);return out
 def record_audit(action,details=''):
     with get_db() as c:
         c.execute("INSERT INTO app_audit(created_at,action,details) VALUES(?,?,?)",(datetime.now().isoformat(timespec='seconds'),action,details));c.execute("DELETE FROM app_audit WHERE id NOT IN (SELECT id FROM app_audit ORDER BY id DESC LIMIT 500)");c.commit()
