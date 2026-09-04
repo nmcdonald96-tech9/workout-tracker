@@ -729,39 +729,29 @@ class ExerciseCard(ft.Card):
             log_btn
         ], alignment="spaceBetween")
 
-        density_scale = 0.78 if self.app.ui_density == "compact" else 1.0
+        density_scale = 1.0 if self.app.ui_density == "detailed" else 0.78
         card_body = ft.Column([
             title_zone,
             helper_zone,
             sets_column,
             self.rpe_warning,
             action_zone
-        ], spacing=3 if self.app.ui_density == "compact" else 5, expand=True)
+        ], spacing=5 if self.app.ui_density == "detailed" else 3, expand=True)
         
         accent_bar = ft.Container(width=4, bgcolor=accent_color, border_radius=4)
         
         self.content = ft.Container(
             content=ft.Row([accent_bar, card_body], spacing=10),
-            padding=6 if self.app.ui_density == "compact" else 8,
+            padding=8 if self.app.ui_density == "detailed" else 6,
             border_radius=8,
             bgcolor="white10"
         )
         self.margin = 4
 
     def _reopen_completed(self,action):
-        result = reopen_completed_exercise(self.db_id, action)
-        if not result.get("changed"):
-            self.app.show_snackbar("This exercise is already open or was changed elsewhere.", "amber300")
-            return
-        self.app.sets.pop(self.db_id,None)
-        self.app.pr_celebrations.pop(self.db_id,None)
-        self.app.strength_badges.pop(self.db_id,None)
-        self.app.meso_just_completed=False
-        self.app.summary_replay_mode=False
-        self.app.summary_return_position=None
-        self.app.view_mode="workout"
-        self.app.pending_scroll_key=self.app.exercise_anchor_key(self.db_id)
-        self.app.rebuild_navigation_headers();self.app.rebuild_entire_display();self.app.show_snackbar("Logged sets reopened with existing values preserved.","cyan300")
+        result=reopen_completed_exercise(self.db_id,action)
+        if not result.get("changed"):self.app.show_snackbar("This exercise is already open or was changed elsewhere.","amber300");return
+        self.app.sets.pop(self.db_id,None);self.app.pr_celebrations.pop(self.db_id,None);self.app.strength_badges.pop(self.db_id,None);self.app.meso_just_completed=False;self.app.summary_replay_mode=False;self.app.summary_return_position=None;self.app.view_mode="workout";self.app.pending_scroll_key=self.app.exercise_anchor_key(self.db_id);self.app.rebuild_navigation_headers();self.app.rebuild_entire_display();self.app.show_snackbar("Logged sets reopened with existing values preserved.","cyan300")
     def confirm_revise_completed(self,e=None):
         dialog=ft.AlertDialog(title=ft.Text("Revise Logged Sets",weight="bold"),content=ft.Text("Reopen this completed exercise with all logged values preserved? Logging it again recalculates progression, e1RM, reports, and next targets."),actions=[ft.TextButton("Cancel",on_click=lambda ev:self.app.safe_close(dialog)),ft.ElevatedButton("Revise",on_click=lambda ev:[self.app.safe_close(dialog),self._reopen_completed("completed_exercise_revised")])]);self.app.safe_open(dialog)
     def confirm_reopen_completed(self,e=None):
@@ -815,6 +805,7 @@ class ExerciseCard(ft.Card):
                 ft.TextButton("Repeat previous set", on_click=lambda ev: [self.app.safe_close(dialog), self.repeat_previous_set()]),
                 ft.TextButton("Progression history", on_click=lambda ev: [self.app.safe_close(dialog), self.open_progression_history()]),
                 ft.TextButton("Modify progression", on_click=lambda ev: [self.app.safe_close(dialog), self.app.open_exercise_progression_editor(self.exercise, self)]),
+                ft.TextButton("Workout Structure & Supersets", on_click=lambda ev: [self.app.safe_close(dialog), self.app.open_structure_editor(source_session_id=self.db_id)]),
                 ft.TextButton("Swap exercise", on_click=lambda ev: [self.app.safe_close(dialog), self.open_swap_dialog(ev)]),
                 ft.TextButton("Add set", on_click=lambda ev: [self.app.safe_close(dialog), self.on_add_set(ev)]),
                 ft.TextButton("Remove last set", on_click=lambda ev: [self.app.safe_close(dialog), self.on_remove_set(ev)]),
@@ -929,12 +920,8 @@ class ExerciseCard(ft.Card):
                 set_data["done"] = False
                 set_data["completed_at"] = None
             self.autosave_pending_sets()
-            all_done = bool(self.app.sets.get(self.db_id)) and all(bool(x.get("done")) for x in self.app.sets[self.db_id])
-            if requested_value and set_idx == len(self.app.sets[self.db_id]) - 1 and all_done:
-                # Complete the exercise transaction first. on_save() performs the
-                # single authoritative group advance after the status commit.
-                self.on_save(None)
-                return
+            all_done=bool(self.app.sets.get(self.db_id)) and all(bool(x.get("done")) for x in self.app.sets[self.db_id])
+            if requested_value and set_idx==len(self.app.sets[self.db_id])-1 and all_done:self.on_save(None);return
             grouped_advanced=requested_value and self.app.advance_group_flow(self.db_id,set_idx+1)
             if grouped_advanced:return
             if requested_value and not exercise_was_started:
@@ -1098,14 +1085,10 @@ class ExerciseCard(ft.Card):
         current_bw = get_user_bodyweight()
 
         with get_db() as conn:
-            cursor = conn.cursor()
-            cursor.execute("BEGIN IMMEDIATE")
-            session_state = cursor.execute("SELECT status,date FROM workout_sessions WHERE id=?", (self.db_id,)).fetchone()
-            if not session_state or session_state[0] != STATUS_PENDING:
-                conn.rollback()
-                self.app.show_snackbar("This exercise is no longer pending. Refresh before logging again.", "amber300")
-                return
-            revision_intent = get_completed_revision_intent(cursor, self.db_id)
+            cursor = conn.cursor();cursor.execute("BEGIN IMMEDIATE")
+            session_state=cursor.execute("SELECT status,date FROM workout_sessions WHERE id=?",(self.db_id,)).fetchone()
+            if not session_state or session_state[0]!=STATUS_PENDING:conn.rollback();self.app.show_snackbar("This exercise is no longer pending. Refresh before logging again.","amber300");return
+            revision_intent=get_completed_revision_intent(cursor,self.db_id)
             is_bw = EXERCISE_METADATA.get(self.exercise, {}).get("equipment") == "Bodyweight"
             
             cursor.execute(f"SELECT s.weight, s.reps, ws.bodyweight_snapshot FROM workout_sets s JOIN workout_sessions ws ON s.session_id = ws.id WHERE ws.exercise = ? AND ws.status = '{STATUS_COMPLETED}' AND ws.id != ?", (self.exercise, self.db_id))
@@ -1151,19 +1134,11 @@ class ExerciseCard(ft.Card):
                       float(target["w"]), int(target["r"]), float(normal_target["w"]), int(normal_target["r"]), completed_at,
                       outcome["decision"], outcome["reason_code"], outcome["reason"], json.dumps(effective_settings, sort_keys=True)))
             
-            true_completion_date = (revision_intent or {}).get("original_date") or datetime.now().strftime("%Y-%m-%d")
-            changed = cursor.execute(
-                "UPDATE workout_sessions SET status=?, date=?, bodyweight_snapshot=? WHERE id=? AND status=?",
-                (STATUS_COMPLETED, true_completion_date, current_bw, self.db_id, STATUS_PENDING),
-            ).rowcount
-            if changed != 1:
-                conn.rollback()
-                self.app.show_snackbar("Exercise completion changed elsewhere. Nothing was duplicated.", "amber300")
-                return
+            true_completion_date=(revision_intent or {}).get("original_date") or datetime.now().strftime("%Y-%m-%d")
+            changed=cursor.execute("UPDATE workout_sessions SET status=?,date=?,bodyweight_snapshot=? WHERE id=? AND status=?",(STATUS_COMPLETED,true_completion_date,current_bw,self.db_id,STATUS_PENDING)).rowcount
+            if changed!=1:conn.rollback();self.app.show_snackbar("Exercise completion changed elsewhere. Nothing was duplicated.","amber300");return
             if revision_intent:
-                cursor.execute("DELETE FROM user_settings WHERE setting_key=?", (completed_revision_setting_key(self.db_id),))
-                cursor.execute("INSERT INTO app_audit(created_at,action,details) VALUES(?,?,?)", (datetime.now().isoformat(timespec="seconds"), "completed_exercise_relogged", f"session_id={self.db_id}; source={revision_intent.get('action','unknown')}; exercise={self.exercise}"))
-                cursor.execute("DELETE FROM app_audit WHERE id NOT IN (SELECT id FROM app_audit ORDER BY id DESC LIMIT 500)")
+                cursor.execute("DELETE FROM user_settings WHERE setting_key=?",(completed_revision_setting_key(self.db_id),));cursor.execute("INSERT INTO app_audit(created_at,action,details) VALUES(?,?,?)",(datetime.now().isoformat(timespec="seconds"),"completed_exercise_relogged",f"session_id={self.db_id}; source={revision_intent.get('action','unknown')}; exercise={self.exercise}"));cursor.execute("DELETE FROM app_audit WHERE id NOT IN (SELECT id FROM app_audit ORDER BY id DESC LIMIT 500)")
             conn.commit()
 
         if self.db_id in self.app.sets:
@@ -1186,14 +1161,9 @@ class ExerciseCard(ft.Card):
             except Exception as badge_err:
                 print(f"[on_save] strength badge skipped: {badge_err}")
 
-        # Final-set auto-log and superset navigation share one authoritative
-        # post-commit path. This prevents competing rebuilds from one tap.
         try:
-            if self.app.advance_group_flow(self.db_id, len(rows_to_save)):
-                return
-        except Exception as group_err:
-            print(f"[on_save] group advance failed: {group_err}")
-
+            if self.app.advance_group_flow(self.db_id,len(rows_to_save)):return
+        except Exception as group_err:print(f"[on_save] group advance failed: {group_err}")
         # Each post-save step is isolated so that a failure in routing or header
         # rebuild cannot prevent the display refresh.  The display refresh MUST
         # always run — it is the only thing that makes the card show as Completed.
@@ -1250,7 +1220,8 @@ class WorkoutTrackerApp:
             raise RuntimeError("Installation validation failed. Check matching main.py, database.py, and constants.py. Missing: " + ", ".join(missing))
         init_and_seed_db()
         self.workout_focus_mode = self.get_bool_setting("workout_focus_mode", False)
-        self.ui_density = self.get_text_setting("ui_density", "comfortable")
+        self.ui_density = self.get_text_setting("ui_density", "compact")
+        if self.ui_density == "comfortable": self.ui_density = "compact"
         self.context_collapsed = self.get_bool_setting("context_collapsed", False)
         self.nav_collapsed = self.get_bool_setting("nav_collapsed", True)
         self.last_rebuild_ms = None
@@ -1608,22 +1579,25 @@ class WorkoutTrackerApp:
         for x in plan_overview(self.current_meso):items.controls.append(ft.Container(content=ft.Row([ft.Text(f"W{x['week']} {x['day']}",weight="bold",size=11,width=110),ft.Text(f"{x['completed']} complete • {x['pending']} pending • {x['skipped']} skipped"+(f" • {x['exceptions']} rolled" if x['exceptions'] else ""),size=9,color="cyan200" if x['exceptions'] else "white54",expand=True)]),bgcolor="white10",padding=7,border_radius=7))
         tools=ft.Column(visible=False,controls=[ft.TextButton("Restore Future Schedule",on_click=self.restore_future_schedule),ft.TextButton("Reset Pending Schedule",on_click=self.reset_pending_structure),ft.TextButton("Plan Diagnostics",on_click=lambda ev:self.open_plan_diagnostics())])
         def toggle(ev=None):tools.visible=not tools.visible;tools.update()
-        dialog=ft.AlertDialog(title=ft.Text("🗓️ Manage Active Meso",weight="bold"),content=ft.Container(width=390,height=540,content=ft.Column([ft.Text("CURRENT PLAN • newest week first",size=9,color="cyan300",weight="bold"),items,ft.ElevatedButton("Edit Schedule",on_click=lambda ev:[self.safe_close(dialog),self.open_structure_editor()],width=float('inf')),ft.ElevatedButton("Roll Missed Workout",on_click=lambda ev:[self.safe_close(dialog),self.open_missed_workout_rollover()],width=float('inf')),ft.TextButton("Plan Tools ▾",on_click=toggle),tools],expand=True,spacing=5)),actions=[ft.TextButton("Close",on_click=lambda ev:self.safe_close(dialog))],inset_padding=12,content_padding=14);self.safe_open(dialog)
+        dialog=ft.AlertDialog(title=ft.Text("🗓️ Manage Active Meso",weight="bold"),content=ft.Container(width=390,height=540,content=ft.Column([ft.Text("CURRENT PLAN • newest week first",size=9,color="cyan300",weight="bold"),items,ft.ElevatedButton("Workout Structure & Supersets",on_click=lambda ev:[self.safe_close(dialog),self.open_structure_editor()],width=float('inf')),ft.ElevatedButton("Roll Missed Workout",on_click=lambda ev:[self.safe_close(dialog),self.open_missed_workout_rollover()],width=float('inf')),ft.TextButton("Plan Tools ▾",on_click=toggle),tools],expand=True,spacing=5)),actions=[ft.TextButton("Close",on_click=lambda ev:self.safe_close(dialog))],inset_padding=12,content_padding=14);self.safe_open(dialog)
 
-    def open_structure_editor(self,e=None):
+    def open_structure_editor(self,e=None,source_session_id=None):
         weeks=[w for w in self.get_existing_weeks() if str(w).isdigit()];week=ft.Dropdown(label='Week',value=str(self.current_week) if str(self.current_week).isdigit() else weeks[-1],options=[ft.dropdown.Option(w) for w in weeks],width=100);day=ft.Dropdown(label='Day',value=self.current_day,options=[ft.dropdown.Option(d) for d in self.ordered_day_names()],expand=True)
-        selected=set();list_col=ft.Column(spacing=4,scroll='auto',expand=True);status=ft.Text('',size=9,color='cyan200')
+        selected=set([int(source_session_id)]) if source_session_id else set();list_col=ft.Column(spacing=4,scroll='auto',expand=True);status=ft.Text('',size=9,color='cyan200')
         def rows():return [x for x in get_plan_sessions(self.current_meso) if x['week']==week.value and x['day']==day.value]
         def refresh(ev=None):
-            selected.clear();list_col.controls.clear();group_letters={};letter=0
+            if not source_session_id:selected.clear()
+            list_col.controls.clear();group_letters={};letter=0
             for x in rows():
                 gid=x.get('group_id');prefix=''
                 if gid:
                     if gid not in group_letters:group_letters[gid]=chr(65+letter);letter+=1
                     prefix=f"{group_letters[gid]}{x.get('group_position') or 1} "
-                cb=ft.Checkbox(value=False,disabled=x['status']!=STATUS_PENDING,on_change=lambda ev,sid=x['id']:(selected.add(sid) if ev.control.value else selected.discard(sid)))
+                cb=ft.Checkbox(value=x['id'] in selected,disabled=x['status']!=STATUS_PENDING,on_change=lambda ev,sid=x['id']:(selected.add(sid) if ev.control.value else selected.discard(sid)))
                 controls=[cb,ft.Text(prefix+x['exercise'],size=10,expand=True),ft.Text(x['status'],size=8,color='green300' if x['status']==STATUS_COMPLETED else 'white54')]
-                if x['status']==STATUS_PENDING:controls += [ft.TextButton('▲',on_click=lambda ev,sid=x['id']:move(sid,-1)),ft.TextButton('▼',on_click=lambda ev,sid=x['id']:move(sid,1))]
+                if x['status']==STATUS_PENDING:
+                    if gid:controls += [ft.TextButton('A↑',tooltip='Earlier group position',on_click=lambda ev,sid=x['id']:move_group(sid,-1)),ft.TextButton('A↓',tooltip='Later group position',on_click=lambda ev,sid=x['id']:move_group(sid,1))]
+                    else:controls += [ft.TextButton('Earlier',on_click=lambda ev,sid=x['id']:move(sid,-1)),ft.TextButton('Later',on_click=lambda ev,sid=x['id']:move(sid,1))]
                 list_col.controls.append(ft.Container(content=ft.Row(controls,spacing=2),bgcolor='white10',padding=4,border_radius=6))
             status.value=f"{len(rows())} exercises • pending rows editable"
             if ev is not None:
@@ -1631,6 +1605,9 @@ class WorkoutTrackerApp:
                 except Exception:pass
         def move(sid,d):
             try:reorder_pending_exercise(self.current_meso,week.value,day.value,sid,d);refresh(True)
+            except Exception as err:self.show_snackbar(str(err),'red300')
+        def move_group(sid,d):
+            try:set_group_member_position(self.current_meso,week.value,day.value,sid,d);refresh(True)
             except Exception as err:self.show_snackbar(str(err),'red300')
         def group(ev=None):
             try:set_exercise_group(self.current_meso,week.value,day.value,[x['id'] for x in rows() if x['id'] in selected]);refresh(True);self.show_snackbar('Superset/circuit created.','green300')
@@ -1643,7 +1620,7 @@ class WorkoutTrackerApp:
         def save_future(ev=None):
             save_structured_blueprint_from_week(self.current_meso,week.value);self.show_snackbar('Current structure saved for future pending weeks.','green300')
         week.on_select=refresh;day.on_select=refresh
-        refresh();dialog=ft.AlertDialog(title=ft.Text('Workout Structure & Supersets',weight='bold'),content=ft.Container(width=410,height=560,content=ft.Column([ft.Row([week,day]),status,list_col,ft.Text('Select 2 for a superset or 3 for a circuit.',size=9,color='white54'),ft.Row([ft.ElevatedButton('Create Group',on_click=group,expand=True),ft.ElevatedButton('Ungroup',on_click=ungroup,expand=True)]),ft.TextButton('Use this structure for future pending weeks',on_click=save_future)],expand=True,spacing=5)),actions=[ft.TextButton('Done',on_click=lambda ev:[self.safe_close(dialog),self.sets.clear(),self.rebuild_entire_display()])],inset_padding=12);self.safe_open(dialog)
+        refresh();dialog=ft.AlertDialog(title=ft.Text('Workout Structure & Supersets',weight='bold'),content=ft.Container(width=410,height=560,content=ft.Column([ft.Row([week,day]),status,list_col,ft.Text('Ungrouped: Earlier/Later changes workout order. Grouped: A↑/A↓ changes A1/A2/A3 position.',size=9,color='white54'),ft.Row([ft.ElevatedButton('Create Group',on_click=group,expand=True),ft.ElevatedButton('Ungroup',on_click=ungroup,expand=True)]),ft.TextButton('Use this structure for future pending weeks',on_click=save_future)],expand=True,spacing=5)),actions=[ft.TextButton('Done',on_click=lambda ev:[self.safe_close(dialog),self.sets.clear(),self.rebuild_entire_display()])],inset_padding=12);self.safe_open(dialog)
     def restore_future_schedule(self,e=None):
         try:
             snap=self.create_short_session_snapshot();n=restore_future_structure(self.current_meso);self.sets.clear();self.rebuild_entire_display();self.show_snackbar(f'Restored {n} pending structure fields. Snapshot: {snap}','green300')
@@ -1795,18 +1772,15 @@ class WorkoutTrackerApp:
             # DO NOT set it to None here. We need to remember it so we can guarantee it closes later!
             
     def current_display_mode(self):
-        if self.workout_focus_mode and self.ui_density=="compact":return "FOCUS"
-        if not self.workout_focus_mode and self.ui_density=="compact":return "COMPACT"
-        if not self.workout_focus_mode and self.ui_density=="comfortable":return "FULL"
-        return "CUSTOM"
+        if self.workout_focus_mode:return "FOCUS"
+        return "DETAILED" if self.ui_density=="detailed" else "STANDARD"
     def open_display_mode(self,e=None):
         current=self.current_display_mode()
         def choose(mode):
-            values={"FULL":(False,"comfortable"),"COMPACT":(False,"compact"),"FOCUS":(True,"compact")};self.workout_focus_mode,self.ui_density=values[mode];self.save_setting("workout_focus_mode","1" if self.workout_focus_mode else "0");self.save_setting("ui_density",self.ui_density);record_audit("display_mode_changed",mode);self.safe_close(dialog);self.rebuild_entire_display()
-        def mode_button(label,mode,detail):
-            selected=current==mode
-            return ft.ElevatedButton(content=ft.Column([ft.Text(("✓ " if selected else "")+label,weight="bold"),ft.Text(detail,size=9,color="white70")],spacing=1,horizontal_alignment="center"),on_click=lambda ev,m=mode:choose(m),width=float('inf'),style=ft.ButtonStyle(bgcolor="cyan700" if selected else "white10",color="white",padding=8))
-        dialog=ft.AlertDialog(title=ft.Text("Workout View",weight="bold"),content=ft.Column([ft.Text(f"Current mode: {current.title()}",size=10,color="cyan300"),mode_button("Full","FULL","Comfortable spacing and all controls"),mode_button("Compact","COMPACT","Tighter cards with full utilities"),mode_button("Focus","FOCUS","Compact set entry with secondary controls hidden")],tight=True,spacing=6),actions=[ft.TextButton("Cancel",on_click=lambda ev:self.safe_close(dialog))]);self.safe_open(dialog)
+            values={"STANDARD":(False,"compact"),"FOCUS":(True,"compact"),"DETAILED":(False,"detailed")};self.workout_focus_mode,self.ui_density=values[mode];self.save_setting("workout_focus_mode","1" if self.workout_focus_mode else "0");self.save_setting("ui_density",self.ui_density);record_audit("display_mode_changed",mode);self.safe_close(dialog);self.rebuild_entire_display()
+        def button(label,mode,detail):
+            selected=current==mode;return ft.ElevatedButton(content=ft.Column([ft.Text(("✓ " if selected else "")+label,weight="bold"),ft.Text(detail,size=9,color="white70")],spacing=1,horizontal_alignment="center"),on_click=lambda ev,m=mode:choose(m),width=float('inf'),style=ft.ButtonStyle(bgcolor="cyan700" if selected else "white10",color="white",padding=8))
+        dialog=ft.AlertDialog(title=ft.Text("Workout View",weight="bold"),content=ft.Column([ft.Text(f"Current mode: {current.title()}",size=10,color="cyan300"),button("Standard","STANDARD","Compact everyday training layout"),button("Focus","FOCUS","Active execution with secondary controls hidden"),button("Detailed","DETAILED","Expanded spacing and supporting guidance")],tight=True,spacing=6),actions=[ft.TextButton("Cancel",on_click=lambda ev:self.safe_close(dialog))]);self.safe_open(dialog)
     def open_settings_dialog(self, e=None):
         self.close_actions_menu()
         current_bw = get_user_bodyweight()
@@ -1817,7 +1791,7 @@ class WorkoutTrackerApp:
         self.density_dropdown = ft.Dropdown(
             label="Display density",
             value=self.ui_density,
-            options=[ft.dropdown.Option("comfortable"), ft.dropdown.Option("compact")],
+            options=[ft.dropdown.Option(key="compact", text="Standard"), ft.dropdown.Option(key="detailed", text="Detailed")],
         )
         
         self.bw_input = ft.TextField(label="Bodyweight (Lbs)", value=str(current_bw), keyboard_type=ft.KeyboardType.NUMBER, expand=True)
@@ -1856,7 +1830,7 @@ class WorkoutTrackerApp:
                 new_profile = int(self.profile_slider.value)
                 new_sex = self.sex_dropdown.value or "Male"
                 new_focus_mode = bool(self.focus_mode_switch.value)
-                new_density = self.density_dropdown.value or "comfortable"
+                new_density = self.density_dropdown.value or "compact"
                 with get_db() as conn:
                     cursor = conn.cursor()
                     cursor.execute("INSERT OR REPLACE INTO user_settings (setting_key, setting_value) VALUES ('bodyweight', ?)", (str(new_bw),))
