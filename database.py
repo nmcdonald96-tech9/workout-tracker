@@ -1304,20 +1304,71 @@ def superset_timing_analytics(meso,week,day):
 
 
 # --- 1.35 WORKOUT FLOW AND DATA MANAGEMENT ---
-def resolve_next_group_step(meso,week,day,session_id,completed_set):
+def completed_revision_setting_key(session_id):
+    return f"pending_completed_exercise_revision:{int(session_id)}"
+
+def reopen_completed_exercise(session_id, action):
+    """Atomically reopen a completed session while preserving its set rows."""
+    if action not in ("completed_exercise_revised", "completed_exercise_reopened"):
+        raise ValueError("Unsupported completed exercise action.")
+    session_id = int(session_id)
+    now = datetime.now().isoformat(timespec="seconds")
     with get_db() as c:
-        src=c.execute("SELECT exercise_group_id FROM workout_sessions WHERE id=?",(int(session_id),)).fetchone()
+        c.execute("BEGIN IMMEDIATE")
+        row = c.execute("SELECT exercise,date,status FROM workout_sessions WHERE id=?", (session_id,)).fetchone()
+        if not row:
+            c.rollback()
+            raise ValueError("Completed exercise was not found.")
+        exercise, original_date, status = row
+        if status != STATUS_COMPLETED:
+            c.rollback()
+            return {"changed": False, "status": status, "exercise": exercise}
+        changed = c.execute("UPDATE workout_sessions SET status=? WHERE id=? AND status=?", (STATUS_PENDING, session_id, STATUS_COMPLETED)).rowcount
+        if changed != 1:
+            c.rollback()
+            return {"changed": False, "status": status, "exercise": exercise}
+        marker = json.dumps({"action": action, "original_date": original_date, "opened_at": now}, sort_keys=True)
+        c.execute("INSERT OR REPLACE INTO user_settings(setting_key,setting_value) VALUES(?,?)", (completed_revision_setting_key(session_id), marker))
+        c.execute("INSERT INTO app_audit(created_at,action,details) VALUES(?,?,?)", (now, action, f"session_id={session_id}; exercise={exercise}"))
+        c.execute("DELETE FROM app_audit WHERE id NOT IN (SELECT id FROM app_audit ORDER BY id DESC LIMIT 500)")
+        c.commit()
+    return {"changed": True, "status": STATUS_PENDING, "exercise": exercise, "original_date": original_date}
+
+def get_completed_revision_intent(cursor, session_id):
+    row = cursor.execute("SELECT setting_value FROM user_settings WHERE setting_key=?", (completed_revision_setting_key(session_id),)).fetchone()
+    if not row:
+        return None
+    try:
+        value = json.loads(row[0])
+    except Exception:
+        return None
+    return value if isinstance(value, dict) else None
+
+def resolve_next_group_step(meso,week,day,session_id,completed_set):
+    """Resolve the next unfinished group set in round/position order.
+
+    Each member contributes its first incomplete set. Completed and skipped members
+    are excluded. Unequal set counts naturally collapse later rounds to members that
+    still have work. A reopened member safely re-enters at its first incomplete set.
+    """
+    with get_db() as c:
+        src=c.execute("SELECT exercise_group_id,COALESCE(group_position,999) FROM workout_sessions WHERE id=?",(int(session_id),)).fetchone()
         if not src or not src[0]:return None
         members=c.execute("SELECT id,exercise,category,status,COALESCE(group_position,999) FROM workout_sessions WHERE meso_number=? AND week=? AND day_of_week=? AND exercise_group_id=? ORDER BY COALESCE(group_position,999),COALESCE(workout_order,id)",(meso,str(week),day,src[0])).fetchall()
-        current=next((i for i,x in enumerate(members) if x[0]==int(session_id)),0)
-        for offset in range(1,len(members)+1):
-            sid,exercise,category,status,pos=members[(current+offset)%len(members)]
+        candidates=[]
+        for sid,exercise,category,status,pos in members:
             if status!=STATUS_PENDING:continue
             sets=c.execute("SELECT set_number,is_complete FROM workout_sets WHERE session_id=? ORDER BY set_number",(sid,)).fetchall()
-            # Untouched group members have no rows yet and must still resolve to Set 1.
-            pending=next((n for n,done in sets if not done),None) if sets else 1
-            if pending is not None:return {'session_id':sid,'exercise':exercise,'category':category,'pending_set':pending,'round_complete':(current+offset)>=len(members)}
-    return None
+            pending=next((int(n) for n,done in sets if not done),None) if sets else 1
+            if pending is not None:candidates.append({'session_id':sid,'exercise':exercise,'category':category,'pending_set':pending,'position':int(pos)})
+    if not candidates:return None
+    current_key=(int(completed_set or 0),int(src[1]))
+    ordered=sorted(candidates,key=lambda x:(x['pending_set'],x['position'],x['session_id']))
+    nxt=next((x for x in ordered if (x['pending_set'],x['position'])>current_key),ordered[0])
+    result={k:v for k,v in nxt.items() if k!='position'}
+    result['round_complete']=nxt['pending_set']>int(completed_set or 0) or (nxt['pending_set'],nxt['position'])<=current_key
+    result['group_complete']=False
+    return result
 def record_audit(action,details=''):
     with get_db() as c:
         c.execute("INSERT INTO app_audit(created_at,action,details) VALUES(?,?,?)",(datetime.now().isoformat(timespec='seconds'),action,details));c.execute("DELETE FROM app_audit WHERE id NOT IN (SELECT id FROM app_audit ORDER BY id DESC LIMIT 500)");c.commit()

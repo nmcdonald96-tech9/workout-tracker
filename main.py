@@ -749,10 +749,18 @@ class ExerciseCard(ft.Card):
         self.margin = 4
 
     def _reopen_completed(self,action):
-        with get_db() as conn:
-            conn.execute("UPDATE workout_sessions SET status=? WHERE id=?",(STATUS_PENDING,self.db_id));conn.commit()
-        record_audit(action,f"session_id={self.db_id}; exercise={self.exercise}")
-        self.app.sets.pop(self.db_id,None);self.app.view_mode="workout";self.app.pending_scroll_key=self.app.exercise_anchor_key(self.db_id)
+        result = reopen_completed_exercise(self.db_id, action)
+        if not result.get("changed"):
+            self.app.show_snackbar("This exercise is already open or was changed elsewhere.", "amber300")
+            return
+        self.app.sets.pop(self.db_id,None)
+        self.app.pr_celebrations.pop(self.db_id,None)
+        self.app.strength_badges.pop(self.db_id,None)
+        self.app.meso_just_completed=False
+        self.app.summary_replay_mode=False
+        self.app.summary_return_position=None
+        self.app.view_mode="workout"
+        self.app.pending_scroll_key=self.app.exercise_anchor_key(self.db_id)
         self.app.rebuild_navigation_headers();self.app.rebuild_entire_display();self.app.show_snackbar("Logged sets reopened with existing values preserved.","cyan300")
     def confirm_revise_completed(self,e=None):
         dialog=ft.AlertDialog(title=ft.Text("Revise Logged Sets",weight="bold"),content=ft.Text("Reopen this completed exercise with all logged values preserved? Logging it again recalculates progression, e1RM, reports, and next targets."),actions=[ft.TextButton("Cancel",on_click=lambda ev:self.app.safe_close(dialog)),ft.ElevatedButton("Revise",on_click=lambda ev:[self.app.safe_close(dialog),self._reopen_completed("completed_exercise_revised")])]);self.app.safe_open(dialog)
@@ -921,11 +929,13 @@ class ExerciseCard(ft.Card):
                 set_data["done"] = False
                 set_data["completed_at"] = None
             self.autosave_pending_sets()
-            grouped_advanced=requested_value and self.app.advance_group_flow(self.db_id,set_idx+1)
             all_done = bool(self.app.sets.get(self.db_id)) and all(bool(x.get("done")) for x in self.app.sets[self.db_id])
             if requested_value and set_idx == len(self.app.sets[self.db_id]) - 1 and all_done:
+                # Complete the exercise transaction first. on_save() performs the
+                # single authoritative group advance after the status commit.
                 self.on_save(None)
                 return
+            grouped_advanced=requested_value and self.app.advance_group_flow(self.db_id,set_idx+1)
             if grouped_advanced:return
             if requested_value and not exercise_was_started:
                 category_name = self.context.get("category") if self.context else None
@@ -1089,6 +1099,13 @@ class ExerciseCard(ft.Card):
 
         with get_db() as conn:
             cursor = conn.cursor()
+            cursor.execute("BEGIN IMMEDIATE")
+            session_state = cursor.execute("SELECT status,date FROM workout_sessions WHERE id=?", (self.db_id,)).fetchone()
+            if not session_state or session_state[0] != STATUS_PENDING:
+                conn.rollback()
+                self.app.show_snackbar("This exercise is no longer pending. Refresh before logging again.", "amber300")
+                return
+            revision_intent = get_completed_revision_intent(cursor, self.db_id)
             is_bw = EXERCISE_METADATA.get(self.exercise, {}).get("equipment") == "Bodyweight"
             
             cursor.execute(f"SELECT s.weight, s.reps, ws.bodyweight_snapshot FROM workout_sets s JOIN workout_sessions ws ON s.session_id = ws.id WHERE ws.exercise = ? AND ws.status = '{STATUS_COMPLETED}' AND ws.id != ?", (self.exercise, self.db_id))
@@ -1134,8 +1151,19 @@ class ExerciseCard(ft.Card):
                       float(target["w"]), int(target["r"]), float(normal_target["w"]), int(normal_target["r"]), completed_at,
                       outcome["decision"], outcome["reason_code"], outcome["reason"], json.dumps(effective_settings, sort_keys=True)))
             
-            true_completion_date = datetime.now().strftime("%Y-%m-%d")
-            cursor.execute(f"UPDATE workout_sessions SET status = '{STATUS_COMPLETED}', date = ?, bodyweight_snapshot = ? WHERE id = ?", (true_completion_date, current_bw, self.db_id))
+            true_completion_date = (revision_intent or {}).get("original_date") or datetime.now().strftime("%Y-%m-%d")
+            changed = cursor.execute(
+                "UPDATE workout_sessions SET status=?, date=?, bodyweight_snapshot=? WHERE id=? AND status=?",
+                (STATUS_COMPLETED, true_completion_date, current_bw, self.db_id, STATUS_PENDING),
+            ).rowcount
+            if changed != 1:
+                conn.rollback()
+                self.app.show_snackbar("Exercise completion changed elsewhere. Nothing was duplicated.", "amber300")
+                return
+            if revision_intent:
+                cursor.execute("DELETE FROM user_settings WHERE setting_key=?", (completed_revision_setting_key(self.db_id),))
+                cursor.execute("INSERT INTO app_audit(created_at,action,details) VALUES(?,?,?)", (datetime.now().isoformat(timespec="seconds"), "completed_exercise_relogged", f"session_id={self.db_id}; source={revision_intent.get('action','unknown')}; exercise={self.exercise}"))
+                cursor.execute("DELETE FROM app_audit WHERE id NOT IN (SELECT id FROM app_audit ORDER BY id DESC LIMIT 500)")
             conn.commit()
 
         if self.db_id in self.app.sets:
@@ -1157,6 +1185,14 @@ class ExerciseCard(ft.Card):
                     self.app.strength_badges[self.db_id] = classification
             except Exception as badge_err:
                 print(f"[on_save] strength badge skipped: {badge_err}")
+
+        # Final-set auto-log and superset navigation share one authoritative
+        # post-commit path. This prevents competing rebuilds from one tap.
+        try:
+            if self.app.advance_group_flow(self.db_id, len(rows_to_save)):
+                return
+        except Exception as group_err:
+            print(f"[on_save] group advance failed: {group_err}")
 
         # Each post-save step is isolated so that a failure in routing or header
         # rebuild cannot prevent the display refresh.  The display refresh MUST
@@ -1764,10 +1800,13 @@ class WorkoutTrackerApp:
         if not self.workout_focus_mode and self.ui_density=="comfortable":return "FULL"
         return "CUSTOM"
     def open_display_mode(self,e=None):
+        current=self.current_display_mode()
         def choose(mode):
             values={"FULL":(False,"comfortable"),"COMPACT":(False,"compact"),"FOCUS":(True,"compact")};self.workout_focus_mode,self.ui_density=values[mode];self.save_setting("workout_focus_mode","1" if self.workout_focus_mode else "0");self.save_setting("ui_density",self.ui_density);record_audit("display_mode_changed",mode);self.safe_close(dialog);self.rebuild_entire_display()
-        dialog=ft.AlertDialog(title=ft.Text("Workout View",weight="bold"),content=ft.Column([ft.ElevatedButton("Full",on_click=lambda ev:choose("FULL"),width=float('inf')),ft.ElevatedButton("Compact",on_click=lambda ev:choose("COMPACT"),width=float('inf')),ft.ElevatedButton("Focus",on_click=lambda ev:choose("FOCUS"),width=float('inf'))],tight=True),actions=[ft.TextButton("Cancel",on_click=lambda ev:self.safe_close(dialog))]);self.safe_open(dialog)
-
+        def mode_button(label,mode,detail):
+            selected=current==mode
+            return ft.ElevatedButton(content=ft.Column([ft.Text(("✓ " if selected else "")+label,weight="bold"),ft.Text(detail,size=9,color="white70")],spacing=1,horizontal_alignment="center"),on_click=lambda ev,m=mode:choose(m),width=float('inf'),style=ft.ButtonStyle(bgcolor="cyan700" if selected else "white10",color="white",padding=8))
+        dialog=ft.AlertDialog(title=ft.Text("Workout View",weight="bold"),content=ft.Column([ft.Text(f"Current mode: {current.title()}",size=10,color="cyan300"),mode_button("Full","FULL","Comfortable spacing and all controls"),mode_button("Compact","COMPACT","Tighter cards with full utilities"),mode_button("Focus","FOCUS","Compact set entry with secondary controls hidden")],tight=True,spacing=6),actions=[ft.TextButton("Cancel",on_click=lambda ev:self.safe_close(dialog))]);self.safe_open(dialog)
     def open_settings_dialog(self, e=None):
         self.close_actions_menu()
         current_bw = get_user_bodyweight()
