@@ -963,9 +963,12 @@ def calculate_plates_per_side(exercise_name, total_weight_str):
         
         if not meta:
             ex_lower = exercise_name.lower()
-            if any(x in ex_lower for x in ["dumbbell", "cable", "machine", "pulldown", "pullup", "lunges", "squat (2/3)", "candlestick", "stair", "calf", "calves", "bodyweight"]):
+            if "smith" in ex_lower:
+                remaining = total_weight / 2
+                bar_label = "Smith"
+            elif any(x in ex_lower for x in ["dumbbell", "cable", "machine", "pulldown", "pullup", "lunges", "squat (2/3)", "candlestick", "stair", "calf", "calves", "bodyweight"]):
                 return ""
-            if "ez bar" in ex_lower:
+            elif "ez bar" in ex_lower:
                 if total_weight < BAR_WEIGHT_EZ: return "Below bar weight"
                 remaining = (total_weight - BAR_WEIGHT_EZ) / 2
                 bar_label = "EZ Bar"

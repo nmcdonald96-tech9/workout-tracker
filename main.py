@@ -416,12 +416,11 @@ class ExerciseCard(ft.Card):
             bits = [f"{len(done_rows)} sets", f"Reps {reps_text}"]
             if weights: bits.insert(1, f"{weights[0]} lb")
             if rpes: bits.append(f"Avg RPE {sum(rpes)/len(rpes):.1f}")
-            self.content = ft.Container(content=ft.Row([
-                ft.Text("✓", size=16, color="green300", weight="bold"),
-                ft.Column([ft.Text(self.exercise, size=13, weight="bold"), ft.Text(" • ".join(bits), size=10, color="white54")], spacing=2, expand=True),
-                ft.Text("History ›", size=10, color="cyan300")], spacing=8),
-                bgcolor="green900", border_radius=8, padding=10, ink=True, on_click=self.open_progression_history)
-            self.margin = 4
+            self.content = ft.Container(content=ft.Column([
+                ft.Row([ft.Text("✓",size=16,color="green300",weight="bold"),ft.Column([ft.Text(self.exercise,size=13,weight="bold"),ft.Text(" • ".join(bits),size=10,color="white54")],spacing=2,expand=True)],spacing=8),
+                ft.Row([ft.TextButton("History",on_click=self.open_progression_history),ft.TextButton("Revise Logged Sets",on_click=self.confirm_revise_completed),ft.TextButton("Reopen",on_click=self.confirm_reopen_completed)],spacing=2,wrap=True)
+            ],spacing=3),bgcolor="green900",border_radius=8,padding=10)
+            self.margin=4
             return
         sets_column = ft.Column(spacing=4)
         self.set_ui_rows = [] # <-- KINETIC INIT
@@ -749,6 +748,16 @@ class ExerciseCard(ft.Card):
         )
         self.margin = 4
 
+    def _reopen_completed(self,action):
+        with get_db() as conn:
+            conn.execute("UPDATE workout_sessions SET status=? WHERE id=?",(STATUS_PENDING,self.db_id));conn.commit()
+        record_audit(action,f"session_id={self.db_id}; exercise={self.exercise}")
+        self.app.sets.pop(self.db_id,None);self.app.view_mode="workout";self.app.pending_scroll_key=self.app.exercise_anchor_key(self.db_id)
+        self.app.rebuild_navigation_headers();self.app.rebuild_entire_display();self.app.show_snackbar("Logged sets reopened with existing values preserved.","cyan300")
+    def confirm_revise_completed(self,e=None):
+        dialog=ft.AlertDialog(title=ft.Text("Revise Logged Sets",weight="bold"),content=ft.Text("Reopen this completed exercise with all logged values preserved? Logging it again recalculates progression, e1RM, reports, and next targets."),actions=[ft.TextButton("Cancel",on_click=lambda ev:self.app.safe_close(dialog)),ft.ElevatedButton("Revise",on_click=lambda ev:[self.app.safe_close(dialog),self._reopen_completed("completed_exercise_revised")])]);self.app.safe_open(dialog)
+    def confirm_reopen_completed(self,e=None):
+        dialog=ft.AlertDialog(title=ft.Text("Reopen Exercise",weight="bold"),content=ft.Text("Move this exercise back to Pending? Existing set values remain available and workout completion may change."),actions=[ft.TextButton("Cancel",on_click=lambda ev:self.app.safe_close(dialog)),ft.ElevatedButton("Reopen",on_click=lambda ev:[self.app.safe_close(dialog),self._reopen_completed("completed_exercise_reopened")])]);self.app.safe_open(dialog)
     def open_setup_notes_dialog(self,e=None):
         with get_db() as c:r=c.execute("SELECT setup_notes FROM exercise_dict WHERE name=?",(self.exercise,)).fetchone()
         field=ft.TextField(label="Setup notes",value=r[0] if r and r[0] else "",multiline=True,min_lines=3,max_lines=6)
@@ -2476,8 +2485,8 @@ class WorkoutTrackerApp:
             "Device-flow duplicate completion guard: enabled",
             "Cloud actions gated by Graph verification: enabled",
             "Explicit Graph 302 Location downloads: enabled",
-            "Remote manifest reload after restart: enabled",
-            "Restore gated by confirmed remote manifest: enabled",
+            "Completed exercise revision and reopen: enabled",
+            "Smith machine zero-bar accounting: enabled",
         ]
         self.diagnostics_dialog = ft.AlertDialog(
             title=ft.Text("IronCycle Diagnostics", weight="bold"),
@@ -2949,7 +2958,7 @@ class WorkoutTrackerApp:
         except Exception:self._cloud_signin_running=False;self.show_snackbar("Could not start Microsoft sign-in completion.","red300")
     def refresh_cloud_panel(self):
         try:
-            self.cloud_status_text.value={'verified':'● Connected and verified','checking':'◌ Checking OneDrive','reconnect_required':'● Reconnect required','offline':'● Offline','not_connected':'○ Not connected'}.get(self.cloud_state,'○ Not connected');self.cloud_status_text.color='green300' if self.cloud_state=='verified' else 'amber300';m=self.cloud_manifest or {};stages=' • '.join(f"{x.get('stage')}: {'OK' if x.get('ok') else 'FAIL'}" for x in self.cloud_stages);manifest_line=(f"{m.get('created_at')} • {m.get('reason','backup')} • {int(m.get('size',0))/1024:.1f} KB • schema {m.get('schema_version','?')}" if m else ('Recovery manifest unavailable: '+str((self.cloud_manifest_error or {}).get('message','not loaded'))));self.cloud_manifest_text.value=manifest_line+(f"\n{stages}" if stages else '');verified=self.cloud_state=='verified';manifest_ready=verified and bool(self.cloud_manifest);self.cloud_backup_button.disabled=not verified;self.cloud_restore_button.disabled=not manifest_ready;self.cloud_status_text.update();self.cloud_manifest_text.update();self.cloud_backup_button.update();self.cloud_restore_button.update()
+            self.cloud_status_text.value={'verified':'● Connected and verified','checking':'◌ Checking OneDrive','reconnect_required':'● Reconnect required','offline':'● Offline','not_connected':'○ Not connected'}.get(self.cloud_state,'○ Not connected');self.cloud_status_text.color='green300' if self.cloud_state=='verified' else 'amber300';m=self.cloud_manifest or {};manifest_line=(f"{m.get('created_at')} • {m.get('reason','backup')} • {int(m.get('size',0))/1024:.1f} KB • schema {m.get('schema_version','?')}" if m else ('Recovery manifest unavailable: '+str((self.cloud_manifest_error or {}).get('message','not loaded'))));self.cloud_manifest_text.value=manifest_line;verified=self.cloud_state=='verified';manifest_ready=verified and bool(self.cloud_manifest);self.cloud_backup_button.disabled=not verified;self.cloud_restore_button.disabled=not manifest_ready;self.cloud_status_text.update();self.cloud_manifest_text.update();self.cloud_backup_button.update();self.cloud_restore_button.update()
         except Exception:pass
     def verify_onedrive_connection(self,e=None,show_result=True):
         self.cloud_state='checking';self.refresh_cloud_panel()
@@ -2987,7 +2996,7 @@ class WorkoutTrackerApp:
         except Exception:self._cloud_restore_running=False;self.show_snackbar("Could not start cloud restore.","red300")
     def open_onedrive_cloud_backup(self,e=None):
         self.cloud_status_text=ft.Text('',color='amber300');self.cloud_manifest_text=ft.Text('',size=10,color='white70');self.cloud_backup_button=ft.ElevatedButton("Back Up Now",on_click=self.cloud_backup_now,disabled=True);self.cloud_restore_button=ft.ElevatedButton("Restore Latest",on_click=self.cloud_restore_latest,disabled=True)
-        self.cloud_dialog=ft.AlertDialog(title=ft.Text("OneDrive Cloud Backup",weight="bold"),content=ft.Column([self.cloud_status_text,ft.Text("Latest cloud recovery:",size=10,weight='bold',color='cyan300'),self.cloud_manifest_text,ft.ElevatedButton("Check Connection",on_click=self.verify_onedrive_connection),ft.TextButton("Retry Manifest",on_click=self.verify_onedrive_connection),self.cloud_backup_button,self.cloud_restore_button,ft.ElevatedButton("Connect / Reconnect",on_click=lambda ev:[self.safe_close(self.cloud_dialog),self.connect_onedrive()])],tight=True,spacing=7),actions=[ft.TextButton("Close",on_click=lambda ev:self.safe_close(self.cloud_dialog))]);self.safe_open(self.cloud_dialog);self.refresh_cloud_panel()
+        self.cloud_dialog=ft.AlertDialog(title=ft.Text("OneDrive Cloud Backup",weight="bold"),content=ft.Column([self.cloud_status_text,ft.Text("Latest cloud recovery:",size=10,weight='bold',color='cyan300'),self.cloud_manifest_text,ft.ElevatedButton("Check Connection",on_click=self.verify_onedrive_connection),self.cloud_backup_button,self.cloud_restore_button,ft.ElevatedButton("Connect / Reconnect",on_click=lambda ev:[self.safe_close(self.cloud_dialog),self.connect_onedrive()])],tight=True,spacing=7),actions=[ft.TextButton("Close",on_click=lambda ev:self.safe_close(self.cloud_dialog))]);self.safe_open(self.cloud_dialog);self.refresh_cloud_panel()
         if self.onedrive.has_account():self.verify_onedrive_connection(show_result=False)
     def open_backup_manager(self,e=None):
         self.close_actions_menu();style=ft.ButtonStyle(padding=10)

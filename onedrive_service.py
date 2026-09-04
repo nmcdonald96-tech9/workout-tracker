@@ -1,4 +1,4 @@
-"""MSAL-backed OneDrive App Folder transport for IronCycle 1.41.10."""
+"""MSAL-backed OneDrive App Folder transport for IronCycle 1.42.0."""
 import hashlib, json, os, threading, time, urllib.error, urllib.parse, urllib.request
 from datetime import datetime, timezone
 import msal
@@ -88,8 +88,7 @@ class OneDriveService:
  def _graph(self,path,data=None,method=None,ctype=None,stage=None):return self._json(GRAPH+path,self.acquire_token(),data,method,ctype,stage)
  def _download_graph_item(self,item_id,stage):
   token=self.acquire_token();url=GRAPH+'/me/drive/items/'+urllib.parse.quote(str(item_id),safe='')+'/content';req=urllib.request.Request(url,headers={'Authorization':'Bearer '+token});opener=urllib.request.build_opener(_NoRedirect)
-  try:
-   opener.open(req,timeout=60);raise OneDriveError('Microsoft Graph did not return a content redirect.',stage=stage)
+  try:opener.open(req,timeout=60);raise OneDriveError('Microsoft Graph did not return a content redirect.',stage=stage)
   except urllib.error.HTTPError as e:
    if e.code!=302:raise OneDriveError(f'HTTP {e.code}: content redirect failed',status=e.code,stage=stage,request_id=e.headers.get('request-id'),www_authenticate=e.headers.get('WWW-Authenticate'))
    location=e.headers.get('Location')
@@ -115,8 +114,7 @@ class OneDriveService:
   root=self._graph('/me/drive/special/approot',stage='approot');stages.append({'stage':'approot','ok':bool(root.get('id'))})
   manifest=None;manifest_error=None
   try:manifest=self.latest_manifest();stages.append({'stage':'manifest','ok':True})
-  except OneDriveError as e:
-   manifest_error={'stage':e.stage or 'manifest','status':e.status,'graph_code':e.graph_code,'request_id':e.request_id,'message':str(e)};stages.append({'stage':'manifest','ok':False})
+  except OneDriveError as e:manifest_error={'stage':e.stage or 'manifest','status':e.status,'graph_code':e.graph_code,'request_id':e.request_id,'message':str(e)};stages.append({'stage':'manifest','ok':False})
   return {'ok':True,'checked_at':datetime.now(timezone.utc).isoformat(timespec='seconds'),'manifest':manifest,'manifest_error':manifest_error,'stages':stages}
  def upload_backup(self,text,reason,version,schema):
   with self._io_lock:
