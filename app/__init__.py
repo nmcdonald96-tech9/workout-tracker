@@ -1,1 +1,1 @@
-"""IronCycle application coordination package."""
+"""IronCycle package."""
