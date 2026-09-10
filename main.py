@@ -26,7 +26,8 @@ from app.compatibility import compatible_checkbox
 from components.session_context_panel import build_tag_controls
 from app.application import ApplicationFoundation
 from services.backup_service import BackupService
-from services.entitlement_service import EntitlementService, TRIAL_ACTIVE, TRIAL_EXPIRED, LIFETIME_UNLOCKED, NOT_STARTED
+from services.entitlement_service import (EntitlementService, TRIAL_ACTIVE, TRIAL_EXPIRED,
+    LIFETIME_UNLOCKED, NOT_STARTED, PURCHASE_CHECK_PENDING, TEMPORARILY_OFFLINE)
 from onedrive_service import OneDriveService, OneDriveError
 
 class WorkoutStateService:
@@ -1535,8 +1536,14 @@ class WorkoutTrackerApp:
             status=f"Full-feature trial active • {snap.days_remaining} day(s) remaining."
         elif snap.state == LIFETIME_UNLOCKED:
             status="Lifetime Unlock active."
+        elif snap.state == PURCHASE_CHECK_PENDING:
+            status="Purchase verification is pending. Previously verified access remains available when possible."
+        elif snap.state == TEMPORARILY_OFFLINE:
+            status="Google Play is temporarily unavailable. Previously verified access remains available when possible."
         else:
             status="Your trial has ended. Existing history and backup access remain available."
+        if snap.simulated:
+            status = "TEST SIMULATION • " + status
         if action_label and snap.state == TRIAL_EXPIRED:
             status += f" Unlock IronCycle to continue {action_label}."
         def purchase(ev=None): self.show_snackbar(self.entitlement.purchase_unavailable_message(),"amber300")
@@ -1547,6 +1554,35 @@ class WorkoutTrackerApp:
             ft.Text("Workout history, completed sessions, manual backups, export, and restore remain available after trial expiration.",size=10,color="white70"),
             ft.Text("Purchasing is intentionally disabled until the verified Google Play Billing bridge is added.",size=10,color="amber300"),
         ],tight=True,spacing=8),actions=[ft.TextButton("Restore Purchase",on_click=restore),ft.ElevatedButton("Purchase Lifetime Unlock",on_click=purchase,disabled=True),ft.TextButton("Close",on_click=lambda ev:self.safe_close(dialog))]);self.safe_open(dialog)
+    def open_entitlement_test_panel(self, e=None):
+        if not ENTITLEMENT_TEST_CONTROLS:
+            self.show_snackbar("Entitlement test controls are disabled in this build.", "amber300")
+            return
+        snap=self.entitlement_snapshot()
+        options=[
+            ("Real stored state",None),
+            ("Trial not started",NOT_STARTED),
+            ("Trial active",TRIAL_ACTIVE),
+            ("Trial expired",TRIAL_EXPIRED),
+            ("Lifetime unlocked",LIFETIME_UNLOCKED),
+            ("Purchase check pending",PURCHASE_CHECK_PENDING),
+            ("Temporarily offline",TEMPORARILY_OFFLINE),
+        ]
+        selected=ft.RadioGroup(value=self.entitlement.simulation_state or "REAL",content=ft.Column([
+            ft.Radio(value=state or "REAL",label=label) for label,state in options
+        ],tight=True,spacing=2))
+        status=ft.Text(f"Real stored state: {snap.real_state or snap.state}",size=10,color="cyan200")
+        def apply(ev=None):
+            value=None if selected.value=="REAL" else selected.value
+            result=self.entitlement.set_test_simulation(value)
+            self.safe_close(dialog)
+            self.show_snackbar(f"Entitlement simulation: {result.state}" if result.simulated else f"Returned to real entitlement: {result.state}","purple200" if result.simulated else "green300")
+            self.rebuild_entire_display()
+        dialog=ft.AlertDialog(title=ft.Text("Developer Entitlement Test",weight="bold"),content=ft.Container(width=360,content=ft.Column([
+            ft.Text("TEST ONLY • Simulations stay in memory and disappear when IronCycle restarts.",size=10,color="amber300",weight="bold"),
+            ft.Text("Simulated Lifetime Unlock never writes ownership to disk. Real trial dates remain unchanged.",size=10,color="white70"),
+            status,selected
+        ],tight=True,spacing=7)),actions=[ft.TextButton("Cancel",on_click=lambda ev:self.safe_close(dialog)),ft.ElevatedButton("Apply Simulation",on_click=apply)]);self.safe_open(dialog)
     def open_actions_menu(self, e=None):
         history_lbl = "🕰️ Open History" if self.view_mode == "workout" else "🏋️ Back to Workout"
         btn_style = ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=6), padding=12)
@@ -1590,6 +1626,7 @@ class WorkoutTrackerApp:
                     
                     ft.Text("SETTINGS & DATA", size=10, weight="bold", color="cyan300"),
                     ft.ElevatedButton("🔓 Trial & Lifetime Unlock", on_click=lambda ev:[self.safe_close(self.actions_menu_dialog),self.open_lifetime_unlock_dialog()], width=float('inf'), style=btn_style),
+                    ft.ElevatedButton("🧪 Developer Entitlement Test", on_click=lambda ev:[self.safe_close(self.actions_menu_dialog),self.open_entitlement_test_panel()], width=float('inf'), style=btn_style, visible=ENTITLEMENT_TEST_CONTROLS),
                     ft.ElevatedButton("👤 Profile Settings", on_click=self.open_settings_dialog, width=float('inf'), style=btn_style),
                     ft.ElevatedButton("📚 Exercise Library", on_click=self.menu_manage_dict, width=float('inf'), style=btn_style),
                     ft.ElevatedButton("🛠 Diagnostics & Support", on_click=self.open_diagnostics_dialog, width=float('inf'), style=btn_style),
@@ -2487,6 +2524,8 @@ class WorkoutTrackerApp:
             f"Focus mode: {'On' if self.workout_focus_mode else 'Off'}",
             f"Density: {self.ui_density}",
             f"Entitlement: {self.entitlement_snapshot().state}",
+            f"Entitlement simulated: {'Yes' if self.entitlement_snapshot().simulated else 'No'}",
+            f"Real stored entitlement: {self.entitlement_snapshot().real_state}",
             f"Trial days remaining: {self.entitlement_snapshot().days_remaining}",
             f"Limited mode: {'Yes' if self.entitlement_snapshot().limited_mode else 'No'}",
             f"Billing provider: not connected (foundation build)",
