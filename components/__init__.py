@@ -1,1 +1,1 @@
-"""Reusable UI components."""
+"""IronCycle package."""
