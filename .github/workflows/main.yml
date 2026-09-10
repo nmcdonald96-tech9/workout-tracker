@@ -145,6 +145,18 @@ jobs:
           set -euo pipefail
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
 
+      - name: Reclaim GitHub runner disk space
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Disk usage before cleanup:"
+          df -h /
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost "$AGENT_TOOLSDIRECTORY/CodeQL" || true
+          docker system prune --all --force --volumes || true
+          sudo apt-get clean
+          echo "Disk usage after cleanup:"
+          df -h /
+
       - name: Build permanently signed APK
         shell: bash
         env:
@@ -290,6 +302,15 @@ jobs:
           cp "$APK_PATH" "$VERIFIED_APK"
           echo "VERIFIED_APK=$VERIFIED_APK" >> "$GITHUB_ENV"
 
+      - name: Reclaim space before AAB build
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf build
+          rm -rf "$HOME/.gradle/caches" "$HOME/.gradle/daemon" "$HOME/.gradle/native"
+          echo "Disk available before AAB build:"
+          df -h /
+
       - name: Build permanently signed AAB
         shell: bash
         env:
@@ -298,7 +319,6 @@ jobs:
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           set -euo pipefail
-          rm -rf build/aab
           flet build aab \
             --yes \
             --product "IronCycle" \
@@ -324,7 +344,6 @@ jobs:
           jarsigner -verify -verbose -certs "$AAB_PATH" > "$RUNNER_TEMP/jarsigner-aab-report.txt"
           VERIFIED_AAB="IronCycle-${APP_VERSION}-play-upload.aab"
           cp "$AAB_PATH" "$VERIFIED_AAB"
-          echo "AAB_PATH=$AAB_PATH" >> "$GITHUB_ENV"
           echo "VERIFIED_AAB=$VERIFIED_AAB" >> "$GITHUB_ENV"
           echo "AAB signature verified."
 
@@ -342,7 +361,6 @@ jobs:
           AAB signature:      Verified
           Intended use:       Google Play Console upload
           EOF
-          cat IronCycle_AAB_Verification.txt
 
       - name: Upload verified APK, AAB, and reports
         uses: actions/upload-artifact@v4
