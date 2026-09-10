@@ -1,4 +1,4 @@
-name: Build Permanently Signed IronCycle APK
+name: Build Permanently Signed IronCycle APK and AAB
 
 on:
   workflow_dispatch:
@@ -10,13 +10,13 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
   FLET_SKIP_FLUTTER_PROMPT: "true"
   SERIOUS_PYTHON_VERSION: "3.12"
-  EXPECTED_PACKAGE_ID: "com.flet.workout_tracker"
-  EXPECTED_PROJECT: "workout_tracker"
-  EXPECTED_ORG: "com.flet"
+  EXPECTED_PACKAGE_ID: "com.ironcycle.myapp"
+  EXPECTED_PROJECT: "myapp"
+  EXPECTED_ORG: "com.ironcycle"
 
 jobs:
   build:
-    name: Build and verify APK
+    name: Build and verify APK and AAB
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
@@ -290,13 +290,69 @@ jobs:
           cp "$APK_PATH" "$VERIFIED_APK"
           echo "VERIFIED_APK=$VERIFIED_APK" >> "$GITHUB_ENV"
 
-      - name: Upload verified APK and report
+      - name: Build permanently signed AAB
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          rm -rf build/aab
+          flet build aab \
+            --yes \
+            --product "IronCycle" \
+            --project "$EXPECTED_PROJECT" \
+            --org "$EXPECTED_ORG" \
+            --bundle-id "$EXPECTED_PACKAGE_ID" \
+            --build-version "$APP_VERSION" \
+            --build-number "$ANDROID_VERSION_CODE" \
+            --android-signing-key-store "$KEYSTORE_PATH" \
+            --android-signing-key-store-password "$ANDROID_KEYSTORE_PASSWORD" \
+            --android-signing-key-alias "$ANDROID_KEY_ALIAS" \
+            --android-signing-key-password "$ANDROID_KEY_PASSWORD"
+
+      - name: Locate and verify AAB signature
+        shell: bash
+        run: |
+          set -euo pipefail
+          AAB_PATH="$(find build -type f -name '*.aab' -print | head -n 1)"
+          if [ -z "$AAB_PATH" ] || [ ! -f "$AAB_PATH" ]; then
+            echo "::error::No AAB was found under the build directory."
+            exit 1
+          fi
+          jarsigner -verify -verbose -certs "$AAB_PATH" > "$RUNNER_TEMP/jarsigner-aab-report.txt"
+          VERIFIED_AAB="IronCycle-${APP_VERSION}-play-upload.aab"
+          cp "$AAB_PATH" "$VERIFIED_AAB"
+          echo "AAB_PATH=$AAB_PATH" >> "$GITHUB_ENV"
+          echo "VERIFIED_AAB=$VERIFIED_AAB" >> "$GITHUB_ENV"
+          echo "AAB signature verified."
+
+      - name: Create AAB verification report
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > IronCycle_AAB_Verification.txt <<EOF
+          IronCycle AAB Release Verification
+          Version name:       $APP_VERSION
+          Version code:       $ANDROID_VERSION_CODE
+          Package ID:         $EXPECTED_PACKAGE_ID
+          Upload signer:      Permanent IronCycle key
+          Signer SHA-256:     $ACTUAL_SIGNER_SHA256
+          AAB signature:      Verified
+          Intended use:       Google Play Console upload
+          EOF
+          cat IronCycle_AAB_Verification.txt
+
+      - name: Upload verified APK, AAB, and reports
         uses: actions/upload-artifact@v4
         with:
-          name: IronCycle-${{ env.APP_VERSION }}-permanent-signed
+          name: IronCycle-${{ env.APP_VERSION }}-signed-android
           path: |
             ${{ env.VERIFIED_APK }}
+            ${{ env.VERIFIED_AAB }}
             IronCycle_APK_Verification.txt
+            IronCycle_AAB_Verification.txt
           if-no-files-found: error
           retention-days: 30
 
