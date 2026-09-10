@@ -1,1 +1,1 @@
-"""IronCycle domain services."""
+"""IronCycle package."""
