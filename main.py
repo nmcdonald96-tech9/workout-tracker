@@ -26,6 +26,7 @@ from app.compatibility import compatible_checkbox
 from components.session_context_panel import build_tag_controls
 from app.application import ApplicationFoundation
 from services.backup_service import BackupService
+from services.entitlement_service import EntitlementService, TRIAL_ACTIVE, TRIAL_EXPIRED, LIFETIME_UNLOCKED, NOT_STARTED
 from onedrive_service import OneDriveService, OneDriveError
 
 class WorkoutStateService:
@@ -883,6 +884,8 @@ class ExerciseCard(ft.Card):
 
     def make_set_done_handler(self, set_idx):
         def set_done_changed(ev):
+            if not self.app.require_premium("logging workouts"):
+                return
             if self.db_id not in self.app.sets or set_idx >= len(self.app.sets[self.db_id]):
                 return
             set_data = self.app.sets[self.db_id][set_idx]
@@ -983,6 +986,8 @@ class ExerciseCard(ft.Card):
             print(f"Error autosaving pending sets: {e}")
 
     def on_add_set(self, ev):
+        if not self.app.require_premium("editing workout prescriptions"):
+            return
         if self.db_id not in self.app.sets: return
         new_idx = len(self.app.sets[self.db_id])
         target = self.set_targets[new_idx] if new_idx < len(self.set_targets) else {"w": self.tgt_w, "r": self.tgt_r}
@@ -991,6 +996,8 @@ class ExerciseCard(ft.Card):
         self.app.rebuild_entire_display()
 
     def on_remove_set(self, ev):
+        if not self.app.require_premium("editing workout prescriptions"):
+            return
         if self.db_id not in self.app.sets or len(self.app.sets[self.db_id]) <= 1:
             return
         self.app.sets[self.db_id] = self.app.sets[self.db_id][:-1]
@@ -1042,6 +1049,8 @@ class ExerciseCard(ft.Card):
         self.app.rebuild_entire_display()
 
     def on_save(self, ev):
+        if not self.app.require_premium("logging workouts"):
+            return
         rows_to_save = []
 
         for idx, set_data in enumerate(self.app.sets.get(self.db_id, []), start=1):
@@ -1239,6 +1248,7 @@ class WorkoutTrackerApp:
         self.foundation.sync(self)
         self.backup_service = BackupService(MAX_BACKUP_TEXT_BYTES, MAX_DECOMPRESSED_DB_BYTES)
         cloud_dir=os.path.dirname(os.path.abspath(DB_PATH))
+        self.entitlement = EntitlementService(os.path.join(cloud_dir, "ironcycle_entitlement.json"), TRIAL_DAYS, LIFETIME_PRODUCT_ID)
         self.onedrive=OneDriveService(os.path.join(cloud_dir,"msal_cache.json"),os.path.join(cloud_dir,"onedrive_pending.json"))
         self.cloud_state="not_connected";self.cloud_last_checked=None;self.cloud_manifest=None;self.cloud_manifest_error=None;self.cloud_stages=[];self._cloud_restore_running=False;self._cloud_signin_running=False;self.auto_cloud_backup=self.get_bool_setting('automatic_onedrive_backup',False);self.cloud_testing_mode=self.get_bool_setting('cloud_testing_mode',False);self._auto_backup_timer=None;self._auto_backup_running=False
         try:self.page.on_app_lifecycle_state_change=self.on_app_lifecycle_state_change
@@ -1509,6 +1519,34 @@ class WorkoutTrackerApp:
             self.main_canvas_host
         )
 
+    def entitlement_snapshot(self):
+        return self.entitlement.snapshot()
+    def require_premium(self, action_label="this action"):
+        allowed, snap = self.entitlement.allow_premium_action(start_trial=True)
+        if allowed:
+            return True
+        self.open_lifetime_unlock_dialog(action_label)
+        return False
+    def open_lifetime_unlock_dialog(self, action_label=None):
+        snap=self.entitlement_snapshot()
+        if snap.state == NOT_STARTED:
+            status="Your 14-day full-feature trial has not started. It begins with the first premium action."
+        elif snap.state == TRIAL_ACTIVE:
+            status=f"Full-feature trial active • {snap.days_remaining} day(s) remaining."
+        elif snap.state == LIFETIME_UNLOCKED:
+            status="Lifetime Unlock active."
+        else:
+            status="Your trial has ended. Existing history and backup access remain available."
+        if action_label and snap.state == TRIAL_EXPIRED:
+            status += f" Unlock IronCycle to continue {action_label}."
+        def purchase(ev=None): self.show_snackbar(self.entitlement.purchase_unavailable_message(),"amber300")
+        def restore(ev=None): self.show_snackbar(self.entitlement.restore_unavailable_message(),"amber300")
+        dialog=ft.AlertDialog(title=ft.Text("IronCycle Lifetime Unlock",weight="bold"),content=ft.Column([
+            ft.Text(status,size=12,color="cyan200"),
+            ft.Text("One payment. No subscription. No recurring charges.",size=12,weight="bold"),
+            ft.Text("Workout history, completed sessions, manual backups, export, and restore remain available after trial expiration.",size=10,color="white70"),
+            ft.Text("Purchasing is intentionally disabled until the verified Google Play Billing bridge is added.",size=10,color="amber300"),
+        ],tight=True,spacing=8),actions=[ft.TextButton("Restore Purchase",on_click=restore),ft.ElevatedButton("Purchase Lifetime Unlock",on_click=purchase,disabled=True),ft.TextButton("Close",on_click=lambda ev:self.safe_close(dialog))]);self.safe_open(dialog)
     def open_actions_menu(self, e=None):
         history_lbl = "🕰️ Open History" if self.view_mode == "workout" else "🏋️ Back to Workout"
         btn_style = ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=6), padding=12)
@@ -1551,6 +1589,7 @@ class WorkoutTrackerApp:
                     ft.Divider(height=10, color="white10"),
                     
                     ft.Text("SETTINGS & DATA", size=10, weight="bold", color="cyan300"),
+                    ft.ElevatedButton("🔓 Trial & Lifetime Unlock", on_click=lambda ev:[self.safe_close(self.actions_menu_dialog),self.open_lifetime_unlock_dialog()], width=float('inf'), style=btn_style),
                     ft.ElevatedButton("👤 Profile Settings", on_click=self.open_settings_dialog, width=float('inf'), style=btn_style),
                     ft.ElevatedButton("📚 Exercise Library", on_click=self.menu_manage_dict, width=float('inf'), style=btn_style),
                     ft.ElevatedButton("🛠 Diagnostics & Support", on_click=self.open_diagnostics_dialog, width=float('inf'), style=btn_style),
@@ -2447,6 +2486,12 @@ class WorkoutTrackerApp:
             f"Clipboard APIs: {', '.join(clipboard_paths) if clipboard_paths else 'none detected'}",
             f"Focus mode: {'On' if self.workout_focus_mode else 'Off'}",
             f"Density: {self.ui_density}",
+            f"Entitlement: {self.entitlement_snapshot().state}",
+            f"Trial days remaining: {self.entitlement_snapshot().days_remaining}",
+            f"Limited mode: {'Yes' if self.entitlement_snapshot().limited_mode else 'No'}",
+            f"Billing provider: not connected (foundation build)",
+            f"Lifetime product: {LIFETIME_PRODUCT_ID}",
+            "Entitlement storage: separate from workout backups",
             f"Last workout rebuild: {self.last_rebuild_ms if self.last_rebuild_ms is not None else 'not measured'} ms",
             "Next Week source: recurring blueprint/origin day",
             "Temporary schedule exceptions copied forward: no",
@@ -2711,6 +2756,8 @@ class WorkoutTrackerApp:
         }, set_rows
 
     def execute_clone_meso(self, e=None):
+        if not self.require_premium("creating training cycles"):
+            return
         try:
             source_meso = int(self.clone_source_dropdown.value)
         except Exception:
@@ -5633,6 +5680,8 @@ class WorkoutTrackerApp:
         self.main_canvas.update()
 
     def generate_and_stamp_blueprint(self, e):
+        if not self.require_premium("creating training cycles"):
+            return
         active_days = [day for day, active in self.gen_days.items() if active]
         
         if not active_days:
@@ -5742,6 +5791,8 @@ class WorkoutTrackerApp:
             return conn.execute("SELECT 1 FROM exercise_dict WHERE name=? LIMIT 1",(name,)).fetchone() is not None
 
     def save_wizard_addition(self, e):
+        if not self.require_premium("adding exercises"):
+            return
         ex_name = self.wizard_custom_input.value.strip() or self.wizard_exercise_dropdown.value
         if not ex_name:
             self.show_snackbar("Please select or type an exercise.", "red300")
@@ -5910,6 +5961,8 @@ class WorkoutTrackerApp:
         self.show_snackbar("Mesocycle Wiped.", "red300")
 
     def run_progression_engine(self, mode):
+        if not self.require_premium("advancing training plans"):
+            return
         next_w="Deload" if mode=="Deload" else str(int(self.current_week)+1)
         try:
             template=get_recurring_week_template(self.current_meso,self.current_week)
