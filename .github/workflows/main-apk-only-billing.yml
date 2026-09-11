@@ -109,6 +109,9 @@ jobs:
               files+=("$optional")
             fi
           done
+          while IFS= read -r module; do
+            files+=("$module")
+          done < <(find app components services -type f -name '*.py' -print 2>/dev/null | sort)
           python -m py_compile "${files[@]}"
 
       - name: Read IronCycle version
@@ -129,9 +132,10 @@ jobs:
             echo "::error::APP_VERSION must use major.minor.patch format. Found: $APP_VERSION"
             exit 1
           fi
+          ANDROID_VERSION_CODE=$((100000 + GITHUB_RUN_NUMBER))
           echo "APP_VERSION=$APP_VERSION" >> "$GITHUB_ENV"
-          echo "ANDROID_VERSION_CODE=$GITHUB_RUN_NUMBER" >> "$GITHUB_ENV"
-          echo "Building IronCycle $APP_VERSION with Android version code $GITHUB_RUN_NUMBER"
+          echo "ANDROID_VERSION_CODE=$ANDROID_VERSION_CODE" >> "$GITHUB_ENV"
+          echo "Building IronCycle $APP_VERSION with Android version code $ANDROID_VERSION_CODE"
 
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
