@@ -132,7 +132,7 @@ jobs:
             echo "::error::APP_VERSION must use major.minor.patch format. Found: $APP_VERSION"
             exit 1
           fi
-          ANDROID_VERSION_CODE=$((600000 + GITHUB_RUN_NUMBER))
+          ANDROID_VERSION_CODE=$((700000 + GITHUB_RUN_NUMBER))
           echo "APP_VERSION=$APP_VERSION" >> "$GITHUB_ENV"
           echo "ANDROID_VERSION_CODE=$ANDROID_VERSION_CODE" >> "$GITHUB_ENV"
           echo "Building IronCycle $APP_VERSION with Android version code $ANDROID_VERSION_CODE"
@@ -195,11 +195,20 @@ jobs:
           FLUTTER_BIN="$(command -v flutter)"
           FLUTTER_SDK="$(cd "$(dirname "$FLUTTER_BIN")/.." && pwd)"
           LOCAL_PROPERTIES="$ANDROID_PROJECT/local.properties"
-          touch "$LOCAL_PROPERTIES"
-          sed -i '/^flutter\.sdk=/d' "$LOCAL_PROPERTIES"
-          printf 'flutter.sdk=%s\n' "$FLUTTER_SDK" >> "$LOCAL_PROPERTIES"
+          export FLUTTER_SDK LOCAL_PROPERTIES
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          path = Path(os.environ["LOCAL_PROPERTIES"])
+          rows = []
+          if path.exists():
+              rows = [line for line in path.read_text(encoding="utf-8").splitlines() if not line.startswith("flutter.sdk=")]
+          rows.append("flutter.sdk=" + os.environ["FLUTTER_SDK"])
+          path.write_text("\n".join(rows) + "\n", encoding="utf-8")
+          PY
           echo "Using Flutter SDK: $FLUTTER_SDK"
-          grep '^flutter.sdk=' "$LOCAL_PROPERTIES"
+          echo "Generated Android local.properties:"
+          cat "$LOCAL_PROPERTIES"
           INIT_SCRIPT="$RUNNER_TEMP/ironcycle-billing.init.gradle"
           cat > "$INIT_SCRIPT" <<'EOF'
           gradle.projectsEvaluated {
@@ -215,6 +224,11 @@ jobs:
           EOF
           cd "$ANDROID_PROJECT"
           ./gradlew -I "$INIT_SCRIPT" app:dependencies --configuration releaseRuntimeClasspath > "$RUNNER_TEMP/release-dependencies.txt"
+          if ! grep -Fq "com.android.billingclient:billing:8.0.0" "$RUNNER_TEMP/release-dependencies.txt"; then
+            echo "::error::Billing Library 8.0.0 was not resolved."
+            tail -n 80 "$RUNNER_TEMP/release-dependencies.txt"
+            exit 1
+          fi
           grep -F "com.android.billingclient:billing:8.0.0" "$RUNNER_TEMP/release-dependencies.txt" | head -n 3
           ./gradlew -I "$INIT_SCRIPT" assembleRelease
           cd "$GITHUB_WORKSPACE"
