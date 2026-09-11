@@ -132,7 +132,7 @@ jobs:
             echo "::error::APP_VERSION must use major.minor.patch format. Found: $APP_VERSION"
             exit 1
           fi
-          ANDROID_VERSION_CODE=$((500000 + GITHUB_RUN_NUMBER))
+          ANDROID_VERSION_CODE=$((600000 + GITHUB_RUN_NUMBER))
           echo "APP_VERSION=$APP_VERSION" >> "$GITHUB_ENV"
           echo "ANDROID_VERSION_CODE=$ANDROID_VERSION_CODE" >> "$GITHUB_ENV"
           echo "Building IronCycle $APP_VERSION with Android version code $ANDROID_VERSION_CODE"
@@ -183,21 +183,29 @@ jobs:
             --android-signing-key-alias "$ANDROID_KEY_ALIAS" \
             --android-signing-key-password "$ANDROID_KEY_PASSWORD"
 
-      - name: Add Google Play Billing Library 8 with Groovy Gradle init script
+      - name: Add Google Play Billing Library 8 through Gradle
         shell: bash
         run: |
           set -euo pipefail
-          ANDROID_PROJECT="build/flutter/android"
+          ANDROID_PROJECT="$GITHUB_WORKSPACE/build/flutter/android"
           if [ ! -d "$ANDROID_PROJECT/app" ]; then
             echo "::error::Generated Flet Android project was not found."
             exit 1
           fi
+          FLUTTER_BIN="$(command -v flutter)"
+          FLUTTER_SDK="$(cd "$(dirname "$FLUTTER_BIN")/.." && pwd)"
+          LOCAL_PROPERTIES="$ANDROID_PROJECT/local.properties"
+          touch "$LOCAL_PROPERTIES"
+          sed -i '/^flutter\.sdk=/d' "$LOCAL_PROPERTIES"
+          printf 'flutter.sdk=%s\n' "$FLUTTER_SDK" >> "$LOCAL_PROPERTIES"
+          echo "Using Flutter SDK: $FLUTTER_SDK"
+          grep '^flutter.sdk=' "$LOCAL_PROPERTIES"
           INIT_SCRIPT="$RUNNER_TEMP/ironcycle-billing.init.gradle"
           cat > "$INIT_SCRIPT" <<'EOF'
           gradle.projectsEvaluated {
               def appProject = gradle.rootProject.findProject(':app')
               if (appProject == null) {
-                  throw new GradleException('Android :app project was not found.')
+                  throw new GradleException('Android :app project was not found after settings evaluation.')
               }
               appProject.dependencies.add(
                   'implementation',
@@ -207,15 +215,10 @@ jobs:
           EOF
           cd "$ANDROID_PROJECT"
           ./gradlew -I "$INIT_SCRIPT" app:dependencies --configuration releaseRuntimeClasspath > "$RUNNER_TEMP/release-dependencies.txt"
-          MATCH_COUNT="$(grep -Fc 'com.android.billingclient:billing:8.0.0' "$RUNNER_TEMP/release-dependencies.txt")"
-          if [ "$MATCH_COUNT" -lt 1 ]; then
-            echo "::error::Billing Library 8.0.0 was not resolved in releaseRuntimeClasspath."
-            exit 1
-          fi
           grep -F "com.android.billingclient:billing:8.0.0" "$RUNNER_TEMP/release-dependencies.txt" | head -n 3
           ./gradlew -I "$INIT_SCRIPT" assembleRelease
           cd "$GITHUB_WORKSPACE"
-          echo "Billing Library 8.0.0 resolved and APK rebuilt without editing build.gradle.kts."
+          echo "Billing Library 8.0.0 resolved and release APK rebuilt."
       - name: Locate APK and Android tools
         shell: bash
         run: |
