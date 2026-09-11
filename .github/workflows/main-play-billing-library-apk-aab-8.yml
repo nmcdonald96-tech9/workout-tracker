@@ -132,7 +132,7 @@ jobs:
             echo "::error::APP_VERSION must use major.minor.patch format. Found: $APP_VERSION"
             exit 1
           fi
-          ANDROID_VERSION_CODE=$((200000 + GITHUB_RUN_NUMBER))
+          ANDROID_VERSION_CODE=$((300000 + GITHUB_RUN_NUMBER))
           echo "APP_VERSION=$APP_VERSION" >> "$GITHUB_ENV"
           echo "ANDROID_VERSION_CODE=$ANDROID_VERSION_CODE" >> "$GITHUB_ENV"
           echo "Building IronCycle $APP_VERSION with Android version code $ANDROID_VERSION_CODE"
@@ -187,37 +187,30 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          FLUTTER_PROJECT="build/flutter"
-          if [ ! -d "$FLUTTER_PROJECT/android/app" ]; then
-            echo "::error::Generated Flet Flutter project was not found at $FLUTTER_PROJECT."
-            exit 1
-          fi
-          GROOVY_FILE="$FLUTTER_PROJECT/android/app/build.gradle"
-          KOTLIN_FILE="$FLUTTER_PROJECT/android/app/build.gradle.kts"
+          ANDROID_PROJECT="build/flutter/android"
+          KOTLIN_FILE="$ANDROID_PROJECT/app/build.gradle.kts"
+          GROOVY_FILE="$ANDROID_PROJECT/app/build.gradle"
           if [ -f "$KOTLIN_FILE" ]; then
-            echo '' >> "$KOTLIN_FILE"
-            echo '// IronCycle Google Play Billing runtime.' >> "$KOTLIN_FILE"
-            echo 'dependencies {' >> "$KOTLIN_FILE"
-            echo '    implementation("com.android.billingclient:billing:8.0.0")' >> "$KOTLIN_FILE"
-            echo '}' >> "$KOTLIN_FILE"
+            sed -i '/^[[:space:]]*dependencies[[:space:]]*{/a\    implementation("com.android.billingclient:billing:8.0.0")' "$KOTLIN_FILE"
             GRADLE_FILE="$KOTLIN_FILE"
           elif [ -f "$GROOVY_FILE" ]; then
-            echo '' >> "$GROOVY_FILE"
-            echo '// IronCycle Google Play Billing runtime.' >> "$GROOVY_FILE"
-            echo 'dependencies {' >> "$GROOVY_FILE"
-            echo '    implementation "com.android.billingclient:billing:8.0.0"' >> "$GROOVY_FILE"
-            echo '}' >> "$GROOVY_FILE"
+            sed -i '/^[[:space:]]*dependencies[[:space:]]*{/a\    implementation "com.android.billingclient:billing:8.0.0"' "$GROOVY_FILE"
             GRADLE_FILE="$GROOVY_FILE"
           else
             echo "::error::Generated Android app Gradle file was not found."
             exit 1
           fi
-          grep -F "com.android.billingclient:billing:8.0.0" "$GRADLE_FILE"
-          cd "$FLUTTER_PROJECT"
-          flutter pub get
-          flutter build apk --release --build-name "$APP_VERSION" --build-number "$ANDROID_VERSION_CODE"
+          MATCH_COUNT="$(grep -Fc 'com.android.billingclient:billing:8.0.0' "$GRADLE_FILE")"
+          if [ "$MATCH_COUNT" -ne 1 ]; then
+            echo "::error::Expected exactly one Billing Library dependency, found $MATCH_COUNT."
+            exit 1
+          fi
+          cd "$ANDROID_PROJECT"
+          ./gradlew app:dependencies --configuration releaseRuntimeClasspath > "$RUNNER_TEMP/release-dependencies.txt"
+          grep -F "com.android.billingclient:billing:8.0.0" "$RUNNER_TEMP/release-dependencies.txt"
+          ./gradlew assembleRelease
           cd "$GITHUB_WORKSPACE"
-          echo "Billing Library 8.0.0 added and release APK rebuilt."
+          echo "Billing Library 8.0.0 resolved and APK rebuilt without invoking Flutter migration."
       - name: Locate APK and Android tools
         shell: bash
         run: |
@@ -348,16 +341,14 @@ jobs:
           cp "$APK_PATH" "$VERIFIED_APK"
           echo "VERIFIED_APK=$VERIFIED_APK" >> "$GITHUB_ENV"
 
-      - name: Build permanently signed AAB with Billing Library 8
+      - name: Build signed AAB from patched Android project
         shell: bash
         run: |
           set -euo pipefail
-          cd build/flutter
-          ./android/gradlew -p android app:dependencies --configuration releaseRuntimeClasspath > "$RUNNER_TEMP/release-dependencies.txt"
-          grep -F "com.android.billingclient:billing:8.0.0" "$RUNNER_TEMP/release-dependencies.txt"
-          flutter build appbundle --release --build-name "$APP_VERSION" --build-number "$ANDROID_VERSION_CODE"
+          cd build/flutter/android
+          ./gradlew bundleRelease
           cd "$GITHUB_WORKSPACE"
-          echo "AAB built with resolved Google Play Billing Library 8.0.0 runtime."
+          echo "AAB built from the Billing Library 8.0.0 Android project."
       - name: Locate and verify AAB signature
         shell: bash
         run: |
