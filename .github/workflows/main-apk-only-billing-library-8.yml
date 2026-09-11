@@ -189,28 +189,35 @@ jobs:
           set -euo pipefail
           ANDROID_PROJECT="$GITHUB_WORKSPACE/build/flutter/android"
           APP_GRADLE="$ANDROID_PROJECT/app/build.gradle.kts"
-          test -f "$APP_GRADLE" || { echo "::error::Generated Gradle file missing."; exit 1; }
           export APP_GRADLE
           python - <<'PY'
           import os, re
           from pathlib import Path
-          path=Path(os.environ["APP_GRADLE"])
-          text=path.read_text(encoding="utf-8")
+          p=Path(os.environ["APP_GRADLE"]); t=p.read_text()
           pattern=r"\nkotlin\s*\{\s*compilerOptions\s*\{\s*jvmTarget\s*=\s*org\.jetbrains\.kotlin\.gradle\.dsl\.JvmTarget\.JVM_17\s*\}\s*\}\s*"
-          text,removed=re.subn(pattern,"\n",text,count=1,flags=re.MULTILINE)
-          if removed != 1: raise SystemExit("Expected Kotlin compiler block not found exactly once.")
-          old="dependencies {}"
-          new="dependencies {\n    implementation(\"com.android.billingclient:billing:8.0.0\")\n}"
-          if text.count(old) != 1: raise SystemExit("Expected one empty dependencies block.")
-          path.write_text(text.replace(old,new,1),encoding="utf-8")
+          t,n=re.subn(pattern,"\n",t,count=1,flags=re.MULTILINE)
+          if n != 1: raise SystemExit("Expected Kotlin compiler block not found exactly once.")
+          old="dependencies {}"; new="dependencies {\n    implementation(\"com.android.billingclient:billing:8.0.0\")\n}"
+          if t.count(old) != 1: raise SystemExit("Expected one empty dependencies block.")
+          p.write_text(t.replace(old,new,1))
           PY
+          SITE_PACKAGES="$GITHUB_WORKSPACE/build/site-packages"
+          if [ ! -d "$SITE_PACKAGES" ]; then
+            SITE_PACKAGES="$(find "$GITHUB_WORKSPACE/build" -type d -name site-packages -print -quit)"
+          fi
+          if [ -z "$SITE_PACKAGES" ] || [ ! -d "$SITE_PACKAGES" ]; then
+            echo "::error::Flet-generated site-packages directory was not found."
+            find "$GITHUB_WORKSPACE/build" -maxdepth 4 -type d -print | sort | tail -n 120
+            exit 1
+          fi
+          export SERIOUS_PYTHON_SITE_PACKAGES="$SITE_PACKAGES"
+          echo "SERIOUS_PYTHON_SITE_PACKAGES=$SERIOUS_PYTHON_SITE_PACKAGES"
           tail -n 24 "$APP_GRADLE"
           cd "$ANDROID_PROJECT"
           ./gradlew app:dependencies --configuration releaseRuntimeClasspath > "$RUNNER_TEMP/release-dependencies.txt"
           grep -F "com.android.billingclient:billing:8.0.0" "$RUNNER_TEMP/release-dependencies.txt" | head -n 3
           ./gradlew assembleRelease
           cd "$GITHUB_WORKSPACE"
-          echo "Billing Library 8.0.0 resolved and release APK rebuilt."
       - name: Locate APK and Android tools
         shell: bash
         run: |
