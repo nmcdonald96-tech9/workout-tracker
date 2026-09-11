@@ -104,7 +104,7 @@ jobs:
         run: |
           set -euo pipefail
           files=(main.py database.py)
-          for optional in constants.py exercise_catalog.py onedrive_service.py app/*.py components/*.py services/*.py; do
+          for optional in constants.py exercise_catalog.py onedrive_service.py; do
             if [ -f "$optional" ]; then
               files+=("$optional")
             fi
@@ -173,7 +173,7 @@ jobs:
             --bundle-id "$EXPECTED_PACKAGE_ID" \
             --build-version "$APP_VERSION" \
             --build-number "$ANDROID_VERSION_CODE" \
-            --android-permissions "com.android.vending.BILLING" \
+            --android-permissions "com.android.vending.BILLING=True" \
             --android-signing-key-store "$KEYSTORE_PATH" \
             --android-signing-key-store-password "$ANDROID_KEYSTORE_PASSWORD" \
             --android-signing-key-alias "$ANDROID_KEY_ALIAS" \
@@ -257,6 +257,12 @@ jobs:
           echo "ACTUAL_PACKAGE_ID=$ACTUAL_PACKAGE_ID" >> "$GITHUB_ENV"
           echo "ACTUAL_VERSION_NAME=$ACTUAL_VERSION_NAME" >> "$GITHUB_ENV"
           echo "ACTUAL_VERSION_CODE=$ACTUAL_VERSION_CODE" >> "$GITHUB_ENV"
+          APK_PERMISSIONS="$($APKANALYZER manifest permissions "$APK_PATH")"
+          printf '%s\n' "$APK_PERMISSIONS" | grep -F "com.android.vending.BILLING" >/dev/null || {
+            echo "::error::APK manifest is missing com.android.vending.BILLING."
+            exit 1
+          }
+          echo "Billing permission verified in APK manifest."
 
       - name: Calculate Microsoft Entra signature hash
         shell: bash
@@ -328,7 +334,7 @@ jobs:
             --bundle-id "$EXPECTED_PACKAGE_ID" \
             --build-version "$APP_VERSION" \
             --build-number "$ANDROID_VERSION_CODE" \
-            --android-permissions "com.android.vending.BILLING" \
+            --android-permissions "com.android.vending.BILLING=True" \
             --android-signing-key-store "$KEYSTORE_PATH" \
             --android-signing-key-store-password "$ANDROID_KEYSTORE_PASSWORD" \
             --android-signing-key-alias "$ANDROID_KEY_ALIAS" \
