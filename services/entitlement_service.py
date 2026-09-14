@@ -50,7 +50,9 @@ class EntitlementService:
     def _default(self):
         return {"format":self.FORMAT_VERSION,"trial_started_at":None,"trial_expires_at":None,
                 "last_seen_at":None,"lifetime_unlocked":False,"billing_provider":"not_connected",
-                "clock_rollback_detected":False,"purchase_verified_at":None,"purchase_source":None}
+                "clock_rollback_detected":False,"purchase_verified_at":None,"purchase_source":None,
+                "billing_last_attempt_at":None,"billing_last_success_at":None,"billing_last_result":"never",
+                "billing_last_error":None,"billing_events":[]}
     def _load(self):
         try:
             raw=json.loads(open(self.path,encoding="utf-8").read())
@@ -124,6 +126,20 @@ class EntitlementService:
             self._data["last_seen_at"]=self._iso(now)
             self._save()
             return self.snapshot()
+
+    def record_billing_check(self, result, successful=False, error=None):
+        """Persist privacy-safe billing health without changing ownership."""
+        with self._lock:
+            now=self._iso(self._now()); label=str(result or "unknown")[:80]
+            self._data["billing_last_attempt_at"]=now
+            self._data["billing_last_result"]=label
+            self._data["billing_last_error"]=(str(error)[:240] if error else None)
+            if successful:self._data["billing_last_success_at"]=now
+            events=list(self._data.get("billing_events") or [])[-19:]
+            events.append({"at":now,"event":label})
+            self._data["billing_events"]=events
+            self._save()
+
     def billing_diagnostics(self):
         with self._lock:
             return {
@@ -131,6 +147,11 @@ class EntitlementService:
                 "verified_at":self._data.get("purchase_verified_at"),
                 "source":self._data.get("purchase_source"),
                 "owned":bool(self._data.get("lifetime_unlocked")),
+                "last_attempt_at":self._data.get("billing_last_attempt_at"),
+                "last_success_at":self._data.get("billing_last_success_at"),
+                "last_result":self._data.get("billing_last_result","never"),
+                "last_error":self._data.get("billing_last_error"),
+                "recent_events":list(self._data.get("billing_events") or [])[-10:],
             }
     def purchase_unavailable_message(self):
         return "Lifetime Unlock purchasing is not connected in this test build. No charge was attempted."
