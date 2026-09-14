@@ -1,9 +1,14 @@
 from pathlib import Path
 from setuptools import setup
-root = Path(__file__).parent
-files = []
-for path in (root / "flutter" / "ironcycle_billing").rglob("*"):
+
+root = Path(__file__).resolve().parent
+flutter_root = root / "flutter" / "ironcycle_billing"
+data_files = []
+
+for path in sorted(flutter_root.rglob("*")):
     if path.is_file():
-        target = str(path.parent.relative_to(root))
-        files.append((target, [str(path)]))
-setup(data_files=files)
+        destination = path.parent.relative_to(root).as_posix()
+        source = path.relative_to(root).as_posix()
+        data_files.append((destination, [source]))
+
+setup(data_files=data_files)
