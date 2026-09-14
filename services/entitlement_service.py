@@ -50,7 +50,7 @@ class EntitlementService:
     def _default(self):
         return {"format":self.FORMAT_VERSION,"trial_started_at":None,"trial_expires_at":None,
                 "last_seen_at":None,"lifetime_unlocked":False,"billing_provider":"not_connected",
-                "clock_rollback_detected":False}
+                "clock_rollback_detected":False,"purchase_verified_at":None,"purchase_source":None}
     def _load(self):
         try:
             raw=json.loads(open(self.path,encoding="utf-8").read())
@@ -79,7 +79,7 @@ class EntitlementService:
         seconds=max(0,(expires-now).total_seconds()) if expires else 0
         days=int((seconds+86399)//86400) if seconds else 0
         return EntitlementSnapshot(state,self._data.get("trial_started_at"),self._data.get("trial_expires_at"),days,
-            state==TRIAL_EXPIRED,False,self.product_id,bool(self._data.get("clock_rollback_detected")),False,state)
+            state==TRIAL_EXPIRED,bool(self._data.get("billing_provider") == "google_play"),self.product_id,bool(self._data.get("clock_rollback_detected")),False,state)
     def start_trial_if_needed(self):
         with self._lock:
             if self._simulation:return self.snapshot()
@@ -111,6 +111,27 @@ class EntitlementService:
         if snap.state in (TRIAL_ACTIVE,LIFETIME_UNLOCKED):return True,snap
         if snap.state in (PURCHASE_CHECK_PENDING,TEMPORARILY_OFFLINE) and snap.real_state in (TRIAL_ACTIVE,LIFETIME_UNLOCKED):return True,snap
         return False,snap
+    def record_google_play_ownership(self, verification_source="google_play"):
+        """Persist an ownership result returned by the installed Google Play billing client."""
+        with self._lock:
+            if self._simulation:
+                raise RuntimeError("Cannot persist ownership while entitlement simulation is active.")
+            now=self._now()
+            self._data["lifetime_unlocked"]=True
+            self._data["billing_provider"]="google_play"
+            self._data["purchase_verified_at"]=self._iso(now)
+            self._data["purchase_source"]=str(verification_source or "google_play")
+            self._data["last_seen_at"]=self._iso(now)
+            self._save()
+            return self.snapshot()
+    def billing_diagnostics(self):
+        with self._lock:
+            return {
+                "provider":self._data.get("billing_provider","not_connected"),
+                "verified_at":self._data.get("purchase_verified_at"),
+                "source":self._data.get("purchase_source"),
+                "owned":bool(self._data.get("lifetime_unlocked")),
+            }
     def purchase_unavailable_message(self):
         return "Lifetime Unlock purchasing is not connected in this test build. No charge was attempted."
     def restore_unavailable_message(self):
