@@ -1255,6 +1255,8 @@ class WorkoutTrackerApp:
         self.billing_product = None
         self.billing_status = "not_checked"
         self.billing_error = None
+        self._billing_reconcile_running = False
+        self._billing_last_reconcile_monotonic = 0.0
         self.page.services.append(self.billing)
         self.onedrive=OneDriveService(os.path.join(cloud_dir,"msal_cache.json"),os.path.join(cloud_dir,"onedrive_pending.json"))
         self.cloud_state="not_connected";self.cloud_last_checked=None;self.cloud_manifest=None;self.cloud_manifest_error=None;self.cloud_stages=[];self._cloud_restore_running=False;self._cloud_signin_running=False;self.auto_cloud_backup=self.get_bool_setting('automatic_onedrive_backup',False);self.cloud_testing_mode=self.get_bool_setting('cloud_testing_mode',False);self._auto_backup_timer=None;self._auto_backup_running=False
@@ -1263,8 +1265,9 @@ class WorkoutTrackerApp:
         self.build_ui_shell()
         self.rebuild_navigation_headers()
         self.rebuild_entire_display()
+        try:self.page.run_task(self.reconcile_billing_ownership, "startup")
+        except Exception:pass
 
-    
     def safe_open(self, control):
         # Sweep the overlay for old zombie dialogs and purge them to prevent freezing
         if isinstance(control, ft.AlertDialog):
@@ -1526,6 +1529,31 @@ class WorkoutTrackerApp:
             self.main_canvas_host
         )
 
+    async def reconcile_billing_ownership(self, reason="background", force=False):
+        """Quiet ownership recovery. Transient failures never revoke access."""
+        now=time.monotonic()
+        if self._billing_reconcile_running:return
+        if not force and now-self._billing_last_reconcile_monotonic < 60:return
+        self._billing_reconcile_running=True;self._billing_last_reconcile_monotonic=now
+        try:
+            self.billing_status="reconciling"
+            cached=await self.billing.take_event()
+            result=cached if cached.get("owned") else await self.billing.reconcile(LIFETIME_PRODUCT_ID)
+            status=result.get("status","unknown")
+            if result.get("owned"):
+                self.entitlement.record_google_play_ownership(result.get("verification_source","google_play"))
+                self.entitlement.record_billing_check(status,successful=True)
+                self.billing_status="owned";self.billing_error=None
+                self.rebuild_entire_display()
+            else:
+                inconclusive=bool(result.get("inconclusive")) or status in ("billing_unavailable","error","timeout","busy","inconclusive","stream_error","completion_error","pending")
+                self.entitlement.record_billing_check(status,successful=not inconclusive,error=result.get("message"))
+                self.billing_status=status;self.billing_error=result.get("message")
+        except Exception as err:
+            self.billing_status="error";self.billing_error=str(err)
+            self.entitlement.record_billing_check("exception",error=err)
+        finally:self._billing_reconcile_running=False
+
     def entitlement_snapshot(self):
         return self.entitlement.snapshot()
     def require_premium(self, action_label="this action"):
@@ -1581,27 +1609,29 @@ class WorkoutTrackerApp:
             try:
                 result=await self.billing.purchase(LIFETIME_PRODUCT_ID)
                 state=result.get("status")
+                self.entitlement.record_billing_check(state, successful=bool(result.get("owned")), error=result.get("message"))
                 if result.get("owned") and state in ("purchased","restored"):
                     self.entitlement.record_google_play_ownership(result.get("verification_source","google_play"))
                     self.billing_status=state;self.safe_close(dialog);self.show_snackbar("IronCycle Lifetime Unlock is active.","green300");self.rebuild_entire_display();return
-                messages={"pending":"Purchase is pending in Google Play.","canceled":"Purchase canceled. No charge was completed.","timeout":"Google Play did not return a final result yet.","not_launched":"Google Play could not open the purchase screen.","busy":"Another billing operation is already active."}
+                messages={"pending":"Purchase is pending in Google Play. IronCycle will check again automatically.","canceled":"Purchase canceled. No charge was completed.","timeout":"Google Play did not return a final result yet.","not_launched":"Google Play could not open the purchase screen.","busy":"Another billing operation is already active."}
                 self.show_snackbar(messages.get(state,result.get("message") or "Purchase was not completed."),"amber300")
             except Exception as err:self.billing_status="error";self.billing_error=str(err);self.show_snackbar(f"Purchase failed: {err}","red300")
             finally:
-                purchase_button.disabled=False;restore_button.disabled=False
+                purchase_button.disabled=(self.entitlement_snapshot().state==LIFETIME_UNLOCKED);restore_button.disabled=False
                 try:purchase_button.update();restore_button.update()
                 except Exception:pass
         async def restore(ev=None):
             purchase_button.disabled=True;restore_button.disabled=True;purchase_button.update();restore_button.update()
             try:
                 result=await self.billing.restore(LIFETIME_PRODUCT_ID)
+                self.entitlement.record_billing_check(result.get("status"), successful=bool(result.get("owned")), error=result.get("message"))
                 if result.get("owned"):
                     self.entitlement.record_google_play_ownership(result.get("verification_source","google_play"))
                     self.billing_status="restored";self.safe_close(dialog);self.show_snackbar("Lifetime Unlock restored from Google Play.","green300");self.rebuild_entire_display();return
                 self.show_snackbar("No Lifetime Unlock purchase was found for this Play account.","amber300")
             except Exception as err:self.billing_status="error";self.billing_error=str(err);self.show_snackbar(f"Restore failed: {err}","red300")
             finally:
-                purchase_button.disabled=False;restore_button.disabled=False
+                purchase_button.disabled=(self.entitlement_snapshot().state==LIFETIME_UNLOCKED);restore_button.disabled=False
                 try:purchase_button.update();restore_button.update()
                 except Exception:pass
         purchase_button.on_click=purchase;restore_button.on_click=restore
@@ -2592,6 +2622,11 @@ class WorkoutTrackerApp:
             f"Billing runtime status: {self.billing_status}",
             f"Billing ownership verified: {'Yes' if self.entitlement.billing_diagnostics().get('owned') else 'No'}",
             f"Billing verification time: {self.entitlement.billing_diagnostics().get('verified_at') or 'Never'}",
+            f"Billing last attempt: {self.entitlement.billing_diagnostics().get('last_attempt_at') or 'Never'}",
+            f"Billing last success: {self.entitlement.billing_diagnostics().get('last_success_at') or 'Never'}",
+            f"Billing last result: {self.entitlement.billing_diagnostics().get('last_result') or 'never'}",
+            f"Billing transient error: {self.entitlement.billing_diagnostics().get('last_error') or 'None'}",
+            "Billing tokens exposed to app diagnostics: No",
             f"Lifetime product: {LIFETIME_PRODUCT_ID}",
             "Entitlement storage: separate from workout backups",
             f"Last workout rebuild: {self.last_rebuild_ms if self.last_rebuild_ms is not None else 'not measured'} ms",
@@ -3074,7 +3109,10 @@ class WorkoutTrackerApp:
         except Exception as err:self.show_snackbar(f"Could not open browser: {err}. Use {target}","amber300")
     def on_app_lifecycle_state_change(self,e):
         state=str(getattr(getattr(e,'state',None),'name',getattr(e,'state',''))).upper()
-        if state in ('SHOW','RESTART','RESUME') and (self.onedrive.pending_flow() or self.onedrive.has_account()) and not self._cloud_signin_running:self.finish_onedrive_signin()
+        if state in ('SHOW','RESTART','RESUME'):
+            if (self.onedrive.pending_flow() or self.onedrive.has_account()) and not self._cloud_signin_running:self.finish_onedrive_signin()
+            try:self.page.run_task(self.reconcile_billing_ownership, "resume")
+            except Exception:pass
     def generate_new_onedrive_code(self,e=None):
         self.onedrive.clear_pending()
         try:self.safe_close(self.onedrive_connect_dialog)
