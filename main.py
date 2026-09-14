@@ -1,4 +1,5 @@
 import flet as ft
+from ironcycle_billing import IronCycleBilling
 import os
 import sqlite3
 import traceback
@@ -1250,6 +1251,11 @@ class WorkoutTrackerApp:
         self.backup_service = BackupService(MAX_BACKUP_TEXT_BYTES, MAX_DECOMPRESSED_DB_BYTES)
         cloud_dir=os.path.dirname(os.path.abspath(DB_PATH))
         self.entitlement = EntitlementService(os.path.join(cloud_dir, "ironcycle_entitlement.json"), TRIAL_DAYS, LIFETIME_PRODUCT_ID)
+        self.billing = IronCycleBilling()
+        self.billing_product = None
+        self.billing_status = "not_checked"
+        self.billing_error = None
+        self.page.services.append(self.billing)
         self.onedrive=OneDriveService(os.path.join(cloud_dir,"msal_cache.json"),os.path.join(cloud_dir,"onedrive_pending.json"))
         self.cloud_state="not_connected";self.cloud_last_checked=None;self.cloud_manifest=None;self.cloud_manifest_error=None;self.cloud_stages=[];self._cloud_restore_running=False;self._cloud_signin_running=False;self.auto_cloud_backup=self.get_bool_setting('automatic_onedrive_backup',False);self.cloud_testing_mode=self.get_bool_setting('cloud_testing_mode',False);self._auto_backup_timer=None;self._auto_backup_running=False
         try:self.page.on_app_lifecycle_state_change=self.on_app_lifecycle_state_change
@@ -1537,23 +1543,77 @@ class WorkoutTrackerApp:
         elif snap.state == LIFETIME_UNLOCKED:
             status="Lifetime Unlock active."
         elif snap.state == PURCHASE_CHECK_PENDING:
-            status="Purchase verification is pending. Previously verified access remains available when possible."
+            status="Purchase verification is pending."
         elif snap.state == TEMPORARILY_OFFLINE:
-            status="Google Play is temporarily unavailable. Previously verified access remains available when possible."
+            status="Google Play is temporarily unavailable. Previously verified access remains available."
         else:
             status="Your trial has ended. Existing history and backup access remain available."
-        if snap.simulated:
-            status = "TEST SIMULATION • " + status
         if action_label and snap.state == TRIAL_EXPIRED:
             status += f" Unlock IronCycle to continue {action_label}."
-        def purchase(ev=None): self.show_snackbar(self.entitlement.purchase_unavailable_message(),"amber300")
-        def restore(ev=None): self.show_snackbar(self.entitlement.restore_unavailable_message(),"amber300")
+        price_text=ft.Text("Checking Google Play...",size=12,color="cyan200",weight="bold")
+        detail_text=ft.Text(status,size=12,color="cyan200")
+        purchase_button=ft.ElevatedButton("Purchase Lifetime Unlock",disabled=True)
+        restore_button=ft.TextButton("Restore Purchase")
+        async def load_product():
+            try:
+                self.billing_status="checking"
+                available=await self.billing.is_available()
+                if not available:
+                    self.billing_status="unavailable";price_text.value="Google Play Billing is unavailable on this installation."
+                else:
+                    result=await self.billing.query_product(LIFETIME_PRODUCT_ID)
+                    self.billing_product=result
+                    if result.get("available"):
+                        self.billing_status="ready";self.billing_error=None
+                        price_text.value=f"Lifetime Unlock • {result.get('price','Price unavailable')}"
+                        purchase_button.disabled=(self.entitlement_snapshot().state==LIFETIME_UNLOCKED)
+                    else:
+                        self.billing_status=result.get("status","product_unavailable")
+                        self.billing_error=result.get("message") or ", ".join(result.get("not_found_ids",[]))
+                        price_text.value="Lifetime Unlock is not available for this Play account yet."
+                price_text.update();purchase_button.update()
+            except Exception as err:
+                self.billing_status="error";self.billing_error=str(err);price_text.value="Could not contact Google Play."
+                try:price_text.update()
+                except Exception:pass
+        async def purchase(ev=None):
+            purchase_button.disabled=True;restore_button.disabled=True;purchase_button.update();restore_button.update()
+            try:
+                result=await self.billing.purchase(LIFETIME_PRODUCT_ID)
+                state=result.get("status")
+                if result.get("owned") and state in ("purchased","restored"):
+                    self.entitlement.record_google_play_ownership(result.get("verification_source","google_play"))
+                    self.billing_status=state;self.safe_close(dialog);self.show_snackbar("IronCycle Lifetime Unlock is active.","green300");self.rebuild_entire_display();return
+                messages={"pending":"Purchase is pending in Google Play.","canceled":"Purchase canceled. No charge was completed.","timeout":"Google Play did not return a final result yet.","not_launched":"Google Play could not open the purchase screen.","busy":"Another billing operation is already active."}
+                self.show_snackbar(messages.get(state,result.get("message") or "Purchase was not completed."),"amber300")
+            except Exception as err:self.billing_status="error";self.billing_error=str(err);self.show_snackbar(f"Purchase failed: {err}","red300")
+            finally:
+                purchase_button.disabled=False;restore_button.disabled=False
+                try:purchase_button.update();restore_button.update()
+                except Exception:pass
+        async def restore(ev=None):
+            purchase_button.disabled=True;restore_button.disabled=True;purchase_button.update();restore_button.update()
+            try:
+                result=await self.billing.restore(LIFETIME_PRODUCT_ID)
+                if result.get("owned"):
+                    self.entitlement.record_google_play_ownership(result.get("verification_source","google_play"))
+                    self.billing_status="restored";self.safe_close(dialog);self.show_snackbar("Lifetime Unlock restored from Google Play.","green300");self.rebuild_entire_display();return
+                self.show_snackbar("No Lifetime Unlock purchase was found for this Play account.","amber300")
+            except Exception as err:self.billing_status="error";self.billing_error=str(err);self.show_snackbar(f"Restore failed: {err}","red300")
+            finally:
+                purchase_button.disabled=False;restore_button.disabled=False
+                try:purchase_button.update();restore_button.update()
+                except Exception:pass
+        purchase_button.on_click=purchase;restore_button.on_click=restore
         dialog=ft.AlertDialog(title=ft.Text("IronCycle Lifetime Unlock",weight="bold"),content=ft.Column([
-            ft.Text(status,size=12,color="cyan200"),
+            detail_text,price_text,
             ft.Text("One payment. No subscription. No recurring charges.",size=12,weight="bold"),
             ft.Text("Workout history, completed sessions, manual backups, export, and restore remain available after trial expiration.",size=10,color="white70"),
-            ft.Text("Purchasing is intentionally disabled until the verified Google Play Billing bridge is added.",size=10,color="amber300"),
-        ],tight=True,spacing=8),actions=[ft.TextButton("Restore Purchase",on_click=restore),ft.ElevatedButton("Purchase Lifetime Unlock",on_click=purchase,disabled=True),ft.TextButton("Close",on_click=lambda ev:self.safe_close(dialog))]);self.safe_open(dialog)
+            ft.Text("Purchases are handled by Google Play. Use Restore Purchase after reinstalling or changing devices.",size=10,color="white54"),
+        ],tight=True,spacing=8),actions=[restore_button,purchase_button,ft.TextButton("Close",on_click=lambda ev:self.safe_close(dialog))])
+        self.safe_open(dialog)
+        try:self.page.run_task(load_product)
+        except Exception:self.billing_status="error";price_text.value="Google Play check could not start.";price_text.update()
     def open_entitlement_test_panel(self, e=None):
         if not ENTITLEMENT_TEST_CONTROLS:
             self.show_snackbar("Entitlement test controls are disabled in this build.", "amber300")
@@ -2528,7 +2588,10 @@ class WorkoutTrackerApp:
             f"Real stored entitlement: {self.entitlement_snapshot().real_state}",
             f"Trial days remaining: {self.entitlement_snapshot().days_remaining}",
             f"Limited mode: {'Yes' if self.entitlement_snapshot().limited_mode else 'No'}",
-            f"Billing provider: not connected (foundation build)",
+            f"Billing provider: {self.entitlement.billing_diagnostics().get('provider')}",
+            f"Billing runtime status: {self.billing_status}",
+            f"Billing ownership verified: {'Yes' if self.entitlement.billing_diagnostics().get('owned') else 'No'}",
+            f"Billing verification time: {self.entitlement.billing_diagnostics().get('verified_at') or 'Never'}",
             f"Lifetime product: {LIFETIME_PRODUCT_ID}",
             "Entitlement storage: separate from workout backups",
             f"Last workout rebuild: {self.last_rebuild_ms if self.last_rebuild_ms is not None else 'not measured'} ms",
