@@ -40,6 +40,34 @@ jobs:
             python -m pip install "flet==0.86.5" "msal>=1.31,<2"
           fi
 
+      - name: Build local billing extension wheel
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/dist"
+          python -m pip wheel             "$GITHUB_WORKSPACE/packages/ironcycle-billing"             --no-deps             --wheel-dir "$GITHUB_WORKSPACE/dist"
+          BILLING_WHEEL="$(find "$GITHUB_WORKSPACE/dist" -maxdepth 1 -type f -name 'ironcycle_billing-*.whl' -print -quit)"
+          if [ -z "$BILLING_WHEEL" ] || [ ! -f "$BILLING_WHEEL" ]; then
+            echo "::error::IronCycle billing extension wheel was not created."
+            exit 1
+          fi
+          export BILLING_WHEEL
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          requirements = Path(os.environ["GITHUB_WORKSPACE"]) / "requirements.txt"
+          wheel_uri = Path(os.environ["BILLING_WHEEL"]).resolve().as_uri()
+          rows = [
+              row for row in requirements.read_text(encoding="utf-8").splitlines()
+              if row.strip() not in {"./packages/ironcycle-billing", "packages/ironcycle-billing"}
+          ]
+          rows.append(f"ironcycle-billing @ {wheel_uri}")
+          requirements.write_text("\n".join(rows) + "\n", encoding="utf-8")
+          PY
+          echo "Prepared mobile-safe billing requirement:"
+          grep '^ironcycle-billing @ file:' requirements.txt
+          unzip -l "$BILLING_WHEEL" | grep 'flutter/ironcycle_billing/pubspec.yaml'
+
       - name: Verify required repository secrets
         shell: bash
         env:
