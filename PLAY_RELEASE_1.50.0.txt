@@ -1,0 +1,16 @@
+Release name:
+IronCycle 1.50.0 - Closed Testing Candidate
+
+Release notes:
+IronCycle 1.50.0
+
+• Improved Lifetime Unlock purchase and restoration reliability
+• Added automatic ownership recovery at startup and resume
+• Preserved verified Lifetime access during temporary network outages
+• Improved offline startup and app-resume stability
+• Prevented unnecessary OneDrive sign-in requests while offline
+• Added a Closed Testing Guide with suggested test scenarios
+• Added privacy-safe diagnostics and issue-reporting guidance
+• Preserved workout history and backup access independently of purchase status
+
+This release is intended for Closed testing of IronCycle’s workout, backup, trial, offline, and Lifetime Unlock workflows.

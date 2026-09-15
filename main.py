@@ -1719,6 +1719,7 @@ class WorkoutTrackerApp:
                     ft.ElevatedButton("🧪 Developer Entitlement Test", on_click=lambda ev:[self.safe_close(self.actions_menu_dialog),self.open_entitlement_test_panel()], width=float('inf'), style=btn_style, visible=ENTITLEMENT_TEST_CONTROLS),
                     ft.ElevatedButton("👤 Profile Settings", on_click=self.open_settings_dialog, width=float('inf'), style=btn_style),
                     ft.ElevatedButton("📚 Exercise Library", on_click=self.menu_manage_dict, width=float('inf'), style=btn_style),
+                    ft.ElevatedButton("🧪 Closed Testing Guide", on_click=lambda ev:[self.safe_close(self.actions_menu_dialog),self.open_closed_testing_guide()], width=float('inf'), style=btn_style),
                     ft.ElevatedButton("🛠 Diagnostics & Support", on_click=self.open_diagnostics_dialog, width=float('inf'), style=btn_style),
                     ft.ElevatedButton("📊 Export History to CSV", on_click=self.export_to_csv, width=float('inf'), style=btn_style),
 
@@ -2578,6 +2579,39 @@ class WorkoutTrackerApp:
     def open_privacy_diagnostics(self,e=None):
         self.close_actions_menu();d=privacy_diagnostics();rows=recent_audit(10);text=f"IronCycle {d['version']}\nSchema {d['schema']}\nIntegrity: {d['integrity']}\n"+"\n".join(f"{k}: {v}" for k,v in d['counts'].items())+"\n\nRecent events:\n"+"\n".join(f"{ts} | {act}" for ts,act,detail in rows);dialog=ft.AlertDialog(title=ft.Text("Privacy-Safe Diagnostics",weight="bold"),content=ft.Container(width=380,height=430,content=ft.Text(text,selectable=True,font_family="monospace",size=10)),actions=[ft.TextButton("Close",on_click=lambda ev:self.safe_close(dialog))]);self.safe_open(dialog)
 
+    def open_closed_testing_guide(self, e=None):
+        """Privacy-safe guidance for Closed Alpha participants."""
+        suggested = "\n".join([
+            "• Start the trial with a premium action",
+            "• Log, revise, reopen, and complete workout sets",
+            "• Exercise superset flow and workout navigation",
+            "• Create and repeat a mesocycle",
+            "• Create and restore a backup",
+            "• Launch online, offline, and after a device restart",
+            "• Try Standard, Focus, and Detailed workout views",
+        ])
+        checks = ft.Column([
+            ft.Text("Thank you for testing IronCycle 1.50.0.", size=13, weight="bold", color="cyan300"),
+            ft.Text("Please use IronCycle normally and report anything that crashes, blocks a workout, loses data, or is difficult to understand.", size=11),
+            ft.Text("SUGGESTED TESTS", size=10, weight="bold", color="cyan300"),
+            ft.Text(suggested, size=10),
+            ft.Text("PURCHASE TESTING", size=10, weight="bold", color="cyan300"),
+            ft.Text("A purchase is not required to participate. Only designated license testers should use Google Play test payment methods.", size=10, color="white70"),
+            ft.Text("DATA & SUPPORT", size=10, weight="bold", color="cyan300"),
+            ft.Text("Workout data stays on this device unless a backup method is chosen. Diagnostics excludes purchase tokens, payment details, and account addresses.", size=10, color="white70"),
+            ft.Text("When reporting a problem, include the action being attempted and the privacy-safe Diagnostics text.", size=10, color="amber200"),
+        ], tight=True, spacing=7, scroll="auto")
+        dialog=ft.AlertDialog(
+            title=ft.Text("IronCycle Closed Testing Guide", weight="bold"),
+            content=ft.Container(width=380, height=470, content=checks),
+            actions=[
+                ft.TextButton("Open Diagnostics", on_click=lambda ev:[self.safe_close(dialog),self.open_diagnostics_dialog()]),
+                ft.TextButton("Close", on_click=lambda ev:self.safe_close(dialog)),
+            ],
+            inset_padding=12,
+        )
+        self.safe_open(dialog)
+
     def open_diagnostics_dialog(self, e=None):
         self.close_actions_menu()
         integrity = "Unavailable"
@@ -2627,6 +2661,8 @@ class WorkoutTrackerApp:
             f"Billing last result: {self.entitlement.billing_diagnostics().get('last_result') or 'never'}",
             f"Billing transient error: {self.entitlement.billing_diagnostics().get('last_error') or 'None'}",
             "Billing tokens exposed to app diagnostics: No",
+            "Release channel intent: Closed Alpha candidate",
+            "Closed-test support guide: enabled",
             f"Lifetime product: {LIFETIME_PRODUCT_ID}",
             "Entitlement storage: separate from workout backups",
             f"Last workout rebuild: {self.last_rebuild_ms if self.last_rebuild_ms is not None else 'not measured'} ms",
@@ -3110,7 +3146,11 @@ class WorkoutTrackerApp:
     def on_app_lifecycle_state_change(self,e):
         state=str(getattr(getattr(e,'state',None),'name',getattr(e,'state',''))).upper()
         if state in ('SHOW','RESTART','RESUME'):
-            if (self.onedrive.pending_flow() or self.onedrive.has_account()) and not self._cloud_signin_running:self.finish_onedrive_signin()
+            # Resume only an actual pending device-code flow. A cached OneDrive
+            # account must not trigger a Microsoft token/network request whenever
+            # the app resumes, especially while Android is offline or in airplane mode.
+            if self.onedrive.pending_flow() and not self._cloud_signin_running:
+                self.finish_onedrive_signin()
             try:self.page.run_task(self.reconcile_billing_ownership, "resume")
             except Exception:pass
     def generate_new_onedrive_code(self,e=None):
