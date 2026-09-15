@@ -1982,7 +1982,7 @@ class WorkoutTrackerApp:
             self.safe_close(dialog);self.show_snackbar('Profile saved. Opening Guided Architect.','green300');self.open_guided_architect(preselected_template=template.value)
         def later(ev):
             self.save_setting('onboarding_seen','1');self.safe_close(dialog)
-        content=ft.Column([ft.Text('Welcome to IronCycle',size=18,weight='bold',color='cyan200'),ft.Text('Create a profile, identify available equipment, and choose a starting plan. IronCycle will use experience to select a safer progression profile.',size=10),name,ft.Row([age,weight]),experience,goal,ft.Text('AVAILABLE EQUIPMENT',size=10,weight='bold',color='cyan300'),equipment,template,summary,ft.Text('Next, Guided Architect will let you review and customize the mesocycle before anything is activated.',size=9,color='white54')],scroll='auto',spacing=7)
+        content=ft.Column([ft.Text('Welcome to IronCycle',size=18,weight='bold',color='cyan200'),ft.Text('Create a profile, identify available equipment, and choose a starting plan. IronCycle will use experience to select a safer progression profile.',size=10),name,ft.Column([age,weight],spacing=6,tight=True),experience,goal,ft.Text('AVAILABLE EQUIPMENT',size=10,weight='bold',color='cyan300'),equipment,template,summary,ft.Text('Next, Guided Architect will let you review and customize the mesocycle before anything is activated.',size=9,color='white54')],scroll='auto',spacing=7)
         dialog=ft.AlertDialog(title=ft.Text('First Setup'),content=ft.Container(width=430,height=max(430,min(650,float(getattr(self.page,'height',700) or 700)-110)),content=content),actions=[ft.TextButton('Not Now',on_click=later),ft.ElevatedButton('Continue to Architect',on_click=continue_to_architect)],inset_padding=10)
         self.safe_open(dialog)
 
@@ -3194,7 +3194,7 @@ class WorkoutTrackerApp:
         status=ft.Text(size=9,color='cyan200')
         editor_rows=[]
         def build_editor(ev=None):
-            editor_rows.clear();plan_editor.controls.clear();chosen=[x.label for x in days.controls if x.value];plan=STARTER_PLAN_BLUEPRINTS.get(template.value,[])
+            editor_rows.clear();plan_editor.controls.clear();chosen=[x.label for x in days.controls if x.value];base_plan=STARTER_PLAN_BLUEPRINTS.get(template.value,[]);plan=(base_plan*len(chosen) if len(base_plan)==1 and chosen else base_plan)
             for session_index,session in enumerate(plan):
                 assigned_day=chosen[session_index] if session_index<len(chosen) else f'Session {session_index+1}'
                 plan_editor.controls.append(ft.Text(assigned_day.upper(),size=10,weight='bold',color='cyan300'))
@@ -3206,7 +3206,7 @@ class WorkoutTrackerApp:
                     dd=ft.Dropdown(label=reference,value=value,options=[ft.dropdown.Option(x['name'],('★ ' if x['favorite'] else '')+f"{x['name']} • {x['equipment']}") for x in candidates])
                     editor_rows.append((session_index,reference,dd));plan_editor.controls.append(dd)
                 plan_editor.controls.append(ft.Divider(height=5))
-            status.value=f"Equipment profile: {', '.join(equipment_profile) or 'Bodyweight only'} • Favorites are marked ★ and ranked first within matching movements."
+            status.value=f"Equipment profile: {', '.join(equipment_profile) or 'Bodyweight only'} • Favorites are marked ★. Scroll through every selected day, review each exercise, then press Create Meso."
             if ev:
                 try:plan_editor.update();status.update()
                 except:pass
@@ -3214,7 +3214,7 @@ class WorkoutTrackerApp:
         for x in days.controls:x.on_change=refresh_days
         template.on_select=build_editor;build_editor()
         def create(ev):
-            chosen=[x.label for x in days.controls if x.value];plan=STARTER_PLAN_BLUEPRINTS.get(template.value,[])
+            chosen=[x.label for x in days.controls if x.value];base_plan=STARTER_PLAN_BLUEPRINTS.get(template.value,[]);plan=(base_plan*len(chosen) if len(base_plan)==1 and chosen else base_plan)
             if len(chosen)<len(plan):self.show_snackbar(f'Select at least {len(plan)} training days for this plan.','amber300');return
             reviewed=[[] for _ in plan]
             for idx,reference,dd in editor_rows:
@@ -3224,11 +3224,12 @@ class WorkoutTrackerApp:
             try:
                 label=next((x['name'] for x in choices if x['id']==template.value),'Starter Plan')
                 meso=create_reviewed_starter_mesocycle(template.value,chosen,reviewed,int(length.value),label)
-                with get_db() as conn:count=conn.execute("SELECT COUNT(*) FROM workout_sessions WHERE meso_number=?",(meso,)).fetchone()[0]
+                with get_db() as conn:
+                    cur=conn.cursor();cur.execute("SELECT COUNT(*) FROM workout_sessions WHERE meso_number=?",(meso,));count=cur.fetchone()[0]
                 if count<=0:raise ValueError('No scheduled rows were created.')
-                self.safe_close(dialog);self.current_meso=meso;self.current_week='1';self.current_day=chosen[0];self.set_active_position();self.build_ui_shell();self.rebuild_navigation_headers();self.rebuild_entire_display();self.show_snackbar(f'{label} created with {count} scheduled exercise entries.','green300')
+                self.safe_close(dialog);self.current_meso=meso;self.current_week='1';self.current_day=chosen[0];self.set_active_position();self.build_ui_shell();self.rebuild_navigation_headers();self.rebuild_entire_display();self.show_snackbar(f'{label} created and activated with {count} scheduled exercise entries.','green300')
             except Exception as err:self.show_snackbar(f'Could not create mesocycle: {err}','red300')
-        content=ft.Column([ft.Text('Review every exercise before creating the mesocycle. Choices are filtered by your equipment and favorites are ranked first.',size=10),template,length,ft.Text('TRAINING DAYS',weight='bold',size=10,color='cyan300'),days,ft.Divider(height=7),status,ft.Text('EXERCISE REVIEW',weight='bold',size=10,color='cyan300'),plan_editor],scroll='auto',spacing=6)
+        content=ft.ListView(controls=[ft.Text('Review every exercise before creating the mesocycle. Choices are filtered by your equipment and favorites are ranked first.',size=10),template,length,ft.Text('TRAINING DAYS',weight='bold',size=10,color='cyan300'),days,ft.Divider(height=7),status,ft.Text('EXERCISE REVIEW',weight='bold',size=10,color='cyan300'),plan_editor],spacing=6,padding=2,auto_scroll=False)
         dialog=ft.AlertDialog(title=ft.Text('Guided Architect'),content=ft.Container(width=450,height=max(450,min(680,float(getattr(self.page,'height',720) or 720)-100)),content=content),actions=[ft.TextButton('Advanced Architect',on_click=lambda ev:[self.safe_close(dialog),self.open_generator_view()]),ft.ElevatedButton('Create Meso',on_click=create)],inset_padding=7,content_padding=10,actions_padding=8)
         self.safe_open(dialog)
 

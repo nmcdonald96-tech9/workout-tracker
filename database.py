@@ -1429,7 +1429,7 @@ def create_starter_mesocycle(template_id,selected_days,length_weeks=4,label=None
  days=list(selected_days or PLAN_DAYS[:len(plan)])
  if len(days)<len(plan):raise ValueError('Select enough training days for this plan.')
  with get_db() as c:
-  c.execute('BEGIN IMMEDIATE');meso=get_next_meso_number(c);c.execute('INSERT INTO meso_names(meso_number,meso_label) VALUES(?,?)',(meso,label or f'Starter Meso {meso}'));bp={}
+  c.execute('BEGIN IMMEDIATE');meso=get_next_meso_number(c.cursor());c.execute('INSERT INTO meso_names(meso_number,meso_label) VALUES(?,?)',(meso,label or f'Starter Meso {meso}'));bp={}
   for day,exercises in zip(days,plan):
    bp[day]=[]
    for order,name in enumerate(exercises,1):
@@ -1474,7 +1474,7 @@ def create_reviewed_starter_mesocycle(template_id,selected_days,reviewed_session
  days=list(selected_days or [])
  if len(days)<len(reviewed_sessions):raise ValueError('Select enough training days for every template session.')
  with get_db() as c:
-  c.execute('BEGIN IMMEDIATE');meso=get_next_meso_number(c);c.execute('INSERT INTO meso_names(meso_number,meso_label) VALUES(?,?)',(meso,label or f'Starter Meso {meso}'));blueprint={}
+  c.execute('BEGIN IMMEDIATE');meso=get_next_meso_number(c.cursor());c.execute('INSERT INTO meso_names(meso_number,meso_label) VALUES(?,?)',(meso,label or f'Starter Meso {meso}'));blueprint={}
   for day,exercises in zip(days,reviewed_sessions):
    clean=[]
    for name in exercises:
