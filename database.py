@@ -1414,6 +1414,15 @@ STARTER_PLAN_BLUEPRINTS={
  'push_pull_legs':[['Dumbbell Press (Flat)','Dumbbell Press (High Incline)','Rope Triceps Pushdown'],['Seated Cable Row','Neutral-Grip Pulldown','Hammer Curl'],['Goblet Squat','Romanian Deadlift','Bulgarian Split Squat','Standing Calf Raise']],
  'home_dumbbell':[['Goblet Squat','Dumbbell Press (Flat)','Dumbbell Row (2-Arm)','Dumbbell Stiff Legged Deadlift','Front Plank']]
 }
+def _ensure_starter_exercise(c,name):
+ row=c.execute("SELECT category,COALESCE(movement_type,'Isolation'),COALESCE(equipment,'Other') FROM exercise_dict WHERE name=?",(name,)).fetchone()
+ if row:return row
+ fallbacks={'Front Plank':('Abs','Isolation','Bodyweight'),'Pallof Press':('Abs','Isolation','Cable')}
+ info=fallbacks.get(name)
+ if not info:return None
+ c.execute("INSERT OR IGNORE INTO exercise_dict(name,category,movement_pattern,display_name,movement_family,movement_type,equipment,angle,is_custom) VALUES(?,?,?,?,?,?,?,?,0)",(name,info[0],'Trunk / Core',name,'trunk_flexion',info[1],info[2],'Not specified'))
+ return info
+
 def create_starter_mesocycle(template_id,selected_days,length_weeks=4,label=None):
  plan=STARTER_PLAN_BLUEPRINTS.get(template_id)
  if not plan:raise ValueError('Choose a supported starter plan.')
@@ -1424,9 +1433,58 @@ def create_starter_mesocycle(template_id,selected_days,length_weeks=4,label=None
   for day,exercises in zip(days,plan):
    bp[day]=[]
    for order,name in enumerate(exercises,1):
-    row=c.execute("SELECT category,COALESCE(movement_type,'Isolation'),COALESCE(equipment,'Other') FROM exercise_dict WHERE name=?",(name,)).fetchone()
-    if not row:continue
+    row=_ensure_starter_exercise(c,name)
+    if not row:raise ValueError(f'Starter exercise is unavailable: {name}')
     bp[day].append(name);reps=10 if row[1]=='Compound' else 12
     for week in range(1,int(length_weeks)+1):c.execute("INSERT INTO workout_sessions(date,exercise,category,day_of_week,week,target_weight,target_reps,status,movement_type,meso_number,schedule_origin_day,workout_order) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",(datetime.now().strftime('%Y-%m-%d'),name,row[0],day,str(week),0.0,reps,STATUS_PENDING,row[1],meso,day,order))
   upsert_meso_config(c,meso,int(length_weeks),json.dumps(days),json.dumps({'mode':'starter','template':template_id}),0,json.dumps(bp));c.commit()
+ return meso
+
+
+# --- 1.53 EQUIPMENT-AWARE GUIDED PLAN REVIEW ---
+EQUIPMENT_PROFILE_MAP={
+ 'Bodyweight':{'Bodyweight'},'Dumbbells':{'Dumbbell'},'Barbell':{'Barbell'},
+ 'Adjustable bench':{'Dumbbell','Barbell','Bodyweight'},'Cable station':{'Cable'},
+ 'Selectorized machines':{'Machine'},'Machine':{'Machine'},'Plate-loaded machines':{'Machine','Plate'},
+ 'Plate-loaded machine':{'Machine','Plate'},'Smith machine':{'Machine'},
+ 'Resistance bands':{'Band'},'Kettlebells':{'Kettlebell'},'Kettlebell':{'Kettlebell'},
+ 'Pull-up bar':{'Bodyweight'},'Cardio equipment':{'Machine'},'Cardio machine':{'Machine'},
+ 'Sled':{'Sled'},'Medicine ball':{'Medicine Ball'},'Other':{'Other'}
+}
+def normalize_equipment_profile(values):
+ out={'Bodyweight'}
+ for value in values or []:out.update(EQUIPMENT_PROFILE_MAP.get(value,{value}))
+ return out
+
+def guided_exercise_candidates(reference_name,equipment_profile=None,limit=40):
+ allowed=normalize_equipment_profile(equipment_profile);favorites=favorite_exercise_ids()
+ with get_db() as c:
+  ref=c.execute("SELECT category,movement_family,movement_pattern FROM exercise_dict WHERE name=?",(reference_name,)).fetchone()
+  rows=c.execute("SELECT name,category,movement_family,movement_pattern,equipment,catalog_id,COALESCE(is_custom,0) FROM exercise_dict ORDER BY name").fetchall()
+ category,family,pattern=ref if ref else (None,None,None)
+ ranked=[]
+ for name,cat,fam,pat,equip,catalog_id,is_custom in rows:
+  if equip not in allowed and equip not in ('Bodyweight',None,'Other'):continue
+  score=(80 if family and fam==family else 0)+(40 if category and cat==category else 0)+(20 if pattern and pat==pattern else 0)+(30 if catalog_id in favorites else 0)+(10 if name==reference_name else 0)
+  if score or not ref:ranked.append({'name':name,'category':cat or 'General','family':fam or pat or 'General','equipment':equip or 'Other','favorite':catalog_id in favorites,'custom':bool(is_custom),'score':score})
+ return sorted(ranked,key=lambda x:(-x['score'],not x['favorite'],x['name']))[:int(limit)]
+
+def create_reviewed_starter_mesocycle(template_id,selected_days,reviewed_sessions,length_weeks=4,label=None):
+ if not reviewed_sessions:raise ValueError('The reviewed plan is empty.')
+ days=list(selected_days or [])
+ if len(days)<len(reviewed_sessions):raise ValueError('Select enough training days for every template session.')
+ with get_db() as c:
+  c.execute('BEGIN IMMEDIATE');meso=get_next_meso_number(c);c.execute('INSERT INTO meso_names(meso_number,meso_label) VALUES(?,?)',(meso,label or f'Starter Meso {meso}'));blueprint={}
+  for day,exercises in zip(days,reviewed_sessions):
+   clean=[]
+   for name in exercises:
+    if name and name not in clean:clean.append(name)
+   if not clean:raise ValueError(f'{day} has no exercises.')
+   blueprint[day]=clean
+   for order,name in enumerate(clean,1):
+    row=c.execute("SELECT category,COALESCE(movement_type,'Isolation') FROM exercise_dict WHERE name=?",(name,)).fetchone()
+    if not row:raise ValueError(f'Exercise is unavailable: {name}')
+    reps=10 if row[1]=='Compound' else 12
+    for week in range(1,int(length_weeks)+1):c.execute("INSERT INTO workout_sessions(date,exercise,category,day_of_week,week,target_weight,target_reps,status,movement_type,meso_number,schedule_origin_day,workout_order) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",(datetime.now().strftime('%Y-%m-%d'),name,row[0],day,str(week),0.0,reps,STATUS_PENDING,row[1],meso,day,order))
+  upsert_meso_config(c,meso,int(length_weeks),json.dumps(days),json.dumps({'mode':'guided_reviewed','template':template_id,'equipment_filtered':True}),0,json.dumps(blueprint));c.commit()
  return meso
