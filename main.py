@@ -1723,6 +1723,8 @@ class WorkoutTrackerApp:
                     ft.ElevatedButton("🧪 Developer Entitlement Test", on_click=lambda ev:[self.safe_close(self.actions_menu_dialog),self.open_entitlement_test_panel()], width=float('inf'), style=btn_style, visible=ENTITLEMENT_TEST_CONTROLS),
                     ft.ElevatedButton("🚀 First Setup Wizard", on_click=lambda ev:[self.safe_close(self.actions_menu_dialog),self.open_first_setup_wizard()], width=float('inf'), style=btn_style),
                     ft.ElevatedButton("👤 Profile Settings", on_click=self.open_settings_dialog, width=float('inf'), style=btn_style),
+                    ft.ElevatedButton("⭐ Browse & Favorite Exercises", on_click=lambda ev:[self.safe_close(self.actions_menu_dialog),self.open_canonical_exercise_browser()], width=float('inf'), style=btn_style),
+                    ft.ElevatedButton("🧭 Guided Architect", on_click=lambda ev:[self.safe_close(self.actions_menu_dialog),self.open_guided_architect()], width=float('inf'), style=btn_style),
                     ft.ElevatedButton("📚 Exercise Library", on_click=self.menu_manage_dict, width=float('inf'), style=btn_style),
                     ft.ElevatedButton("🧪 Closed Testing Guide", on_click=lambda ev:[self.safe_close(self.actions_menu_dialog),self.open_closed_testing_guide()], width=float('inf'), style=btn_style),
                     ft.ElevatedButton("🛠 Diagnostics & Support", on_click=self.open_diagnostics_dialog, width=float('inf'), style=btn_style),
@@ -1980,8 +1982,8 @@ class WorkoutTrackerApp:
             self.safe_close(dialog);self.show_snackbar('Profile saved. Opening Guided Architect.','green300');self.open_generator_view()
         def later(ev):
             self.save_setting('onboarding_seen','1');self.safe_close(dialog)
-        content=ft.Column([ft.Text('Welcome to IronCycle',size=18,weight='bold',color='cyan200'),ft.Text('Create a profile, identify available equipment, and choose a starting plan. IronCycle will use experience to select a safer progression profile.',size=10),name,ft.Row([age,weight]),experience,goal,ft.Text('AVAILABLE EQUIPMENT',size=10,weight='bold',color='cyan300'),ft.Container(height=180,content=equipment),template,summary,ft.Text('Next, Guided Architect will let you review and customize the mesocycle before anything is activated.',size=9,color='white54')],scroll='auto',spacing=7)
-        dialog=ft.AlertDialog(title=ft.Text('First Setup'),content=ft.Container(width=430,height=560,content=content),actions=[ft.TextButton('Not Now',on_click=later),ft.ElevatedButton('Continue to Architect',on_click=continue_to_architect)],inset_padding=10)
+        content=ft.Column([ft.Text('Welcome to IronCycle',size=18,weight='bold',color='cyan200'),ft.Text('Create a profile, identify available equipment, and choose a starting plan. IronCycle will use experience to select a safer progression profile.',size=10),name,ft.Row([age,weight]),experience,goal,ft.Text('AVAILABLE EQUIPMENT',size=10,weight='bold',color='cyan300'),equipment,template,summary,ft.Text('Next, Guided Architect will let you review and customize the mesocycle before anything is activated.',size=9,color='white54')],scroll='auto',spacing=7)
+        dialog=ft.AlertDialog(title=ft.Text('First Setup'),content=ft.Container(width=430,height=max(430,min(650,float(getattr(self.page,'height',700) or 700)-110)),content=content),actions=[ft.TextButton('Not Now',on_click=later),ft.ElevatedButton('Continue to Architect',on_click=continue_to_architect)],inset_padding=10)
         self.safe_open(dialog)
 
     def open_settings_dialog(self, e=None):
@@ -3155,6 +3157,47 @@ class WorkoutTrackerApp:
         self.view_mode = "history" if self.view_mode == "workout" else "workout"
         self.rebuild_navigation_headers()
         self.rebuild_entire_display()
+
+    def open_canonical_exercise_browser(self,e=None):
+        query=ft.TextField(label='Search name, category, or movement',prefix_icon=ft.Icons.SEARCH)
+        equipment=ft.Dropdown(label='Equipment',value='All',options=[ft.dropdown.Option('All')]+[ft.dropdown.Option(x) for x in sorted({x.get('equipment','Other') for x in BUILTIN_EXERCISE_CATALOG})])
+        favorites_only=ft.Switch(label='Favorites only',value=False)
+        results=ft.Column(scroll='auto',expand=True,spacing=4)
+        def refresh(ev=None):
+            fav=favorite_exercise_ids();q=(query.value or '').lower();eq=equipment.value
+            rows=[x for x in BUILTIN_EXERCISE_CATALOG if (eq=='All' or x.get('equipment')==eq) and (not q or q in (x['name']+' '+x['category']+' '+x['pattern']).lower()) and (not favorites_only.value or x['id'] in fav)]
+            rows.sort(key=lambda x:(x['id'] not in fav,x['category'],x['name']));results.controls.clear()
+            for x in rows:
+                starred=x['id'] in fav
+                def toggle(event,cid=x['id'],state=starred):set_exercise_favorite(cid,not state);refresh(True)
+                results.controls.append(ft.Container(content=ft.Row([ft.IconButton(ft.Icons.STAR if starred else ft.Icons.STAR_BORDER,on_click=toggle,tooltip='Remove favorite' if starred else 'Add favorite'),ft.Column([ft.Text(x['name'],weight='bold',size=11),ft.Text(f"{x['category']} • {x['pattern']} • {x['equipment']}",size=9,color='white54')],expand=True,spacing=0)],spacing=3),bgcolor='white10',padding=4,border_radius=6))
+            if ev:
+                try:results.update()
+                except:pass
+        query.on_change=refresh;equipment.on_select=refresh;favorites_only.on_change=refresh;refresh()
+        dialog=ft.AlertDialog(title=ft.Text('Standard Exercise Catalog'),content=ft.Container(width=430,height=560,content=ft.Column([query,ft.Row([equipment,favorites_only]),ft.Text('Favorites appear first in this catalog and are saved for future Architect, add, and replacement workflows.',size=9,color='cyan200'),results],expand=True)),actions=[ft.TextButton('Close',on_click=lambda ev:self.safe_close(dialog))],inset_padding=10)
+        self.safe_open(dialog)
+
+    def open_guided_architect(self,e=None):
+        template=ft.Dropdown(label='Plan style',value='general_full_body',options=[ft.dropdown.Option(x['id'],x['name']) for x in STARTER_TEMPLATES if x['id']!='custom'])
+        length=ft.Dropdown(label='Length',value='4',options=[ft.dropdown.Option(str(x),f'{x} weeks') for x in (3,4,5,6,8)])
+        days=ft.Column([ft.Checkbox(label=x,value=x in ('Monday','Wednesday','Friday')) for x in ('Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday')],spacing=0)
+        preview=ft.Text(size=10,color='white70')
+        def update(ev=None):
+            chosen=[x.label for x in days.controls if x.value];choice=next((x for x in STARTER_TEMPLATES if x['id']==template.value),{});preview.value=f"{choice.get('description','')}\nTraining days: {', '.join(chosen) or 'Select days'}\nStarting loads remain 0 lb for first-session entry."
+            if ev:
+                try:preview.update()
+                except:pass
+        for x in days.controls:x.on_change=update
+        template.on_select=update;update()
+        def create(ev):
+            chosen=[x.label for x in days.controls if x.value]
+            try:
+                meso=create_starter_mesocycle(template.value,chosen,int(length.value),next((x['name'] for x in STARTER_TEMPLATES if x['id']==template.value),'Starter Plan'))
+                self.safe_close(dialog);self.current_meso=meso;self.current_week='1';self.current_day=chosen[0];self.set_active_position();self.rebuild_navigation_headers();self.rebuild_entire_display();self.show_snackbar('Starter mesocycle created.','green300')
+            except Exception as err:self.show_snackbar(str(err),'red300')
+        dialog=ft.AlertDialog(title=ft.Text('Guided Architect'),content=ft.Container(width=420,height=490,content=ft.Column([ft.Text('Choose a starter structure, training days, and block length. You can change individual exercises afterward.',size=10),template,length,ft.Text('TRAINING DAYS',weight='bold',size=10,color='cyan300'),ft.Container(height=220,content=days),preview],scroll='auto')),actions=[ft.TextButton('Advanced Architect',on_click=lambda ev:[self.safe_close(dialog),self.open_generator_view()]),ft.ElevatedButton('Create Meso',on_click=create)],inset_padding=10)
+        self.safe_open(dialog)
 
     def open_generator_view(self, e=None):
         self.close_actions_menu()

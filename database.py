@@ -243,6 +243,19 @@ def init_and_seed_db():
         cursor.execute("UPDATE workout_sessions SET category = 'General' WHERE category = 'Calves & Arms & Abs'")
         conn.commit()
 
+        onboarding_row=cursor.execute("SELECT setting_value FROM user_settings WHERE setting_key='onboarding_completed'").fetchone()
+        completed_count=cursor.execute("SELECT COUNT(*) FROM workout_sessions WHERE status=?",(STATUS_COMPLETED,)).fetchone()[0]
+        other_mesos=cursor.execute("SELECT COUNT(*) FROM workout_sessions WHERE meso_number<>1").fetchone()[0]
+        legacy_markers=cursor.execute("SELECT COUNT(DISTINCT exercise) FROM workout_sessions WHERE meso_number=1 AND exercise IN ('Cable Flexion Row','Modified Candlestick','Bodyweight Squat (2/3)','Smith Machine Shrug')").fetchone()[0]
+        meso_one_count=cursor.execute("SELECT COUNT(*) FROM workout_sessions WHERE meso_number=1").fetchone()[0]
+        if not (onboarding_row and str(onboarding_row[0])=='1') and completed_count==0 and other_mesos==0 and meso_one_count>=40 and legacy_markers==4:
+            cursor.execute("DELETE FROM workout_sets WHERE session_id IN (SELECT id FROM workout_sessions WHERE meso_number=1)")
+            cursor.execute("DELETE FROM workout_sessions WHERE meso_number=1")
+            cursor.execute("DELETE FROM meso_configs WHERE meso_number=1")
+            cursor.execute("DELETE FROM meso_names WHERE meso_number=1")
+            cursor.execute("INSERT OR REPLACE INTO user_settings(setting_key,setting_value) VALUES('legacy_seed_removed','1')")
+            conn.commit()
+
         for item in BUILTIN_EXERCISE_CATALOG:
             cursor.execute("INSERT OR IGNORE INTO exercise_dict(name,category,movement_pattern,catalog_id,display_name,movement_family,movement_type,equipment,angle,is_custom) VALUES(?,?,?,?,?,?,?,?,?,0)",(item['name'],item['category'],item['pattern'],item['id'],item['name'],item['family'],item['movement_type'],item['equipment'],item.get('angle','Not specified')))
         conn.commit()
@@ -1390,3 +1403,30 @@ def set_exercise_favorite(catalog_id,favorite=True):
   c.commit()
 def catalog_for_equipment(equipment=None):
  allowed=set(equipment or []);fav=favorite_exercise_ids();return sorted([x for x in BUILTIN_EXERCISE_CATALOG if not allowed or x['equipment'] in allowed or x['equipment']=='Bodyweight'],key=lambda x:(x['id'] not in fav,x['category'],x['name']))
+
+# --- 1.52 GUIDED ARCHITECT AND STARTER PLANS ---
+STARTER_PLAN_BLUEPRINTS={
+ 'general_full_body':[['Goblet Squat','Dumbbell Press (Flat)','Seated Cable Row','Romanian Deadlift','Front Plank']],
+ 'chest_focus':[['Goblet Squat','Dumbbell Press (Flat)','Seated Cable Row','Cable Flye','Rope Triceps Pushdown']],
+ 'back_focus':[['Goblet Squat','Seated Cable Row','Push-Up','Neutral-Grip Pulldown','Hammer Curl']],
+ 'leg_focus':[['Barbell Squat (High Bar)','Romanian Deadlift','Leg Extension','Seated Leg Curl','Standing Calf Raise']],
+ 'upper_lower':[['Dumbbell Press (Flat)','Seated Cable Row','Dumbbell Lateral Raise (Super ROM)','Neutral-Grip Pulldown'],['Goblet Squat','Romanian Deadlift','Bulgarian Split Squat','Standing Calf Raise']],
+ 'push_pull_legs':[['Dumbbell Press (Flat)','Dumbbell Press (High Incline)','Rope Triceps Pushdown'],['Seated Cable Row','Neutral-Grip Pulldown','Hammer Curl'],['Goblet Squat','Romanian Deadlift','Bulgarian Split Squat','Standing Calf Raise']],
+ 'home_dumbbell':[['Goblet Squat','Dumbbell Press (Flat)','Dumbbell Row (2-Arm)','Dumbbell Stiff Legged Deadlift','Front Plank']]
+}
+def create_starter_mesocycle(template_id,selected_days,length_weeks=4,label=None):
+ plan=STARTER_PLAN_BLUEPRINTS.get(template_id)
+ if not plan:raise ValueError('Choose a supported starter plan.')
+ days=list(selected_days or PLAN_DAYS[:len(plan)])
+ if len(days)<len(plan):raise ValueError('Select enough training days for this plan.')
+ with get_db() as c:
+  c.execute('BEGIN IMMEDIATE');meso=get_next_meso_number(c);c.execute('INSERT INTO meso_names(meso_number,meso_label) VALUES(?,?)',(meso,label or f'Starter Meso {meso}'));bp={}
+  for day,exercises in zip(days,plan):
+   bp[day]=[]
+   for order,name in enumerate(exercises,1):
+    row=c.execute("SELECT category,COALESCE(movement_type,'Isolation'),COALESCE(equipment,'Other') FROM exercise_dict WHERE name=?",(name,)).fetchone()
+    if not row:continue
+    bp[day].append(name);reps=10 if row[1]=='Compound' else 12
+    for week in range(1,int(length_weeks)+1):c.execute("INSERT INTO workout_sessions(date,exercise,category,day_of_week,week,target_weight,target_reps,status,movement_type,meso_number,schedule_origin_day,workout_order) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",(datetime.now().strftime('%Y-%m-%d'),name,row[0],day,str(week),0.0,reps,STATUS_PENDING,row[1],meso,day,order))
+  upsert_meso_config(c,meso,int(length_weeks),json.dumps(days),json.dumps({'mode':'starter','template':template_id}),0,json.dumps(bp));c.commit()
+ return meso
