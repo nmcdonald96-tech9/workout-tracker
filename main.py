@@ -1976,7 +1976,7 @@ class WorkoutTrackerApp:
             except Exception:self.show_snackbar('Enter a valid age and bodyweight.','red300');return
             chosen=[x.label for x in equipment.controls if x.value]
             if not chosen:self.show_snackbar('Select at least one available equipment option.','amber300');return
-            for k,v in [('profile_name',name.value.strip()),('profile_age',str(int(av))),('age',str(int(av))),('bodyweight',str(wv)),('training_experience',experience.value),('progression_profile',{'New to resistance training':'Conservative','Some experience':'Balanced','Experienced':'Aggressive','Prefer not to specify':'Balanced'}.get(experience.value,'Balanced')),('training_goal',goal.value),('available_equipment',json.dumps(chosen)),('starter_template',template.value),('onboarding_completed','1'),('onboarding_version','1')]:self.save_setting(k,v)
+            for k,v in [('profile_name',name.value.strip()),('profile_age',str(int(av))),('age',str(int(av))),('bodyweight',str(wv)),('training_experience',experience.value),('progression_profile',str({'New to resistance training':1,'Some experience':2,'Experienced':3,'Prefer not to specify':0}.get(experience.value,0))),('training_goal',goal.value),('available_equipment',json.dumps(chosen)),('starter_template',template.value),('onboarding_completed','1'),('onboarding_version','1')]:self.save_setting(k,v)
             self.safe_close(dialog);self.show_snackbar('Profile saved. Opening Guided Architect.','green300');self.open_generator_view()
         def later(ev):
             self.save_setting('onboarding_seen','1');self.safe_close(dialog)

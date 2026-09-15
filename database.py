@@ -34,8 +34,8 @@ def init_and_seed_db():
         cursor.execute("CREATE TABLE IF NOT EXISTS exercise_dict (name TEXT PRIMARY KEY, category TEXT, movement_pattern TEXT DEFAULT 'General', setup_notes TEXT DEFAULT '')")
         
         cursor.execute("CREATE TABLE IF NOT EXISTS user_settings (setting_key TEXT PRIMARY KEY, setting_value TEXT)")
-        cursor.execute("INSERT OR IGNORE INTO user_settings (setting_key, setting_value) VALUES ('bodyweight', '178.0')")
-        cursor.execute("INSERT OR IGNORE INTO user_settings (setting_key, setting_value) VALUES ('age', '43')")
+        cursor.execute("INSERT OR IGNORE INTO user_settings (setting_key, setting_value) VALUES ('bodyweight', '0')")
+        cursor.execute("INSERT OR IGNORE INTO user_settings (setting_key, setting_value) VALUES ('age', '0')")
         cursor.execute("INSERT OR IGNORE INTO user_settings (setting_key, setting_value) VALUES ('progression_profile', '0')") # 0 = Auto
         cursor.execute("INSERT OR IGNORE INTO user_settings (setting_key, setting_value) VALUES ('workout_focus_mode', '0')")
         cursor.execute("INSERT OR IGNORE INTO user_settings (setting_key, setting_value) VALUES ('ui_density', 'comfortable')")
@@ -74,6 +74,7 @@ def init_and_seed_db():
             if n not in columns: cursor.execute(f"ALTER TABLE exercise_dict ADD COLUMN {n} {t}")
         cursor.execute("UPDATE exercise_dict SET display_name=name WHERE display_name IS NULL OR TRIM(display_name)='' ")
         cursor.execute("CREATE TABLE IF NOT EXISTS exercise_aliases(alias TEXT PRIMARY KEY,catalog_id TEXT,exercise_name TEXT,source TEXT,confirmed INTEGER DEFAULT 0)")
+        cursor.execute("CREATE TABLE IF NOT EXISTS exercise_favorites(catalog_id TEXT PRIMARY KEY,created_at TEXT NOT NULL)")
         conn.commit()
         
         cursor.execute(
@@ -242,15 +243,10 @@ def init_and_seed_db():
         cursor.execute("UPDATE workout_sessions SET category = 'General' WHERE category = 'Calves & Arms & Abs'")
         conn.commit()
 
-        cursor.execute("SELECT COUNT(*) FROM exercise_dict")
-        if cursor.fetchone()[0] == 0:
-            for ex_name, ex_data in EXERCISE_METADATA.items():
-                cursor.execute("INSERT OR IGNORE INTO exercise_dict (name, category, movement_pattern) VALUES (?, ?, ?)", (ex_name, ex_data["category"], ex_data["pattern"]))
-            conn.commit()
-
-        cursor.execute("SELECT COUNT(*) FROM meso_configs")
-        if cursor.fetchone()[0] == 0:
-            seed_meso_week_one(1)
+        for item in BUILTIN_EXERCISE_CATALOG:
+            cursor.execute("INSERT OR IGNORE INTO exercise_dict(name,category,movement_pattern,catalog_id,display_name,movement_family,movement_type,equipment,angle,is_custom) VALUES(?,?,?,?,?,?,?,?,?,0)",(item['name'],item['category'],item['pattern'],item['id'],item['name'],item['family'],item['movement_type'],item['equipment'],item.get('angle','Not specified')))
+        conn.commit()
+        # Fresh installs remain blank; existing plans are preserved.
 
 def get_latest_meso_number(cursor):
     cursor.execute("SELECT COALESCE(MAX(meso_number), 0) FROM meso_names")
@@ -1383,3 +1379,14 @@ def create_sync_package():
 def preview_sync_package(p):
     if p.get('format')!='ironcycle-sync-v1':raise ValueError('Unsupported sync package format.')
     return {'new':0,'updates':0,'unchanged':len(p.get('records',[])),'conflicts':0}
+
+
+def favorite_exercise_ids():
+ with get_db() as c:return {x[0] for x in c.execute("SELECT catalog_id FROM exercise_favorites")}
+def set_exercise_favorite(catalog_id,favorite=True):
+ with get_db() as c:
+  if favorite:c.execute("INSERT OR REPLACE INTO exercise_favorites VALUES(?,?)",(catalog_id,datetime.now().isoformat(timespec='seconds')))
+  else:c.execute("DELETE FROM exercise_favorites WHERE catalog_id=?",(catalog_id,))
+  c.commit()
+def catalog_for_equipment(equipment=None):
+ allowed=set(equipment or []);fav=favorite_exercise_ids();return sorted([x for x in BUILTIN_EXERCISE_CATALOG if not allowed or x['equipment'] in allowed or x['equipment']=='Bodyweight'],key=lambda x:(x['id'] not in fav,x['category'],x['name']))
