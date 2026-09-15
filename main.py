@@ -22,6 +22,7 @@ import inspect
 import sys
 
 from constants import *
+from onboarding_catalog import EXERCISES as CANONICAL_EXERCISES, STARTER_TEMPLATES, EQUIPMENT as ONBOARDING_EQUIPMENT, EXPERIENCE_LEVELS, GOALS as ONBOARDING_GOALS
 from database import *
 from app.compatibility import compatible_checkbox
 from components.session_context_panel import build_tag_controls
@@ -1267,6 +1268,9 @@ class WorkoutTrackerApp:
         self.rebuild_entire_display()
         try:self.page.run_task(self.reconcile_billing_ownership, "startup")
         except Exception:pass
+        try:
+            if not self.get_bool_setting('onboarding_completed',False):self.page.run_task(self.maybe_open_first_setup_wizard)
+        except Exception:pass
 
     def safe_open(self, control):
         # Sweep the overlay for old zombie dialogs and purge them to prevent freezing
@@ -1717,6 +1721,7 @@ class WorkoutTrackerApp:
                     ft.Text("SETTINGS & DATA", size=10, weight="bold", color="cyan300"),
                     ft.ElevatedButton("🔓 Trial & Lifetime Unlock", on_click=lambda ev:[self.safe_close(self.actions_menu_dialog),self.open_lifetime_unlock_dialog()], width=float('inf'), style=btn_style),
                     ft.ElevatedButton("🧪 Developer Entitlement Test", on_click=lambda ev:[self.safe_close(self.actions_menu_dialog),self.open_entitlement_test_panel()], width=float('inf'), style=btn_style, visible=ENTITLEMENT_TEST_CONTROLS),
+                    ft.ElevatedButton("🚀 First Setup Wizard", on_click=lambda ev:[self.safe_close(self.actions_menu_dialog),self.open_first_setup_wizard()], width=float('inf'), style=btn_style),
                     ft.ElevatedButton("👤 Profile Settings", on_click=self.open_settings_dialog, width=float('inf'), style=btn_style),
                     ft.ElevatedButton("📚 Exercise Library", on_click=self.menu_manage_dict, width=float('inf'), style=btn_style),
                     ft.ElevatedButton("🧪 Closed Testing Guide", on_click=lambda ev:[self.safe_close(self.actions_menu_dialog),self.open_closed_testing_guide()], width=float('inf'), style=btn_style),
@@ -1945,6 +1950,40 @@ class WorkoutTrackerApp:
             self.workout_focus_mode,self.ui_density={'STANDARD':(False,'compact'),'FOCUS':(True,'compact'),'DETAILED':(False,'detailed')}[m];self.save_setting('workout_focus_mode','1' if self.workout_focus_mode else '0');self.save_setting('ui_density',self.ui_density);self.safe_close(dialog);self.rebuild_entire_display()
         def b(m,detail):return ft.ElevatedButton(('✓ ' if current==m else '')+m.title(),on_click=lambda ev,x=m:choose(x),width=float('inf'))
         dialog=ft.AlertDialog(title=ft.Text('Workout View'),content=ft.Column([b('STANDARD',''),b('FOCUS',''),b('DETAILED','')],tight=True),actions=[ft.TextButton('Cancel',on_click=lambda ev:self.safe_close(dialog))]);self.safe_open(dialog)
+    async def maybe_open_first_setup_wizard(self):
+        """Auto-open only for installations without completed workout history."""
+        await asyncio.sleep(0.4)
+        try:
+            with get_db() as conn:
+                completed=conn.execute("SELECT COUNT(*) FROM workout_sessions WHERE status=?",(STATUS_COMPLETED,)).fetchone()[0]
+            if not completed:self.open_first_setup_wizard(first_run=True)
+        except Exception:pass
+
+    def open_first_setup_wizard(self,e=None,first_run=False):
+        """Collect a beginner-friendly profile and route the result into Architect."""
+        name=ft.TextField(label='Display name (optional)',value=self.get_text_setting('profile_name',''))
+        age=ft.TextField(label='Age',value=self.get_text_setting('profile_age',str(get_user_age())),keyboard_type=ft.KeyboardType.NUMBER)
+        weight=ft.TextField(label='Bodyweight (lb)',value=self.get_text_setting('bodyweight',str(get_user_bodyweight())),keyboard_type=ft.KeyboardType.NUMBER)
+        experience=ft.Dropdown(label='Training experience',value=self.get_text_setting('training_experience',EXPERIENCE_LEVELS[0]),options=[ft.dropdown.Option(x) for x in EXPERIENCE_LEVELS])
+        goal=ft.Dropdown(label='Primary goal',value=self.get_text_setting('training_goal',ONBOARDING_GOALS[0]),options=[ft.dropdown.Option(x) for x in ONBOARDING_GOALS])
+        equipment=ft.Column([ft.Checkbox(label=x,value=x in set(json.loads(self.get_text_setting('available_equipment','[]') or '[]'))) for x in ONBOARDING_EQUIPMENT],spacing=0)
+        template=ft.Dropdown(label='Starting plan',value=self.get_text_setting('starter_template','general_full_body'),options=[ft.dropdown.Option(x['id'],x['name']) for x in STARTER_TEMPLATES])
+        summary=ft.Text(f"{len(CANONICAL_EXERCISES)} standard exercises are available. Favorites will appear first in future add and replace pickers.",size=10,color='cyan200')
+        def continue_to_architect(ev):
+            try:
+                av=float(age.value);wv=float(weight.value)
+                if not 13<=av<=110 or not 50<=wv<=1000:raise ValueError()
+            except Exception:self.show_snackbar('Enter a valid age and bodyweight.','red300');return
+            chosen=[x.label for x in equipment.controls if x.value]
+            if not chosen:self.show_snackbar('Select at least one available equipment option.','amber300');return
+            for k,v in [('profile_name',name.value.strip()),('profile_age',str(int(av))),('age',str(int(av))),('bodyweight',str(wv)),('training_experience',experience.value),('progression_profile',{'New to resistance training':'Conservative','Some experience':'Balanced','Experienced':'Aggressive','Prefer not to specify':'Balanced'}.get(experience.value,'Balanced')),('training_goal',goal.value),('available_equipment',json.dumps(chosen)),('starter_template',template.value),('onboarding_completed','1'),('onboarding_version','1')]:self.save_setting(k,v)
+            self.safe_close(dialog);self.show_snackbar('Profile saved. Opening Guided Architect.','green300');self.open_generator_view()
+        def later(ev):
+            self.save_setting('onboarding_seen','1');self.safe_close(dialog)
+        content=ft.Column([ft.Text('Welcome to IronCycle',size=18,weight='bold',color='cyan200'),ft.Text('Create a profile, identify available equipment, and choose a starting plan. IronCycle will use experience to select a safer progression profile.',size=10),name,ft.Row([age,weight]),experience,goal,ft.Text('AVAILABLE EQUIPMENT',size=10,weight='bold',color='cyan300'),ft.Container(height=180,content=equipment),template,summary,ft.Text('Next, Guided Architect will let you review and customize the mesocycle before anything is activated.',size=9,color='white54')],scroll='auto',spacing=7)
+        dialog=ft.AlertDialog(title=ft.Text('First Setup'),content=ft.Container(width=430,height=560,content=content),actions=[ft.TextButton('Not Now',on_click=later),ft.ElevatedButton('Continue to Architect',on_click=continue_to_architect)],inset_padding=10)
+        self.safe_open(dialog)
+
     def open_settings_dialog(self, e=None):
         self.close_actions_menu()
         current_bw = get_user_bodyweight()
@@ -2676,6 +2715,10 @@ class WorkoutTrackerApp:
             "Billing tokens exposed to app diagnostics: No",
             "Release channel intent: Closed Alpha candidate",
             "Closed-test support guide: enabled",
+            f"Onboarding completed: {'Yes' if self.get_bool_setting('onboarding_completed',False) else 'No'}",
+            f"Canonical exercise catalog: {len(CANONICAL_EXERCISES)} entries / v1",
+            f"Equipment profile: {self.get_text_setting('available_equipment','Not configured')}",
+            f"Starter plan preference: {self.get_text_setting('starter_template','Not selected')}",
             f"Lifetime product: {LIFETIME_PRODUCT_ID}",
             "Entitlement storage: separate from workout backups",
             f"Last workout rebuild: {self.last_rebuild_ms if self.last_rebuild_ms is not None else 'not measured'} ms",
