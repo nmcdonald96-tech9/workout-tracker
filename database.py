@@ -1472,19 +1472,21 @@ def guided_exercise_candidates(reference_name,equipment_profile=None,limit=40):
 def create_reviewed_starter_mesocycle(template_id,selected_days,reviewed_sessions,length_weeks=4,label=None):
  if not reviewed_sessions:raise ValueError('The reviewed plan is empty.')
  days=list(selected_days or [])
- if len(days)<len(reviewed_sessions):raise ValueError('Select enough training days for every template session.')
+ if len(days)<len(reviewed_sessions):raise ValueError('Select enough training days for every reviewed session.')
  with get_db() as c:
   c.execute('BEGIN IMMEDIATE');meso=get_next_meso_number(c.cursor());c.execute('INSERT INTO meso_names(meso_number,meso_label) VALUES(?,?)',(meso,label or f'Starter Meso {meso}'));blueprint={}
-  for day,exercises in zip(days,reviewed_sessions):
-   clean=[]
-   for name in exercises:
-    if name and name not in clean:clean.append(name)
+  for day,entries in zip(days,reviewed_sessions):
+   clean=[];seen=set()
+   for entry in entries:
+    name=entry.get('name') if isinstance(entry,dict) else entry
+    weight=entry.get('weight',0) if isinstance(entry,dict) else 0
+    if name and name not in seen:clean.append((name,max(0.0,float(weight or 0))));seen.add(name)
    if not clean:raise ValueError(f'{day} has no exercises.')
-   blueprint[day]=clean
-   for order,name in enumerate(clean,1):
+   blueprint[day]=[name for name,weight in clean]
+   for order,(name,weight) in enumerate(clean,1):
     row=c.execute("SELECT category,COALESCE(movement_type,'Isolation') FROM exercise_dict WHERE name=?",(name,)).fetchone()
     if not row:raise ValueError(f'Exercise is unavailable: {name}')
     reps=10 if row[1]=='Compound' else 12
-    for week in range(1,int(length_weeks)+1):c.execute("INSERT INTO workout_sessions(date,exercise,category,day_of_week,week,target_weight,target_reps,status,movement_type,meso_number,schedule_origin_day,workout_order) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",(datetime.now().strftime('%Y-%m-%d'),name,row[0],day,str(week),0.0,reps,STATUS_PENDING,row[1],meso,day,order))
-  upsert_meso_config(c,meso,int(length_weeks),json.dumps(days),json.dumps({'mode':'guided_reviewed','template':template_id,'equipment_filtered':True}),0,json.dumps(blueprint));c.commit()
+    for week in range(1,int(length_weeks)+1):c.execute("INSERT INTO workout_sessions(date,exercise,category,day_of_week,week,target_weight,target_reps,status,movement_type,meso_number,schedule_origin_day,workout_order) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",(datetime.now().strftime('%Y-%m-%d'),name,row[0],day,str(week),weight,reps,STATUS_PENDING,row[1],meso,day,order))
+  upsert_meso_config(c,meso,int(length_weeks),json.dumps(days),json.dumps({'mode':'guided_reviewed','template':template_id,'equipment_filtered':True,'starting_loads_user_entered':True}),0,json.dumps(blueprint));c.commit()
  return meso

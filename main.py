@@ -3187,50 +3187,85 @@ class WorkoutTrackerApp:
         template=ft.Dropdown(label='Plan style',value=selected if any(x['id']==selected for x in choices) else 'general_full_body',options=[ft.dropdown.Option(x['id'],x['name']) for x in choices])
         length=ft.Dropdown(label='Length',value='4',options=[ft.dropdown.Option(str(x),f'{x} weeks') for x in (3,4,5,6,8)])
         day_names=('Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday')
-        days=ft.Column([ft.Checkbox(label=x,value=x in ('Monday','Wednesday','Friday')) for x in day_names],spacing=0,tight=True)
+        checks=[ft.Checkbox(label=x,value=x in ('Monday','Wednesday','Friday')) for x in day_names]
+        days=ft.Column(checks,spacing=0,tight=True)
         try:equipment_profile=json.loads(self.get_text_setting('available_equipment','[]') or '[]')
         except Exception:equipment_profile=[]
-        plan_editor=ft.Column(spacing=5)
+        day_picker=ft.Dropdown(label='Review day',expand=True)
+        previous_day=ft.IconButton(ft.Icons.CHEVRON_LEFT,tooltip='Previous selected day')
+        next_day=ft.IconButton(ft.Icons.CHEVRON_RIGHT,tooltip='Next selected day')
+        day_editor=ft.ListView(spacing=6,padding=2,expand=True)
+        editor_by_day={}
         status=ft.Text(size=9,color='cyan200')
-        editor_rows=[]
-        def build_editor(ev=None):
-            editor_rows.clear();plan_editor.controls.clear();chosen=[x.label for x in days.controls if x.value];base_plan=STARTER_PLAN_BLUEPRINTS.get(template.value,[]);plan=(base_plan*len(chosen) if len(base_plan)==1 and chosen else base_plan)
-            for session_index,session in enumerate(plan):
-                assigned_day=chosen[session_index] if session_index<len(chosen) else f'Session {session_index+1}'
-                plan_editor.controls.append(ft.Text(assigned_day.upper(),size=10,weight='bold',color='cyan300'))
-                used=set()
-                for reference in session:
-                    candidates=guided_exercise_candidates(reference,equipment_profile,50)
-                    names=[x['name'] for x in candidates]
-                    value=reference if reference in names else (names[0] if names else None)
+        progress=ft.Text(size=9,color='white70')
+        def selected_days():return [x.label for x in checks if x.value]
+        def session_for(day_index):
+            base=STARTER_PLAN_BLUEPRINTS.get(template.value,[])
+            return base[day_index%len(base)] if base else []
+        def render_day(ev=None):
+            day=day_picker.value;day_editor.controls.clear()
+            if not day:day_editor.controls.append(ft.Text('Select at least one training day.'));return
+            idx=selected_days().index(day);rows=editor_by_day.get(day,[])
+            progress.value=f'Reviewing day {idx+1} of {len(selected_days())}: {day}'
+            day_editor.controls.append(ft.Text(f'{day.upper()} • SESSION {(idx%max(1,len(STARTER_PLAN_BLUEPRINTS.get(template.value,[]))))+1}',weight='bold',color='cyan300'))
+            day_editor.controls.append(ft.Text('Starting load is optional. Leave 0 lb to establish the working weight during the first session.',size=9,color='white54'))
+            for reference,dd,weight in rows:day_editor.controls.append(ft.Column([dd,weight],spacing=2,tight=True))
+            try:day_editor.update();progress.update()
+            except:pass
+        def move_day(step):
+            chosen=selected_days()
+            if not chosen:return
+            try:index=chosen.index(day_picker.value)
+            except Exception:index=0
+            day_picker.value=chosen[(index+step)%len(chosen)]
+            try:day_picker.update()
+            except:pass
+            render_day()
+        previous_day.on_click=lambda ev:move_day(-1)
+        next_day.on_click=lambda ev:move_day(1)
+
+        def rebuild(ev=None):
+            prior={day:[(ref,dd.value,wt.value) for ref,dd,wt in rows] for day,rows in editor_by_day.items()};editor_by_day.clear();chosen=selected_days()
+            for idx,day in enumerate(chosen):
+                rows=[]
+                for pos,reference in enumerate(session_for(idx)):
+                    candidates=guided_exercise_candidates(reference,equipment_profile,50);names=[x['name'] for x in candidates]
+                    old=prior.get(day,[]);old_name=old[pos][1] if pos<len(old) else None;old_weight=old[pos][2] if pos<len(old) else '0'
+                    value=old_name if old_name in names else (reference if reference in names else (names[0] if names else None))
                     dd=ft.Dropdown(label=reference,value=value,options=[ft.dropdown.Option(x['name'],('★ ' if x['favorite'] else '')+f"{x['name']} • {x['equipment']}") for x in candidates])
-                    editor_rows.append((session_index,reference,dd));plan_editor.controls.append(dd)
-                plan_editor.controls.append(ft.Divider(height=5))
-            status.value=f"Equipment profile: {', '.join(equipment_profile) or 'Bodyweight only'} • Favorites are marked ★. Scroll through every selected day, review each exercise, then press Create Meso."
-            if ev:
-                try:plan_editor.update();status.update()
-                except:pass
-        def refresh_days(ev=None):build_editor(True)
-        for x in days.controls:x.on_change=refresh_days
-        template.on_select=build_editor;build_editor()
+                    wt=ft.TextField(label='Starting load (lb, optional)',value=str(old_weight or '0'),keyboard_type=ft.KeyboardType.NUMBER)
+                    rows.append((reference,dd,wt))
+                editor_by_day[day]=rows
+            day_picker.options=[ft.dropdown.Option(x) for x in chosen]
+            if day_picker.value not in chosen:day_picker.value=chosen[0] if chosen else None
+            status.value=f"{len(chosen)} days selected. Push/Pull/Legs and other multi-session plans cycle through every selected day."
+            try:day_picker.update();status.update()
+            except:pass
+            render_day()
+        for x in checks:x.on_change=rebuild
+        template.on_select=rebuild;day_picker.on_select=render_day;rebuild()
         def create(ev):
-            chosen=[x.label for x in days.controls if x.value];base_plan=STARTER_PLAN_BLUEPRINTS.get(template.value,[]);plan=(base_plan*len(chosen) if len(base_plan)==1 and chosen else base_plan)
-            if len(chosen)<len(plan):self.show_snackbar(f'Select at least {len(plan)} training days for this plan.','amber300');return
-            reviewed=[[] for _ in plan]
-            for idx,reference,dd in editor_rows:
-                if not dd.value:self.show_snackbar(f'Choose an exercise for {reference}.','amber300');return
-                if dd.value in reviewed[idx]:self.show_snackbar(f'Remove the duplicate exercise in session {idx+1}: {dd.value}','amber300');return
-                reviewed[idx].append(dd.value)
+            chosen=selected_days()
+            if not chosen:self.show_snackbar('Select at least one training day.','amber300');return
+            reviewed=[]
+            for day in chosen:
+                entries=[];seen=set()
+                for reference,dd,wt in editor_by_day.get(day,[]):
+                    if not dd.value:self.show_snackbar(f'Choose an exercise for {reference} on {day}.','amber300');return
+                    if dd.value in seen:self.show_snackbar(f'Remove duplicate {dd.value} on {day}.','amber300');return
+                    try:load=max(0.0,float(wt.value or 0))
+                    except Exception:self.show_snackbar(f'Enter a valid starting load for {dd.value} on {day}.','amber300');return
+                    seen.add(dd.value);entries.append({'name':dd.value,'weight':load})
+                reviewed.append(entries)
             try:
-                label=next((x['name'] for x in choices if x['id']==template.value),'Starter Plan')
-                meso=create_reviewed_starter_mesocycle(template.value,chosen,reviewed,int(length.value),label)
-                with get_db() as conn:
-                    cur=conn.cursor();cur.execute("SELECT COUNT(*) FROM workout_sessions WHERE meso_number=?",(meso,));count=cur.fetchone()[0]
+                label=next((x['name'] for x in choices if x['id']==template.value),'Starter Plan');meso=create_reviewed_starter_mesocycle(template.value,chosen,reviewed,int(length.value),label)
+                with get_db() as conn:cur=conn.cursor();cur.execute("SELECT COUNT(*) FROM workout_sessions WHERE meso_number=?",(meso,));count=cur.fetchone()[0]
                 if count<=0:raise ValueError('No scheduled rows were created.')
-                self.safe_close(dialog);self.current_meso=meso;self.current_week='1';self.current_day=chosen[0];self.set_active_position();self.build_ui_shell();self.rebuild_navigation_headers();self.rebuild_entire_display();self.show_snackbar(f'{label} created and activated with {count} scheduled exercise entries.','green300')
+                self.safe_close(dialog);self.current_meso=meso;self.current_week='1';self.current_day=chosen[0];self.set_active_position();self.build_ui_shell();self.rebuild_navigation_headers();self.rebuild_entire_display();self.show_snackbar(f'{label} created for {length.value} weeks across {len(chosen)} training days.','green300')
             except Exception as err:self.show_snackbar(f'Could not create mesocycle: {err}','red300')
-        content=ft.ListView(controls=[ft.Text('Review every exercise before creating the mesocycle. Choices are filtered by your equipment and favorites are ranked first.',size=10),template,length,ft.Text('TRAINING DAYS',weight='bold',size=10,color='cyan300'),days,ft.Divider(height=7),status,ft.Text('EXERCISE REVIEW',weight='bold',size=10,color='cyan300'),plan_editor],spacing=6,padding=2,auto_scroll=False)
-        dialog=ft.AlertDialog(title=ft.Text('Guided Architect'),content=ft.Container(width=450,height=max(450,min(680,float(getattr(self.page,'height',720) or 720)-100)),content=content),actions=[ft.TextButton('Advanced Architect',on_click=lambda ev:[self.safe_close(dialog),self.open_generator_view()]),ft.ElevatedButton('Create Meso',on_click=create)],inset_padding=7,content_padding=10,actions_padding=8)
+        top=ft.Column([ft.Text('Choose days, then review one day at a time. This avoids losing later days below a long mobile form.',size=10),template,length,ft.Text('TRAINING DAYS',weight='bold',size=10,color='cyan300'),days,status,ft.Row([previous_day,day_picker,next_day],spacing=2),progress],spacing=5,tight=True)
+        body=ft.Column([top,ft.Divider(height=5),day_editor],spacing=4,expand=True)
+        dialog=ft.AlertDialog(title=ft.Text('Guided Architect'),content=ft.Container(width=450,height=max(450,min(680,float(getattr(self.page,'height',720) or 720)-100)),content=body),actions=[ft.TextButton('Advanced Architect',on_click=lambda ev:[self.safe_close(dialog),self.open_generator_view()]),ft.ElevatedButton('Create Meso',on_click=create)],inset_padding=7,content_padding=10,actions_padding=8)
         self.safe_open(dialog)
 
     def open_generator_view(self, e=None):
