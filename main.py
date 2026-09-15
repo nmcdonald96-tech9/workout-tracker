@@ -1750,7 +1750,12 @@ class WorkoutTrackerApp:
         dialog=ft.AlertDialog(title=ft.Text("🗓️ Manage Active Meso",weight="bold"),content=ft.Container(width=390,height=540,content=ft.Column([ft.Text("CURRENT PLAN • newest week first",size=9,color="cyan300",weight="bold"),items,ft.ElevatedButton("Workout Structure & Supersets",on_click=lambda ev:[self.safe_close(dialog),self.open_structure_editor()],width=float('inf')),ft.ElevatedButton("Roll Missed Workout",on_click=lambda ev:[self.safe_close(dialog),self.open_missed_workout_rollover()],width=float('inf')),ft.TextButton("Plan Tools ▾",on_click=toggle),tools],expand=True,spacing=5)),actions=[ft.TextButton("Close",on_click=lambda ev:self.safe_close(dialog))],inset_padding=12,content_padding=14);self.safe_open(dialog)
 
     def open_structure_editor(self,e=None,source_session_id=None):
-        weeks=[x for x in self.get_existing_weeks() if str(x).isdigit()];week=ft.Dropdown(label='Week',value=str(self.current_week) if str(self.current_week).isdigit() else weeks[-1],options=[ft.dropdown.Option(x) for x in weeks],width=100);day=ft.Dropdown(label='Day',value=self.current_day,options=[ft.dropdown.Option(x) for x in self.ordered_day_names()],expand=True);selected=set([int(source_session_id)]) if source_session_id else set();items=ft.Column(scroll='auto',expand=True,spacing=4)
+        weeks=[x for x in self.get_existing_weeks() if str(x).isdigit()]
+        week=ft.Dropdown(label='Week',value=str(self.current_week) if str(self.current_week).isdigit() else weeks[-1],options=[ft.dropdown.Option(x) for x in weeks],width=96)
+        day=ft.Dropdown(label='Day',value=self.current_day,options=[ft.dropdown.Option(x) for x in self.ordered_day_names()],expand=True)
+        selected=set([int(source_session_id)]) if source_session_id else set()
+        items=ft.Column(scroll='auto',expand=True,spacing=5)
+        compact=float(getattr(self.page,'width',0) or 0)<700
         def rows():return [x for x in get_plan_sessions(self.current_meso) if x['week']==week.value and x['day']==day.value]
         def refresh(ev=None):
             items.controls.clear();by={}
@@ -1758,11 +1763,17 @@ class WorkoutTrackerApp:
             for cat in sorted(by,key=category_sort_key):
                 items.controls.append(ft.Text(f"{cat.upper()} • {len(by[cat])}",size=10,weight='bold',color='cyan200'))
                 for x in sorted(by[cat],key=lambda y:(y['status']!=STATUS_PENDING,y['workout_order'],y['id'])):
-                    gid=x.get('group_id');label=(f"A{x.get('group_position') or 1} " if gid else '')+x['exercise'];cb=ft.Checkbox(value=x['id'] in selected,disabled=x['status']!=STATUS_PENDING,on_change=lambda ev,sid=x['id']:(selected.add(sid) if ev.control.value else selected.discard(sid)));controls=[cb,ft.Text(label,size=10,expand=True)]
+                    gid=x.get('group_id');label=(f"A{x.get('group_position') or 1} " if gid else '')+x['exercise']
+                    cb=ft.Checkbox(value=x['id'] in selected,disabled=x['status']!=STATUS_PENDING,on_change=lambda ev,sid=x['id']:(selected.add(sid) if ev.control.value else selected.discard(sid)))
+                    buttons=[]
                     if x['status']==STATUS_PENDING:
-                        controls += [ft.TextButton('Card ↑',on_click=lambda ev,sid=x['id']:move_card(sid,-1)),ft.TextButton('Card ↓',on_click=lambda ev,sid=x['id']:move_card(sid,1))]
-                        if gid:controls += [ft.TextButton('A↑',on_click=lambda ev,sid=x['id']:move_group(sid,-1)),ft.TextButton('A↓',on_click=lambda ev,sid=x['id']:move_group(sid,1))]
-                    items.controls.append(ft.Container(content=ft.Row(controls,spacing=1),bgcolor='white10',padding=4,border_radius=6))
+                        buttons=[ft.TextButton('Card ↑',on_click=lambda ev,sid=x['id']:move_card(sid,-1)),ft.TextButton('Card ↓',on_click=lambda ev,sid=x['id']:move_card(sid,1))]
+                        if gid:buttons += [ft.TextButton('A ↑',on_click=lambda ev,sid=x['id']:move_group(sid,-1)),ft.TextButton('A ↓',on_click=lambda ev,sid=x['id']:move_group(sid,1))]
+                    if compact:
+                        content=ft.Column([ft.Row([cb,ft.Text(label,size=10,expand=True)],spacing=5),ft.Row(buttons,spacing=0,wrap=True,visible=bool(buttons))],spacing=1,tight=True)
+                    else:
+                        content=ft.Row([cb,ft.Text(label,size=10,expand=True),*buttons],spacing=1)
+                    items.controls.append(ft.Container(content=content,bgcolor='white10',padding=6,border_radius=6))
             if ev is not None:
                 try:items.update()
                 except:pass
@@ -1772,7 +1783,9 @@ class WorkoutTrackerApp:
         def ungroup(ev=None):
             if not selected:self.show_snackbar('Select a grouped exercise.','amber300');return
             clear_exercise_group(self.current_meso,week.value,day.value,next(iter(selected)));enqueue_cloud_backup('automatic: workout structure changed');self.schedule_automatic_cloud_backup();refresh(True)
-        week.on_select=refresh;day.on_select=refresh;refresh();dialog=ft.AlertDialog(title=ft.Text('Workout Structure & Supersets',weight='bold'),content=ft.Container(width=420,height=570,content=ft.Column([ft.Row([week,day]),items,ft.Text('Card arrows move within a muscle group. A arrows change execution order.',size=9,color='white54'),ft.Row([ft.ElevatedButton('Create Group',on_click=group,expand=True),ft.ElevatedButton('Ungroup',on_click=ungroup,expand=True)])],expand=True)),actions=[ft.TextButton('Done',on_click=lambda ev:[self.safe_close(dialog),self.sets.clear(),self.rebuild_entire_display()])]);self.safe_open(dialog)
+        week.on_select=refresh;day.on_select=refresh;refresh()
+        dialog=ft.AlertDialog(title=ft.Text('Workout Structure & Supersets',weight='bold',size=18 if compact else 20),content=ft.Container(width=420,height=540,content=ft.Column([ft.Row([week,day]),items,ft.Text('Card arrows move within a muscle group. A arrows change execution order.',size=9,color='white54'),ft.Row([ft.ElevatedButton('Create Group',on_click=group,expand=True),ft.ElevatedButton('Ungroup',on_click=ungroup,expand=True)],spacing=6)],expand=True,spacing=5)),actions=[ft.TextButton('Done',on_click=lambda ev:[self.safe_close(dialog),self.sets.clear(),self.rebuild_entire_display()])],inset_padding=10 if compact else 12,content_padding=12 if compact else 16)
+        self.safe_open(dialog)
     def restore_future_schedule(self,e=None):
         try:
             snap=self.create_short_session_snapshot();n=restore_future_structure(self.current_meso);self.sets.clear();self.rebuild_entire_display();self.show_snackbar(f'Restored {n} pending structure fields. Snapshot: {snap}','green300')
@@ -3146,11 +3159,10 @@ class WorkoutTrackerApp:
     def on_app_lifecycle_state_change(self,e):
         state=str(getattr(getattr(e,'state',None),'name',getattr(e,'state',''))).upper()
         if state in ('SHOW','RESTART','RESUME'):
-            # Resume only an actual pending device-code flow. A cached OneDrive
-            # account must not trigger a Microsoft token/network request whenever
-            # the app resumes, especially while Android is offline or in airplane mode.
-            if self.onedrive.pending_flow() and not self._cloud_signin_running:
-                self.finish_onedrive_signin()
+            # Never start Microsoft authentication or Graph network traffic from
+            # an Android lifecycle callback. Offline resume must remain local-only.
+            # A pending device-code flow is resumed explicitly with the existing
+            # "I Completed Sign-In" action after connectivity is available.
             try:self.page.run_task(self.reconcile_billing_ownership, "resume")
             except Exception:pass
     def generate_new_onedrive_code(self,e=None):
