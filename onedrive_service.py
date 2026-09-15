@@ -23,13 +23,19 @@ class OneDriveService:
   if os.path.exists(cache_path):
    try:self.cache.deserialize(open(cache_path,encoding='utf-8').read())
    except Exception:pass
-  self.app=msal.PublicClientApplication(CLIENT_ID,authority=AUTHORITY,token_cache=self.cache);self._flow_lock=threading.Lock();self._io_lock=threading.Lock()
+  self.app=None;self._flow_lock=threading.Lock();self._io_lock=threading.Lock()
  def _migrate_once(self):
   if os.path.exists(self.cache_marker):return
   for p in (self.cache_path,self.pending_path):
    try:os.remove(p)
    except FileNotFoundError:pass
   os.makedirs(os.path.dirname(self.cache_marker),exist_ok=True);open(self.cache_marker,'w').write(str(CACHE_FORMAT_VERSION))
+ def _get_app(self,stage='authentication'):
+  """Create MSAL lazily so app startup remains fully offline-safe."""
+  if self.app is not None:return self.app
+  try:self.app=msal.PublicClientApplication(CLIENT_ID,authority=AUTHORITY,token_cache=self.cache)
+  except Exception as e:raise OneDriveError(f'Network unavailable: {e}',stage=stage)
+  return self.app
  def _save(self):
   if self.cache.has_state_changed:
    os.makedirs(os.path.dirname(self.cache_path),exist_ok=True);open(self.cache_path,'w',encoding='utf-8').write(self.cache.serialize())
@@ -41,11 +47,14 @@ class OneDriveService:
   except Exception:return None
   if not f.get('device_code') or not f.get('user_code') or int(f.get('expires_at',0))<=int(time.time()):self.clear_pending();return None
   return f
- def has_account(self):return bool(self.app.get_accounts())
+ def has_account(self):
+  # SerializableTokenCache can be inspected without MSAL authority discovery.
+  try:return bool(self.cache.find(msal.TokenCache.CredentialType.ACCOUNT))
+  except Exception:return False
  def begin_device_flow(self,force_new=False):
   if force_new:self.clear_pending()
   if self.pending_flow():return self.pending_flow()
-  f=self.app.initiate_device_flow(scopes=SCOPES)
+  f=self._get_app('device_flow_start').initiate_device_flow(scopes=SCOPES)
   if 'user_code' not in f:raise OneDriveError(f.get('error_description') or 'Microsoft sign-in could not start.')
   f['verification_uri']=f.get('verification_uri') or VERIFY_URI_FALLBACK;f['expires_at']=int(time.time())+int(f.get('expires_in',900));os.makedirs(os.path.dirname(self.pending_path),exist_ok=True);json.dump(f,open(self.pending_path,'w',encoding='utf-8'));return f
  def complete_device_flow(self):
@@ -55,7 +64,7 @@ class OneDriveService:
    if not f:
     if self.has_account():return {'state':'account_available'}
     raise OneDriveError('No valid Microsoft sign-in is pending. Generate a new code.')
-   r=self.app.acquire_token_by_device_flow(f);self._save()
+   r=self._get_app('device_flow_complete').acquire_token_by_device_flow(f);self._save()
    if 'access_token' not in r:
     err=r.get('error') or 'device_flow_failed';detail=r.get('error_description') or err
     if err not in ('authorization_pending','slow_down'):self.clear_pending()
@@ -63,9 +72,9 @@ class OneDriveService:
    self.clear_pending();return {'state':'token_acquired'}
   finally:self._flow_lock.release()
  def acquire_token(self):
-  a=self.app.get_accounts()
+  app=self._get_app('token_acquisition');a=app.get_accounts()
   if not a:raise OneDriveError('Reconnect required: no Microsoft account is cached.')
-  r=self.app.acquire_token_silent(SCOPES,account=a[0]);self._save()
+  r=app.acquire_token_silent(SCOPES,account=a[0]);self._save()
   if not r or 'access_token' not in r:raise OneDriveError('Reconnect required: '+((r or {}).get('error_description') or (r or {}).get('error') or 'silent token acquisition failed'))
   # Access tokens are opaque to clients. Microsoft Graph is the authority that validates them.
   return r['access_token']
@@ -84,7 +93,7 @@ class OneDriveService:
    try:graph_code=(p.get('error') or {}).get('code') if isinstance(p.get('error'),dict) else None
    except Exception:pass
    raise OneDriveError(f'HTTP {e.code}: {msg}',status=e.code,stage=stage,graph_code=graph_code,request_id=e.headers.get('request-id'),www_authenticate=e.headers.get('WWW-Authenticate'))
-  except urllib.error.URLError as e:raise OneDriveError(f'Network unavailable: {e.reason}')
+  except urllib.error.URLError as e:raise OneDriveError(f'Network unavailable: {e.reason}',stage=stage or 'network')
  def _graph(self,path,data=None,method=None,ctype=None,stage=None):return self._json(GRAPH+path,self.acquire_token(),data,method,ctype,stage)
  def _download_graph_item(self,item_id,stage):
   token=self.acquire_token();url=GRAPH+'/me/drive/items/'+urllib.parse.quote(str(item_id),safe='')+'/content';req=urllib.request.Request(url,headers={'Authorization':'Bearer '+token});opener=urllib.request.build_opener(_NoRedirect)
