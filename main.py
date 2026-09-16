@@ -478,20 +478,11 @@ class ExerciseCard(ft.Card):
             set_num = idx + 1
             target = self.set_targets[idx] if idx < len(self.set_targets) else {"w": adj_w, "r": adj_r}
             if self.status == STATUS_PENDING and not bool(set_data.get("done")):
-                # Pending values seeded from the plan are targets, not user overrides.
-                # Follow a recalculated readiness target while preserving a genuinely
-                # different value that the user typed for this set.
-                normal_target = self.normal_set_targets[idx] if idx < len(self.normal_set_targets) else {"w": self.tgt_w, "r": self.tgt_r}
-                def follows_target(value, previous_target):
-                    if not str(value if value is not None else "").strip():
-                        return True
-                    try:return abs(float(value)-float(previous_target)) < 0.0001
-                    except Exception:return str(value).strip() == str(previous_target).strip()
-                prior_w_target = set_data.get("_display_target_w", normal_target["w"])
-                prior_r_target = set_data.get("_display_target_r", normal_target["r"])
-                if follows_target(set_data.get("w", ""), prior_w_target):
+                # Explicit ownership replaces numeric-value inference. Legacy pending
+                # drafts are target-owned unless this runtime recorded a user edit.
+                if set_data.get("w_source", "target") == "target":
                     set_data["w"] = str(target["w"])
-                if follows_target(set_data.get("r", ""), prior_r_target):
+                if set_data.get("r_source", "target") == "target":
                     set_data["r"] = str(target["r"])
                 set_data["_display_target_w"] = target["w"]
                 set_data["_display_target_r"] = target["r"]
@@ -542,6 +533,8 @@ class ExerciseCard(ft.Card):
             rpe_f = ft.TextField(
                 value=set_data["rpe"],
                 label="RPE",
+                helper_text="Effort 1-10; 8≈2 reps left, 9≈1, 10=max",
+                helper_style=ft.TextStyle(color="white54", size=8),
                 hint_text=str(rpe_hint),
                 hint_style=ft.TextStyle(color="white54", size=12),
                 label_style=ft.TextStyle(color="cyan200", size=10, weight="bold"),
@@ -898,6 +891,15 @@ class ExerciseCard(ft.Card):
             actions=[ft.TextButton("Close",on_click=lambda ev:self.app.safe_close(dialog))])
         self.app.safe_open(dialog)
 
+    @staticmethod
+    def normalize_rpe(value):
+        raw = str(value if value is not None else "").strip()
+        if not raw:return None
+        try:number = float(raw)
+        except (TypeError, ValueError):return None
+        if number < 1.0 or number > 10.0 or abs(number * 2 - round(number * 2)) > 0.000001:return None
+        return f"{number:g}"
+
     def make_set_done_handler(self, set_idx):
         def set_done_changed(ev):
             if not self.app.require_premium("logging workouts"):
@@ -934,12 +936,12 @@ class ExerciseCard(ft.Card):
                     self.app.show_snackbar(f"Set {set_idx + 1} reps must be a whole number.", "red300")
                     self.app.rebuild_entire_display()
                     return
-                try:
-                    float(rpe_raw)
-                except ValueError:
-                    self.app.show_snackbar(f"Set {set_idx + 1} RPE must be numeric.", "red300")
+                normalized_rpe = self.normalize_rpe(rpe_raw)
+                if normalized_rpe is None:
+                    self.app.show_snackbar("Enter RPE from 1 to 10 in 0.5 steps, such as 8 or 8.5.", "red300")
                     self.app.rebuild_entire_display()
                     return
+                set_data["rpe"] = normalized_rpe
                 set_data["done"] = True
                 set_data["completed_at"] = datetime.now().isoformat(timespec="seconds")
             else:
@@ -970,7 +972,10 @@ class ExerciseCard(ft.Card):
         def live_update_event(ev):
             raw_val = ev.control.value
             if self.db_id in self.app.sets and set_idx < len(self.app.sets[self.db_id]):
-                self.app.sets[self.db_id][set_idx][key_type] = raw_val
+                set_data = self.app.sets[self.db_id][set_idx]
+                set_data[key_type] = raw_val
+                if key_type in ("w", "r"):
+                    set_data[f"{key_type}_source"] = "user" if str(raw_val).strip() else "target"
                 self.autosave_pending_sets()
         return live_update_event
 
@@ -984,7 +989,8 @@ class ExerciseCard(ft.Card):
                 for i, s_data in enumerate(self.app.sets[self.db_id], start=1):
                     w_val = float(s_data["w"]) if str(s_data.get("w", "")).strip() else None
                     r_val = int(s_data["r"]) if str(s_data.get("r", "")).strip() else None
-                    rpe_val = float(s_data["rpe"]) if str(s_data.get("rpe", "")).strip() else None
+                    rpe_normalized = self.normalize_rpe(s_data.get("rpe", ""))
+                    rpe_val = float(rpe_normalized) if rpe_normalized is not None else None
                     
                     target = self.set_targets[i - 1] if i - 1 < len(self.set_targets) else {"w": self.tgt_w, "r": self.tgt_r}
                     normal_target = self.normal_set_targets[i - 1] if i - 1 < len(self.normal_set_targets) else target
