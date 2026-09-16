@@ -2717,6 +2717,7 @@ class WorkoutTrackerApp:
             "Release channel intent: Closed Alpha candidate",
             "Closed-test support guide: enabled",
             f"Onboarding completed: {'Yes' if self.get_bool_setting('onboarding_completed',False) else 'No'}",
+            f"Automatic First Setup eligible: {'No - existing onboarding state is preserved' if self.get_bool_setting('onboarding_completed',False) else 'Yes if no completed workout history'}",
             f"Canonical exercise catalog: {len(CANONICAL_EXERCISES)} entries / v1",
             f"Equipment profile: {self.get_text_setting('available_equipment','Not configured')}",
             f"Starter plan preference: {self.get_text_setting('starter_template','Not selected')}",
@@ -3254,10 +3255,14 @@ class WorkoutTrackerApp:
             selected_value=getattr(ev.control,'value',None) if ev and getattr(ev,'control',None) else None
             if selected_value:template.value=selected_value
             rebuild(reset_plan=True)
-            try:plan_preview.update();review_surface.update()
-            except:pass
+            self.save_setting('starter_template_draft',template.value)
+            try:
+                template.update();plan_preview.update();day_picker.update();review_surface.update()
+            except Exception:pass
+            self.show_snackbar(f"Preview refreshed: {next((x['name'] for x in choices if x['id']==template.value),template.value)}",'cyan300')
         for x in checks:x.on_change=rebuild
-        template.on_change=change_plan;day_picker.on_change=render_day
+        template.on_change=change_plan;template.on_select=change_plan
+        day_picker.on_change=render_day;day_picker.on_select=render_day
         def create(ev):
             chosen=selected_days()
             if not chosen:self.show_snackbar('Select at least one training day.','amber300');return
