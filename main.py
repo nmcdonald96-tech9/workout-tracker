@@ -478,10 +478,23 @@ class ExerciseCard(ft.Card):
             set_num = idx + 1
             target = self.set_targets[idx] if idx < len(self.set_targets) else {"w": adj_w, "r": adj_r}
             if self.status == STATUS_PENDING and not bool(set_data.get("done")):
-                if not str(set_data.get("w", "")).strip():
+                # Pending values seeded from the plan are targets, not user overrides.
+                # Follow a recalculated readiness target while preserving a genuinely
+                # different value that the user typed for this set.
+                normal_target = self.normal_set_targets[idx] if idx < len(self.normal_set_targets) else {"w": self.tgt_w, "r": self.tgt_r}
+                def follows_target(value, previous_target):
+                    if not str(value if value is not None else "").strip():
+                        return True
+                    try:return abs(float(value)-float(previous_target)) < 0.0001
+                    except Exception:return str(value).strip() == str(previous_target).strip()
+                prior_w_target = set_data.get("_display_target_w", normal_target["w"])
+                prior_r_target = set_data.get("_display_target_r", normal_target["r"])
+                if follows_target(set_data.get("w", ""), prior_w_target):
                     set_data["w"] = str(target["w"])
-                if not str(set_data.get("r", "")).strip():
+                if follows_target(set_data.get("r", ""), prior_r_target):
                     set_data["r"] = str(target["r"])
+                set_data["_display_target_w"] = target["w"]
+                set_data["_display_target_r"] = target["r"]
             w_hint = str(target["w"])
             r_hint = str(target["r"])
             rpe_hint = past_rpe_list[idx].strip() if idx < len(past_rpe_list) else "8"
