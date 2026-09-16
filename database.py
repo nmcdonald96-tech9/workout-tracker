@@ -1406,14 +1406,61 @@ def catalog_for_equipment(equipment=None):
 
 # --- 1.52 GUIDED ARCHITECT AND STARTER PLANS ---
 STARTER_PLAN_BLUEPRINTS={
- 'general_full_body':[['Goblet Squat','Dumbbell Press (Flat)','Seated Cable Row','Romanian Deadlift','Front Plank']],
- 'chest_focus':[['Goblet Squat','Dumbbell Press (Flat)','Seated Cable Row','Cable Flye','Rope Triceps Pushdown']],
- 'back_focus':[['Goblet Squat','Seated Cable Row','Push-Up','Neutral-Grip Pulldown','Hammer Curl']],
- 'leg_focus':[['Barbell Squat (High Bar)','Romanian Deadlift','Leg Extension','Seated Leg Curl','Standing Calf Raise']],
- 'upper_lower':[['Dumbbell Press (Flat)','Seated Cable Row','Dumbbell Lateral Raise (Super ROM)','Neutral-Grip Pulldown'],['Goblet Squat','Romanian Deadlift','Bulgarian Split Squat','Standing Calf Raise']],
- 'push_pull_legs':[['Dumbbell Press (Flat)','Dumbbell Press (High Incline)','Rope Triceps Pushdown'],['Seated Cable Row','Neutral-Grip Pulldown','Hammer Curl'],['Goblet Squat','Romanian Deadlift','Bulgarian Split Squat','Standing Calf Raise']],
- 'home_dumbbell':[['Goblet Squat','Dumbbell Press (Flat)','Dumbbell Row (2-Arm)','Dumbbell Stiff Legged Deadlift','Front Plank']]
+ 'general_full_body':[
+  ['Goblet Squat','Dumbbell Press (Flat)','Seated Cable Row','Romanian Deadlift','Front Plank'],
+  ['Bulgarian Split Squat','Dumbbell Press (High Incline)','Neutral-Grip Pulldown','Dumbbell Stiff Legged Deadlift','Pallof Press'],
+  ['Leg Extension','Push-Up','Dumbbell Row (2-Arm)','Seated Leg Curl','Front Plank']],
+ 'chest_focus':[
+  ['Goblet Squat','Dumbbell Press (Flat)','Seated Cable Row','Cable Flye','Rope Triceps Pushdown'],
+  ['Romanian Deadlift','Dumbbell Press (High Incline)','Neutral-Grip Pulldown','Push-Up','Dumbbell Lateral Raise (Super ROM)']],
+ 'back_focus':[
+  ['Goblet Squat','Seated Cable Row','Push-Up','Neutral-Grip Pulldown','Hammer Curl'],
+  ['Romanian Deadlift','Dumbbell Row (2-Arm)','Dumbbell Press (High Incline)','Neutral-Grip Pulldown','Dumbbell Lateral Raise (Super ROM)']],
+ 'leg_focus':[
+  ['Barbell Squat (High Bar)','Romanian Deadlift','Leg Extension','Seated Leg Curl','Standing Calf Raise'],
+  ['Goblet Squat','Bulgarian Split Squat','Dumbbell Stiff Legged Deadlift','Seated Leg Curl','Front Plank'],
+  ['Leg Extension','Romanian Deadlift','Bulgarian Split Squat','Standing Calf Raise','Pallof Press']],
+ 'upper_lower':[
+  ['Dumbbell Press (Flat)','Seated Cable Row','Dumbbell Lateral Raise (Super ROM)','Neutral-Grip Pulldown','Rope Triceps Pushdown'],
+  ['Goblet Squat','Romanian Deadlift','Bulgarian Split Squat','Standing Calf Raise','Front Plank'],
+  ['Dumbbell Press (High Incline)','Dumbbell Row (2-Arm)','Push-Up','Neutral-Grip Pulldown','Hammer Curl'],
+  ['Barbell Squat (High Bar)','Dumbbell Stiff Legged Deadlift','Leg Extension','Seated Leg Curl','Pallof Press']],
+ 'push_pull_legs':[
+  ['Dumbbell Press (Flat)','Dumbbell Press (High Incline)','Dumbbell Lateral Raise (Super ROM)','Rope Triceps Pushdown'],
+  ['Seated Cable Row','Neutral-Grip Pulldown','Dumbbell Row (2-Arm)','Hammer Curl'],
+  ['Goblet Squat','Romanian Deadlift','Bulgarian Split Squat','Standing Calf Raise'],
+  ['Dumbbell Press (High Incline)','Push-Up','Cable Flye','Rope Triceps Pushdown'],
+  ['Dumbbell Row (2-Arm)','Neutral-Grip Pulldown','Seated Cable Row','Hammer Curl'],
+  ['Barbell Squat (High Bar)','Dumbbell Stiff Legged Deadlift','Leg Extension','Seated Leg Curl']],
+ 'home_dumbbell':[
+  ['Goblet Squat','Dumbbell Press (Flat)','Dumbbell Row (2-Arm)','Dumbbell Stiff Legged Deadlift','Front Plank'],
+  ['Bulgarian Split Squat','Dumbbell Press (High Incline)','Dumbbell Row (2-Arm)','Romanian Deadlift','Pallof Press']]
 }
+
+STARTER_SESSION_LABELS={
+ 'general_full_body':['Full Body A','Full Body B','Full Body C'],
+ 'chest_focus':['Chest A','Chest B'],'back_focus':['Back A','Back B'],
+ 'leg_focus':['Legs A','Legs B','Legs C'],
+ 'upper_lower':['Upper A','Lower A','Upper B','Lower B'],
+ 'push_pull_legs':['Push A','Pull A','Legs A','Push B','Pull B','Legs B'],
+ 'home_dumbbell':['Dumbbell Full Body A','Dumbbell Full Body B']}
+
+def starter_prescription(age,experience,goal):
+ age=int(age or 0);experience=experience or 'Prefer not to specify';goal=goal or 'General fitness'
+ sets={'New to resistance training':2,'Some experience':2,'Experienced':3}.get(experience,2)
+ complexity={'New to resistance training':'Stable fundamentals','Some experience':'A/B variety','Experienced':'Expanded variation'}.get(experience,'Balanced fundamentals')
+ if goal=='General strength':compound,accessory,emphasis='5-8','8-12','Strength-first compounds'
+ elif goal=='Muscle development':compound,accessory,emphasis='6-10','10-15','Balanced hypertrophy volume'
+ elif goal=='Technique and movement practice':compound,accessory,emphasis='8-10','10-15','Repeatable technique practice'
+ elif goal=='Return to consistent training':compound,accessory,emphasis='8-12','10-15','Sustainable consistency'
+ else:compound,accessory,emphasis='8-12','10-15','General fitness balance'
+ if age and age<30:age_label,progression='Standard recovery','Responsive'
+ elif age and age<40:age_label,progression='Balanced recovery','Balanced'
+ elif age and age<50:age_label,progression='Recovery-aware','Measured'
+ elif age and age<60:age_label,progression='Recovery-conscious','Conservative'
+ else:age_label,progression='Longevity-focused','Conservative'
+ return {'age':age,'experience':experience,'goal':goal,'working_sets':sets,'complexity':complexity,'compound_reps':compound,'accessory_reps':accessory,'emphasis':emphasis,'age_profile':age_label,'progression':progression}
+
 def _ensure_starter_exercise(c,name):
  row=c.execute("SELECT category,COALESCE(movement_type,'Isolation'),COALESCE(equipment,'Other') FROM exercise_dict WHERE name=?",(name,)).fetchone()
  if row:return row
@@ -1469,7 +1516,7 @@ def guided_exercise_candidates(reference_name,equipment_profile=None,limit=40):
   if score or not ref:ranked.append({'name':name,'category':cat or 'General','family':fam or pat or 'General','equipment':equip or 'Other','favorite':catalog_id in favorites,'custom':bool(is_custom),'score':score})
  return sorted(ranked,key=lambda x:(-x['score'],not x['favorite'],x['name']))[:int(limit)]
 
-def create_reviewed_starter_mesocycle(template_id,selected_days,reviewed_sessions,length_weeks=4,label=None):
+def create_reviewed_starter_mesocycle(template_id,selected_days,reviewed_sessions,length_weeks=4,label=None,prescription=None,session_labels=None):
  if not reviewed_sessions:raise ValueError('The reviewed plan is empty.')
  days=list(selected_days or [])
  if len(days)<len(reviewed_sessions):raise ValueError('Select enough training days for every reviewed session.')
@@ -1486,7 +1533,7 @@ def create_reviewed_starter_mesocycle(template_id,selected_days,reviewed_session
    for order,(name,weight) in enumerate(clean,1):
     row=c.execute("SELECT category,COALESCE(movement_type,'Isolation') FROM exercise_dict WHERE name=?",(name,)).fetchone()
     if not row:raise ValueError(f'Exercise is unavailable: {name}')
-    reps=10 if row[1]=='Compound' else 12
+    rx=prescription or {};rep_text=rx.get('compound_reps','8-12') if row[1]=='Compound' else rx.get('accessory_reps','10-15');reps=int(str(rep_text).split('-')[-1])
     for week in range(1,int(length_weeks)+1):c.execute("INSERT INTO workout_sessions(date,exercise,category,day_of_week,week,target_weight,target_reps,status,movement_type,meso_number,schedule_origin_day,workout_order) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",(datetime.now().strftime('%Y-%m-%d'),name,row[0],day,str(week),weight,reps,STATUS_PENDING,row[1],meso,day,order))
-  upsert_meso_config(c,meso,int(length_weeks),json.dumps(days),json.dumps({'mode':'guided_reviewed','template':template_id,'equipment_filtered':True,'starting_loads_user_entered':True}),0,json.dumps(blueprint));c.commit()
+  upsert_meso_config(c,meso,int(length_weeks),json.dumps(days),json.dumps({'mode':'guided_reviewed','template':template_id,'equipment_filtered':True,'starting_loads_user_entered':True,'prescription':prescription or {},'session_labels':session_labels or {}}),0,json.dumps(blueprint));c.commit()
  return meso

@@ -3200,17 +3200,22 @@ class WorkoutTrackerApp:
         status=ft.Text(size=9,color='cyan200')
         progress=ft.Text(size=9,color='white70')
         plan_preview=ft.Column(spacing=2,tight=True)
+        prescription_view=ft.Column(spacing=2,tight=True)
+        rx=starter_prescription(get_user_age(),self.get_text_setting('training_experience','Prefer not to specify'),self.get_text_setting('training_goal','General fitness'))
         def selected_days():return [x.label for x in checks if x.value]
         def session_for(day_index):
             base=STARTER_PLAN_BLUEPRINTS.get(template.value,[])
             return base[day_index%len(base)] if base else []
+        def session_label(day_index):
+            labels=STARTER_SESSION_LABELS.get(template.value,[])
+            return labels[day_index%len(labels)] if labels else f'Session {day_index+1}'
         def render_day(ev=None):
             day=day_picker.value
             while len(review_surface.controls)>header_count:review_surface.controls.pop()
             if not day:review_surface.controls.append(ft.Text('Select at least one training day.'));return
             idx=selected_days().index(day);rows=editor_by_day.get(day,[])
             progress.value=f'Reviewing day {idx+1} of {len(selected_days())}: {day}'
-            review_surface.controls.append(ft.Text(f'{day.upper()} • SESSION {(idx%max(1,len(STARTER_PLAN_BLUEPRINTS.get(template.value,[]))))+1}',weight='bold',color='cyan300'))
+            review_surface.controls.append(ft.Text(f'{day.upper()} • {session_label(idx).upper()}',weight='bold',color='cyan300'))
             review_surface.controls.append(ft.Text('Starting load is optional. Leave 0 lb to establish the working weight during the first session.',size=9,color='white54'))
             for reference,dd,weight in rows:review_surface.controls.append(ft.Column([dd,weight],spacing=2,tight=True))
             try:review_surface.update();progress.update()
@@ -3231,9 +3236,15 @@ class WorkoutTrackerApp:
             if reset_plan:editor_by_day.clear()
             meta=next((x for x in choices if x['id']==template.value),{})
             base=STARTER_PLAN_BLUEPRINTS.get(template.value,[])
+            labels=STARTER_SESSION_LABELS.get(template.value,[])
             plan_preview.controls=[ft.Text(meta.get('description',''),size=9,color='white70')]
-            for index,session in enumerate(base,1):
-                plan_preview.controls.append(ft.Text(f'Session {index}: '+', '.join(session),size=9,color='cyan200'))
+            for index,session in enumerate(base):
+                plan_preview.controls.append(ft.Text(f'{labels[index] if index<len(labels) else "Session "+str(index+1)}: '+', '.join(session),size=9,color='cyan200'))
+            prescription_view.controls=[
+                ft.Text(f"Experience: {rx['experience']} • Goal: {rx['goal']}",size=9,color='white70'),
+                ft.Text(f"Age profile: {rx['age_profile']} • Initial progression: {rx['progression']}",size=9,color='cyan200'),
+                ft.Text(f"Starting volume: {rx['working_sets']} working sets • Compounds {rx['compound_reps']} reps • Accessories {rx['accessory_reps']} reps",size=9,color='cyan200'),
+                ft.Text(f"Programming emphasis: {rx['emphasis']} • {rx['complexity']}",size=9,color='white70')]
             prior={day:[(ref,dd.value,wt.value) for ref,dd,wt in rows] for day,rows in editor_by_day.items()};editor_by_day.clear();chosen=selected_days()
             for idx,day in enumerate(chosen):
                 rows=[]
@@ -3278,12 +3289,12 @@ class WorkoutTrackerApp:
                 reviewed.append(entries)
             try:
                 self.save_setting('starter_template',template.value)
-                label=next((x['name'] for x in choices if x['id']==template.value),'Starter Plan');meso=create_reviewed_starter_mesocycle(template.value,chosen,reviewed,int(length.value),label)
+                label=next((x['name'] for x in choices if x['id']==template.value),'Starter Plan');meso=create_reviewed_starter_mesocycle(template.value,chosen,reviewed,int(length.value),label,rx,{day:session_label(i) for i,day in enumerate(chosen)})
                 with get_db() as conn:cur=conn.cursor();cur.execute("SELECT COUNT(*) FROM workout_sessions WHERE meso_number=?",(meso,));count=cur.fetchone()[0]
                 if count<=0:raise ValueError('No scheduled rows were created.')
                 self.safe_close(dialog);self.current_meso=meso;self.current_week='1';self.current_day=chosen[0];self.set_active_position();self.build_ui_shell();self.rebuild_navigation_headers();self.rebuild_entire_display();self.show_snackbar(f'{label} created for {length.value} weeks across {len(chosen)} training days.','green300')
             except Exception as err:self.show_snackbar(f'Could not create mesocycle: {err}','red300')
-        review_surface.controls=[ft.Text('Choose a plan style and review its default workouts. Changing Plan Style refreshes the preview and every selected day.',size=10),template,ft.Text('DEFAULT PLAN PREVIEW',weight='bold',size=10,color='cyan300'),plan_preview,length,ft.Text('TRAINING DAYS',weight='bold',size=10,color='cyan300'),days,status,ft.Row([previous_day,day_picker,next_day],spacing=2),progress,ft.Divider(height=5)]
+        review_surface.controls=[ft.Text('Choose a plan style and review its default workouts. Changing Plan Style refreshes the preview and every selected day.',size=10),template,ft.Text('YOUR STARTER PRESCRIPTION',weight='bold',size=10,color='cyan300'),prescription_view,ft.Text('DEFAULT PLAN PREVIEW',weight='bold',size=10,color='cyan300'),plan_preview,length,ft.Text('TRAINING DAYS',weight='bold',size=10,color='cyan300'),days,status,ft.Row([previous_day,day_picker,next_day],spacing=2),progress,ft.Divider(height=5)]
         header_count=len(review_surface.controls)
         rebuild()
         dialog=ft.AlertDialog(title=ft.Text('Guided Architect'),content=ft.Container(width=450,height=max(450,min(680,float(getattr(self.page,'height',720) or 720)-100)),content=review_surface),actions=[ft.TextButton('Advanced Architect',on_click=lambda ev:[self.safe_close(dialog),self.open_generator_view()]),ft.ElevatedButton('Create Meso',on_click=create)],inset_padding=7,content_padding=10,actions_padding=8)
