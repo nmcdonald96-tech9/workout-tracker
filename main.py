@@ -4440,21 +4440,21 @@ class WorkoutTrackerApp:
         with get_db() as conn:
             readiness_row = conn.execute("SELECT sleep,joints,drive,COALESCE(diet,0) FROM readiness_logs WHERE meso_number=? AND week=? AND day_of_week=?", (self.current_meso,self.current_week,self.current_day)).fetchone()
         readiness_logged = readiness_row is not None
-        initial = readiness_row if readiness_logged else (3,3,3,3)
+        initial = readiness_row if readiness_logged else (5,5,5,5)
         normalized = sum(float(v or 0) for v in initial) / 2.0
-        adjustment = get_readiness_adjustment(sum(int(v or 3) for v in initial[:3]), int(initial[1] or 3), "Compound")
+        adjustment = get_readiness_adjustment(sum(int(v or 5) for v in initial[:3]), int(initial[1] or 5), "Compound")
         adjustment_text = "No adjustment" if adjustment["reduction_pct"] <= 0 else f"Up to -{adjustment['reduction_pct']*100:g}% load, -{adjustment['rep_drop']} reps"
-        header=ft.Row([ft.Container(content=ft.Row([ft.Text("SESSION READINESS",size=9,weight="bold",color=COLOR_INFO),ft.Text(f"{normalized:.1f}/10",size=10,weight="bold",color="green300" if normalized>=8.5 else "amber300" if normalized>=7 else "red300"),ft.Text(adjustment_text,size=9,color=COLOR_MUTED,expand=True,text_align="right"),ft.Text("▼" if self.context_collapsed else "▲",size=11,color=COLOR_INFO)],spacing=5),padding=6,ink=True,on_click=self.toggle_context_panel,expand=True),ft.TextButton(f"{self.current_display_mode()}",on_click=self.open_display_mode,style=ft.ButtonStyle(padding=2))],spacing=3)
+        header=ft.Row([ft.Container(content=ft.Row([ft.Text("TODAY’S READINESS",size=9,weight="bold",color=COLOR_INFO),ft.Text(f"{normalized:.1f}/10",size=10,weight="bold",color="green300" if normalized>=8.5 else "amber300" if normalized>=7 else "red300"),ft.Text(adjustment_text,size=9,color=COLOR_MUTED,expand=True,text_align="right"),ft.Text("▼" if self.context_collapsed else "▲",size=11,color=COLOR_INFO)],spacing=5),padding=6,ink=True,on_click=self.toggle_context_panel,expand=True),ft.TextButton(f"{self.current_display_mode()}",on_click=self.open_display_mode,style=ft.ButtonStyle(padding=2))],spacing=3)
         if self.context_collapsed: return ft.Container(content=header,bgcolor="white5",border_radius=8)
         sleep_s=ft.Slider(min=1,max=5,divisions=4,value=int(initial[0] or 3),label="{value}"); joint_s=ft.Slider(min=1,max=5,divisions=4,value=int(initial[1] or 3),label="{value}"); drive_s=ft.Slider(min=1,max=5,divisions=4,value=int(initial[2] or 3),label="{value}"); diet_s=ft.Slider(min=1,max=5,divisions=4,value=int(initial[3] or 3),label="{value}")
         preview=ft.Text("",size=10,color="cyan200",weight="bold")
-        note_field=ft.TextField(label="Workout note",value=note,hint_text="Context, limitations, cues, or session observations",multiline=True,min_lines=1,max_lines=2,text_size=11)
+        note_field=ft.TextField(label="Add a workout note (optional)",value=note,hint_text="Context, limitations, cues, or session observations",multiline=True,min_lines=1,max_lines=2,text_size=11)
         tag_checks=[]
         def selected_tag_names(): return [c.label for c in tag_checks if c.value]
         def save_context(e=None): self.save_workout_context(note_field.value,selected_tag_names())
         def update_preview(e=None):
             score=int(sleep_s.value)+int(joint_s.value)+int(drive_s.value); compound=get_readiness_adjustment(score,int(joint_s.value),"Compound"); isolation=get_readiness_adjustment(score,int(joint_s.value),"Isolation")
-            preview.value="Projected: normal progression remains active." if max(compound["reduction_pct"],isolation["reduction_pct"])<=0 else f"Projected: Compound -{compound['reduction_pct']*100:g}%/-{compound['rep_drop']} reps • Isolation -{isolation['reduction_pct']*100:g}%/-{isolation['rep_drop']} reps"
+            preview.value="PROJECTED TODAY: Normal targets remain active." if max(compound["reduction_pct"],isolation["reduction_pct"])<=0 else f"PROJECTED TODAY: Compound -{compound['reduction_pct']*100:g}% / -{compound['rep_drop']} reps • Isolation -{isolation['reduction_pct']*100:g}% / -{isolation['rep_drop']} reps"
             try: preview.update()
             except Exception: pass
         def save_readiness(e=None):
@@ -4463,9 +4463,9 @@ class WorkoutTrackerApp:
                 conn.execute("DELETE FROM readiness_logs WHERE date=? OR (meso_number=? AND week=? AND day_of_week=?)",(readiness_date,self.current_meso,self.current_week,self.current_day)); conn.execute("INSERT INTO readiness_logs(date,sleep,joints,drive,diet,meso_number,week,day_of_week) VALUES(?,?,?,?,?,?,?,?)",(readiness_date,int(sleep_s.value),int(joint_s.value),int(drive_s.value),int(diet_s.value),self.current_meso,self.current_week,self.current_day)); conn.commit()
             save_context(); self.show_snackbar("Readiness updated. Pending targets recalculated; completed sets preserved.",COLOR_SUCCESS); self.rebuild_entire_display()
         for slider in (sleep_s,joint_s,drive_s,diet_s): slider.on_change=update_preview
-        note_field.on_blur=save_context; tag_checks=build_tag_controls(ft,SESSION_TAG_OPTIONS,selected_tags,save_context); update_preview()
-        sliders=ft.Column([ft.Row([ft.Column([ft.Text("Sleep",size=10),sleep_s],expand=True),ft.Column([ft.Text("Joints",size=10),joint_s],expand=True)]),ft.Row([ft.Column([ft.Text("Drive",size=10),drive_s],expand=True),ft.Column([ft.Text("Diet",size=10),diet_s],expand=True)])],spacing=2)
-        return ft.Container(content=ft.Column([header,preview,sliders,ft.Row(tag_checks,spacing=2,wrap=True),note_field,ft.Row([ft.ElevatedButton("Update Readiness" if readiness_logged else "Log Readiness",on_click=save_readiness,expand=True,height=36,style=ft.ButtonStyle(bgcolor="blue700",color="white")),ft.ElevatedButton("Short Session",on_click=self.open_short_session,expand=True,height=36,style=ft.ButtonStyle(bgcolor="teal700",color="white"))],spacing=6),ft.Text("Readiness sets the tone. Keep selected exercises and skip or roll the remainder.",size=9,color=COLOR_MUTED,italic=True)],spacing=4,tight=True),bgcolor="white5",border_radius=8,padding=4)
+        note_field.on_blur=save_context; tag_checks=build_tag_controls(ft,[x for x in SESSION_TAG_OPTIONS if x != "Short Session"],selected_tags,save_context); update_preview()
+        sliders=ft.Column([ft.Row([ft.Column([ft.Text("How well did you sleep?",size=10),sleep_s],expand=True),ft.Column([ft.Text("How do your joints feel?",size=10),joint_s],expand=True)]),ft.Row([ft.Column([ft.Text("How ready are you to train?",size=10),drive_s],expand=True),ft.Column([ft.Text("How supportive has your nutrition been?",size=10),diet_s],expand=True)])],spacing=2)
+        return ft.Container(content=ft.Column([header,preview,sliders,ft.Row(tag_checks,spacing=2,wrap=True),note_field,ft.Row([ft.ElevatedButton("Update Check-In" if readiness_logged else "Save Check-In",on_click=save_readiness,expand=True,height=36,style=ft.ButtonStyle(bgcolor="blue700",color="white")),ft.ElevatedButton("Shorten Workout",on_click=self.open_short_session,expand=True,height=36,style=ft.ButtonStyle(bgcolor="teal700",color="white"))],spacing=6),ft.Text("Readiness adjusts today’s workout. Completed sets, RPE, and history guide future progression.",size=9,color=COLOR_MUTED,italic=True)],spacing=4,tight=True),bgcolor="white5",border_radius=8,padding=4)
 
     def toggle_navigation_rows(self, e=None):
         self.nav_collapsed = not self.nav_collapsed
