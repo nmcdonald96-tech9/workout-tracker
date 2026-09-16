@@ -1969,7 +1969,6 @@ class WorkoutTrackerApp:
         experience=ft.Dropdown(label='Training experience',value=self.get_text_setting('training_experience',EXPERIENCE_LEVELS[0]),options=[ft.dropdown.Option(x) for x in EXPERIENCE_LEVELS])
         goal=ft.Dropdown(label='Primary goal',value=self.get_text_setting('training_goal',ONBOARDING_GOALS[0]),options=[ft.dropdown.Option(x) for x in ONBOARDING_GOALS])
         equipment=ft.Column([ft.Checkbox(label=x,value=x in set(json.loads(self.get_text_setting('available_equipment','[]') or '[]'))) for x in ONBOARDING_EQUIPMENT],spacing=0)
-        template=ft.Dropdown(label='Starting plan',value=self.get_text_setting('starter_template','general_full_body'),options=[ft.dropdown.Option(x['id'],x['name']) for x in STARTER_TEMPLATES])
         summary=ft.Text(f"{len(CANONICAL_EXERCISES)} standard exercises are available. Favorites will appear first in future add and replace pickers.",size=10,color='cyan200')
         def continue_to_architect(ev):
             try:
@@ -1978,11 +1977,11 @@ class WorkoutTrackerApp:
             except Exception:self.show_snackbar('Enter a valid age and bodyweight.','red300');return
             chosen=[x.label for x in equipment.controls if x.value]
             if not chosen:self.show_snackbar('Select at least one available equipment option.','amber300');return
-            for k,v in [('profile_name',name.value.strip()),('profile_age',str(int(av))),('age',str(int(av))),('bodyweight',str(wv)),('training_experience',experience.value),('progression_profile',str({'New to resistance training':1,'Some experience':2,'Experienced':3,'Prefer not to specify':0}.get(experience.value,0))),('training_goal',goal.value),('available_equipment',json.dumps(chosen)),('starter_template',template.value),('onboarding_completed','1'),('onboarding_version','1')]:self.save_setting(k,v)
-            self.safe_close(dialog);self.show_snackbar('Profile saved. Opening Guided Architect.','green300');self.open_guided_architect(preselected_template=template.value)
+            for k,v in [('profile_name',name.value.strip()),('profile_age',str(int(av))),('age',str(int(av))),('bodyweight',str(wv)),('training_experience',experience.value),('progression_profile',str({'New to resistance training':1,'Some experience':2,'Experienced':3,'Prefer not to specify':0}.get(experience.value,0))),('training_goal',goal.value),('available_equipment',json.dumps(chosen)),('onboarding_completed','1'),('onboarding_version','1')]:self.save_setting(k,v)
+            self.safe_close(dialog);self.show_snackbar('Profile saved. Opening Guided Architect.','green300');self.open_guided_architect()
         def later(ev):
             self.save_setting('onboarding_seen','1');self.safe_close(dialog)
-        content=ft.Column([ft.Text('Welcome to IronCycle',size=18,weight='bold',color='cyan200'),ft.Text('Create a profile, identify available equipment, and choose a starting plan. IronCycle will use experience to select a safer progression profile.',size=10),name,ft.Column([age,weight],spacing=6,tight=True),experience,goal,ft.Text('AVAILABLE EQUIPMENT',size=10,weight='bold',color='cyan300'),equipment,template,summary,ft.Text('Next, Guided Architect will let you review and customize the mesocycle before anything is activated.',size=9,color='white54')],scroll='auto',spacing=7)
+        content=ft.Column([ft.Text('Welcome to IronCycle',size=18,weight='bold',color='cyan200'),ft.Text('Create a profile, identify available equipment, and choose a starting plan. IronCycle will use experience to select a safer progression profile.',size=10),name,ft.Column([age,weight],spacing=6,tight=True),experience,goal,ft.Text('AVAILABLE EQUIPMENT',size=10,weight='bold',color='cyan300'),equipment,summary,ft.Text('Next, Guided Architect will show each default plan and let you choose the workouts before anything is activated.',size=9,color='white54')],scroll='auto',spacing=7)
         dialog=ft.AlertDialog(title=ft.Text('First Setup'),content=ft.Container(width=430,height=max(430,min(650,float(getattr(self.page,'height',700) or 700)-110)),content=content),actions=[ft.TextButton('Not Now',on_click=later),ft.ElevatedButton('Continue to Architect',on_click=continue_to_architect)],inset_padding=10)
         self.safe_open(dialog)
 
@@ -3199,6 +3198,7 @@ class WorkoutTrackerApp:
         editor_by_day={}
         status=ft.Text(size=9,color='cyan200')
         progress=ft.Text(size=9,color='white70')
+        plan_preview=ft.Column(spacing=2,tight=True)
         def selected_days():return [x.label for x in checks if x.value]
         def session_for(day_index):
             base=STARTER_PLAN_BLUEPRINTS.get(template.value,[])
@@ -3227,6 +3227,11 @@ class WorkoutTrackerApp:
         next_day.on_click=lambda ev:move_day(1)
 
         def rebuild(ev=None):
+            meta=next((x for x in choices if x['id']==template.value),{})
+            base=STARTER_PLAN_BLUEPRINTS.get(template.value,[])
+            plan_preview.controls=[ft.Text(meta.get('description',''),size=9,color='white70')]
+            for index,session in enumerate(base,1):
+                plan_preview.controls.append(ft.Text(f'Session {index}: '+', '.join(session),size=9,color='cyan200'))
             prior={day:[(ref,dd.value,wt.value) for ref,dd,wt in rows] for day,rows in editor_by_day.items()};editor_by_day.clear();chosen=selected_days()
             for idx,day in enumerate(chosen):
                 rows=[]
@@ -3245,7 +3250,7 @@ class WorkoutTrackerApp:
             except:pass
             render_day()
         for x in checks:x.on_change=rebuild
-        template.on_select=rebuild;day_picker.on_select=render_day;rebuild()
+        template.on_change=rebuild;day_picker.on_change=render_day
         def create(ev):
             chosen=selected_days()
             if not chosen:self.show_snackbar('Select at least one training day.','amber300');return
@@ -3265,9 +3270,9 @@ class WorkoutTrackerApp:
                 if count<=0:raise ValueError('No scheduled rows were created.')
                 self.safe_close(dialog);self.current_meso=meso;self.current_week='1';self.current_day=chosen[0];self.set_active_position();self.build_ui_shell();self.rebuild_navigation_headers();self.rebuild_entire_display();self.show_snackbar(f'{label} created for {length.value} weeks across {len(chosen)} training days.','green300')
             except Exception as err:self.show_snackbar(f'Could not create mesocycle: {err}','red300')
-        review_surface.controls=[ft.Text('Choose days, then review one day at a time. The complete header now scrolls out of the way with the exercise editor.',size=10),template,length,ft.Text('TRAINING DAYS',weight='bold',size=10,color='cyan300'),days,status,ft.Row([previous_day,day_picker,next_day],spacing=2),progress,ft.Divider(height=5)]
+        review_surface.controls=[ft.Text('Choose a plan style and review its default workouts. Changing Plan Style refreshes the preview and every selected day.',size=10),template,ft.Text('DEFAULT PLAN PREVIEW',weight='bold',size=10,color='cyan300'),plan_preview,length,ft.Text('TRAINING DAYS',weight='bold',size=10,color='cyan300'),days,status,ft.Row([previous_day,day_picker,next_day],spacing=2),progress,ft.Divider(height=5)]
         header_count=len(review_surface.controls)
-        render_day()
+        rebuild()
         dialog=ft.AlertDialog(title=ft.Text('Guided Architect'),content=ft.Container(width=450,height=max(450,min(680,float(getattr(self.page,'height',720) or 720)-100)),content=review_surface),actions=[ft.TextButton('Advanced Architect',on_click=lambda ev:[self.safe_close(dialog),self.open_generator_view()]),ft.ElevatedButton('Create Meso',on_click=create)],inset_padding=7,content_padding=10,actions_padding=8)
         self.safe_open(dialog)
 
