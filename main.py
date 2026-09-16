@@ -3226,7 +3226,8 @@ class WorkoutTrackerApp:
         previous_day.on_click=lambda ev:move_day(-1)
         next_day.on_click=lambda ev:move_day(1)
 
-        def rebuild(ev=None):
+        def rebuild(ev=None,reset_plan=False):
+            if reset_plan:editor_by_day.clear()
             meta=next((x for x in choices if x['id']==template.value),{})
             base=STARTER_PLAN_BLUEPRINTS.get(template.value,[])
             plan_preview.controls=[ft.Text(meta.get('description',''),size=9,color='white70')]
@@ -3249,8 +3250,14 @@ class WorkoutTrackerApp:
             try:day_picker.update();status.update()
             except:pass
             render_day()
+        def change_plan(ev):
+            selected_value=getattr(ev.control,'value',None) if ev and getattr(ev,'control',None) else None
+            if selected_value:template.value=selected_value
+            rebuild(reset_plan=True)
+            try:plan_preview.update();review_surface.update()
+            except:pass
         for x in checks:x.on_change=rebuild
-        template.on_change=rebuild;day_picker.on_change=render_day
+        template.on_change=change_plan;day_picker.on_change=render_day
         def create(ev):
             chosen=selected_days()
             if not chosen:self.show_snackbar('Select at least one training day.','amber300');return
@@ -3265,6 +3272,7 @@ class WorkoutTrackerApp:
                     seen.add(dd.value);entries.append({'name':dd.value,'weight':load})
                 reviewed.append(entries)
             try:
+                self.save_setting('starter_template',template.value)
                 label=next((x['name'] for x in choices if x['id']==template.value),'Starter Plan');meso=create_reviewed_starter_mesocycle(template.value,chosen,reviewed,int(length.value),label)
                 with get_db() as conn:cur=conn.cursor();cur.execute("SELECT COUNT(*) FROM workout_sessions WHERE meso_number=?",(meso,));count=cur.fetchone()[0]
                 if count<=0:raise ValueError('No scheduled rows were created.')
