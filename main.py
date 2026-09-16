@@ -3195,6 +3195,7 @@ class WorkoutTrackerApp:
         previous_day=ft.IconButton(ft.Icons.CHEVRON_LEFT,tooltip='Previous selected day')
         next_day=ft.IconButton(ft.Icons.CHEVRON_RIGHT,tooltip='Next selected day')
         review_surface=ft.ListView(spacing=6,padding=2,expand=True)
+        header_count=0  # initialized before rebuild() can call render_day()
         editor_by_day={}
         status=ft.Text(size=9,color='cyan200')
         progress=ft.Text(size=9,color='white70')
