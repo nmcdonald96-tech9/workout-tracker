@@ -3194,7 +3194,7 @@ class WorkoutTrackerApp:
         day_picker=ft.Dropdown(label='Review day',expand=True)
         previous_day=ft.IconButton(ft.Icons.CHEVRON_LEFT,tooltip='Previous selected day')
         next_day=ft.IconButton(ft.Icons.CHEVRON_RIGHT,tooltip='Next selected day')
-        day_editor=ft.ListView(spacing=6,padding=2,expand=True)
+        review_surface=ft.ListView(spacing=6,padding=2,expand=True)
         editor_by_day={}
         status=ft.Text(size=9,color='cyan200')
         progress=ft.Text(size=9,color='white70')
@@ -3203,14 +3203,15 @@ class WorkoutTrackerApp:
             base=STARTER_PLAN_BLUEPRINTS.get(template.value,[])
             return base[day_index%len(base)] if base else []
         def render_day(ev=None):
-            day=day_picker.value;day_editor.controls.clear()
-            if not day:day_editor.controls.append(ft.Text('Select at least one training day.'));return
+            day=day_picker.value
+            while len(review_surface.controls)>header_count:review_surface.controls.pop()
+            if not day:review_surface.controls.append(ft.Text('Select at least one training day.'));return
             idx=selected_days().index(day);rows=editor_by_day.get(day,[])
             progress.value=f'Reviewing day {idx+1} of {len(selected_days())}: {day}'
-            day_editor.controls.append(ft.Text(f'{day.upper()} • SESSION {(idx%max(1,len(STARTER_PLAN_BLUEPRINTS.get(template.value,[]))))+1}',weight='bold',color='cyan300'))
-            day_editor.controls.append(ft.Text('Starting load is optional. Leave 0 lb to establish the working weight during the first session.',size=9,color='white54'))
-            for reference,dd,weight in rows:day_editor.controls.append(ft.Column([dd,weight],spacing=2,tight=True))
-            try:day_editor.update();progress.update()
+            review_surface.controls.append(ft.Text(f'{day.upper()} • SESSION {(idx%max(1,len(STARTER_PLAN_BLUEPRINTS.get(template.value,[]))))+1}',weight='bold',color='cyan300'))
+            review_surface.controls.append(ft.Text('Starting load is optional. Leave 0 lb to establish the working weight during the first session.',size=9,color='white54'))
+            for reference,dd,weight in rows:review_surface.controls.append(ft.Column([dd,weight],spacing=2,tight=True))
+            try:review_surface.update();progress.update()
             except:pass
         def move_day(step):
             chosen=selected_days()
@@ -3263,9 +3264,10 @@ class WorkoutTrackerApp:
                 if count<=0:raise ValueError('No scheduled rows were created.')
                 self.safe_close(dialog);self.current_meso=meso;self.current_week='1';self.current_day=chosen[0];self.set_active_position();self.build_ui_shell();self.rebuild_navigation_headers();self.rebuild_entire_display();self.show_snackbar(f'{label} created for {length.value} weeks across {len(chosen)} training days.','green300')
             except Exception as err:self.show_snackbar(f'Could not create mesocycle: {err}','red300')
-        top=ft.Column([ft.Text('Choose days, then review one day at a time. This avoids losing later days below a long mobile form.',size=10),template,length,ft.Text('TRAINING DAYS',weight='bold',size=10,color='cyan300'),days,status,ft.Row([previous_day,day_picker,next_day],spacing=2),progress],spacing=5,tight=True)
-        body=ft.Column([top,ft.Divider(height=5),day_editor],spacing=4,expand=True)
-        dialog=ft.AlertDialog(title=ft.Text('Guided Architect'),content=ft.Container(width=450,height=max(450,min(680,float(getattr(self.page,'height',720) or 720)-100)),content=body),actions=[ft.TextButton('Advanced Architect',on_click=lambda ev:[self.safe_close(dialog),self.open_generator_view()]),ft.ElevatedButton('Create Meso',on_click=create)],inset_padding=7,content_padding=10,actions_padding=8)
+        review_surface.controls=[ft.Text('Choose days, then review one day at a time. The complete header now scrolls out of the way with the exercise editor.',size=10),template,length,ft.Text('TRAINING DAYS',weight='bold',size=10,color='cyan300'),days,status,ft.Row([previous_day,day_picker,next_day],spacing=2),progress,ft.Divider(height=5)]
+        header_count=len(review_surface.controls)
+        render_day()
+        dialog=ft.AlertDialog(title=ft.Text('Guided Architect'),content=ft.Container(width=450,height=max(450,min(680,float(getattr(self.page,'height',720) or 720)-100)),content=review_surface),actions=[ft.TextButton('Advanced Architect',on_click=lambda ev:[self.safe_close(dialog),self.open_generator_view()]),ft.ElevatedButton('Create Meso',on_click=create)],inset_padding=7,content_padding=10,actions_padding=8)
         self.safe_open(dialog)
 
     def open_generator_view(self, e=None):
