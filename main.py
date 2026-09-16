@@ -532,9 +532,7 @@ class ExerciseCard(ft.Card):
 
             rpe_f = ft.TextField(
                 value=set_data["rpe"],
-                label="RPE",
-                helper_text="Effort 1-10; 8≈2 reps left, 9≈1, 10=max",
-                helper_style=ft.TextStyle(color="white54", size=8),
+                label="RPE 1-10",
                 hint_text=str(rpe_hint),
                 hint_style=ft.TextStyle(color="white54", size=12),
                 label_style=ft.TextStyle(color="cyan200", size=10, weight="bold"),
