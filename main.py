@@ -1977,7 +1977,7 @@ class WorkoutTrackerApp:
             except Exception:self.show_snackbar('Enter a valid age and bodyweight.','red300');return
             chosen=[x.label for x in equipment.controls if x.value]
             if not chosen:self.show_snackbar('Select at least one available equipment option.','amber300');return
-            for k,v in [('profile_name',name.value.strip()),('profile_age',str(int(av))),('age',str(int(av))),('bodyweight',str(wv)),('training_experience',experience.value),('progression_profile',str({'New to resistance training':1,'Some experience':2,'Experienced':3,'Prefer not to specify':0}.get(experience.value,0))),('training_goal',goal.value),('available_equipment',json.dumps(chosen)),('onboarding_completed','1'),('onboarding_version','1')]:self.save_setting(k,v)
+            for k,v in [('profile_name',name.value.strip()),('profile_age',str(int(av))),('age',str(int(av))),('bodyweight',str(wv)),('training_experience',experience.value),('progression_profile','0'),('pacing_override_user_set','0'),('training_goal',goal.value),('available_equipment',json.dumps(chosen)),('onboarding_completed','1'),('onboarding_version','1')]:self.save_setting(k,v)
             self.safe_close(dialog);self.show_snackbar('Profile saved. Opening Guided Architect.','green300');self.open_guided_architect()
         def later(ev):
             self.save_setting('onboarding_seen','1');self.safe_close(dialog)
@@ -2040,6 +2040,7 @@ class WorkoutTrackerApp:
                     cursor.execute("INSERT OR REPLACE INTO user_settings (setting_key, setting_value) VALUES ('bodyweight', ?)", (str(new_bw),))
                     cursor.execute("INSERT OR REPLACE INTO user_settings (setting_key, setting_value) VALUES ('age', ?)", (str(new_age),))
                     cursor.execute("INSERT OR REPLACE INTO user_settings (setting_key, setting_value) VALUES ('progression_profile', ?)", (str(new_profile),))
+                    cursor.execute("INSERT OR REPLACE INTO user_settings (setting_key, setting_value) VALUES ('pacing_override_user_set', '1')")
                     cursor.execute("INSERT OR REPLACE INTO user_settings (setting_key, setting_value) VALUES ('sex', ?)", (new_sex,))
                     cursor.execute("INSERT OR REPLACE INTO user_settings (setting_key, setting_value) VALUES ('workout_focus_mode', ?)", ("1" if new_focus_mode else "0",))
                     cursor.execute("INSERT OR REPLACE INTO user_settings (setting_key, setting_value) VALUES ('ui_density', ?)", (new_density,))
@@ -2061,7 +2062,7 @@ class WorkoutTrackerApp:
                 ft.Text("Used for strength standards comparisons.", size=10, color="white54"),
                 ft.Divider(height=10, color="transparent"),
                 ft.Text("Pacing Override", size=13, weight="bold", color="white"),
-                ft.Text("Force the engine to progress faster or slower.", size=11, color="white54"),
+                ft.Text("Auto is recommended. Override only when you intentionally want to bypass age-based pacing.", size=11, color="white54"),
                 self.slider_label,
                 self.profile_slider,
                 ft.Divider(height=10, color="transparent"),
@@ -3199,6 +3200,7 @@ class WorkoutTrackerApp:
         editor_by_day={}
         status=ft.Text(size=9,color='cyan200')
         progress=ft.Text(size=9,color='white70')
+        reset_note=ft.Text('Changing Plan Style resets unsaved exercise substitutions for every day.',size=9,color='amber300')
         plan_preview=ft.Column(spacing=2,tight=True)
         prescription_view=ft.Column(spacing=2,tight=True)
         rx=starter_prescription(get_user_age(),self.get_text_setting('training_experience','Prefer not to specify'),self.get_text_setting('training_goal','General fitness'))
@@ -3231,6 +3233,18 @@ class WorkoutTrackerApp:
             render_day()
         previous_day.on_click=lambda ev:move_day(-1)
         next_day.on_click=lambda ev:move_day(1)
+        def restore_day(ev=None):
+            day=day_picker.value
+            if not day:return
+            editor_by_day.pop(day,None)
+            rebuild()
+            self.show_snackbar(f'{day} restored to {session_label(selected_days().index(day))}.','cyan300')
+        def restore_plan(ev=None):
+            editor_by_day.clear()
+            rebuild()
+            self.show_snackbar('Entire starter plan restored to defaults.','cyan300')
+        restore_day_button=ft.TextButton('Restore This Day',on_click=restore_day)
+        restore_plan_button=ft.TextButton('Restore Entire Plan',on_click=restore_plan)
 
         def rebuild(ev=None,reset_plan=False):
             if reset_plan:editor_by_day.clear()
@@ -3243,6 +3257,7 @@ class WorkoutTrackerApp:
             prescription_view.controls=[
                 ft.Text(f"Experience: {rx['experience']} • Goal: {rx['goal']}",size=9,color='white70'),
                 ft.Text(f"Age profile: {rx['age_profile']} • Initial progression: {rx['progression']}",size=9,color='cyan200'),
+                ft.Text('Pacing Override: Auto (age-based progression remains active)',size=9,color='green300'),
                 ft.Text(f"Starting volume: {rx['working_sets']} working sets • Compounds {rx['compound_reps']} reps • Accessories {rx['accessory_reps']} reps",size=9,color='cyan200'),
                 ft.Text(f"Programming emphasis: {rx['emphasis']} • {rx['complexity']}",size=9,color='white70')]
             prior={day:[(ref,dd.value,wt.value) for ref,dd,wt in rows] for day,rows in editor_by_day.items()};editor_by_day.clear();chosen=selected_days()
@@ -3294,7 +3309,7 @@ class WorkoutTrackerApp:
                 if count<=0:raise ValueError('No scheduled rows were created.')
                 self.safe_close(dialog);self.current_meso=meso;self.current_week='1';self.current_day=chosen[0];self.set_active_position();self.build_ui_shell();self.rebuild_navigation_headers();self.rebuild_entire_display();self.show_snackbar(f'{label} created for {length.value} weeks across {len(chosen)} training days.','green300')
             except Exception as err:self.show_snackbar(f'Could not create mesocycle: {err}','red300')
-        review_surface.controls=[ft.Text('Choose a plan style and review its default workouts. Changing Plan Style refreshes the preview and every selected day.',size=10),template,ft.Text('YOUR STARTER PRESCRIPTION',weight='bold',size=10,color='cyan300'),prescription_view,ft.Text('DEFAULT PLAN PREVIEW',weight='bold',size=10,color='cyan300'),plan_preview,length,ft.Text('TRAINING DAYS',weight='bold',size=10,color='cyan300'),days,status,ft.Row([previous_day,day_picker,next_day],spacing=2),progress,ft.Divider(height=5)]
+        review_surface.controls=[ft.Text('Choose a plan style and review its default workouts. Changing Plan Style refreshes the preview and every selected day.',size=10),template,ft.Text('YOUR STARTER PRESCRIPTION',weight='bold',size=10,color='cyan300'),prescription_view,ft.Text('DEFAULT PLAN PREVIEW',weight='bold',size=10,color='cyan300'),plan_preview,length,ft.Text('TRAINING DAYS',weight='bold',size=10,color='cyan300'),days,status,ft.Row([previous_day,day_picker,next_day],spacing=2),progress,ft.Row([restore_day_button,restore_plan_button],wrap=True,spacing=2),reset_note,ft.Divider(height=5)]
         header_count=len(review_surface.controls)
         rebuild()
         dialog=ft.AlertDialog(title=ft.Text('Guided Architect'),content=ft.Container(width=450,height=max(450,min(680,float(getattr(self.page,'height',720) or 720)-100)),content=review_surface),actions=[ft.TextButton('Advanced Architect',on_click=lambda ev:[self.safe_close(dialog),self.open_generator_view()]),ft.ElevatedButton('Create Meso',on_click=create)],inset_padding=7,content_padding=10,actions_padding=8)

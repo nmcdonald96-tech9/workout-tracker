@@ -37,6 +37,12 @@ def init_and_seed_db():
         cursor.execute("INSERT OR IGNORE INTO user_settings (setting_key, setting_value) VALUES ('bodyweight', '0')")
         cursor.execute("INSERT OR IGNORE INTO user_settings (setting_key, setting_value) VALUES ('age', '0')")
         cursor.execute("INSERT OR IGNORE INTO user_settings (setting_key, setting_value) VALUES ('progression_profile', '0')") # 0 = Auto
+        # 1.57.1: First Setup must never convert experience into a pacing override.
+        override_marker=cursor.execute("SELECT setting_value FROM user_settings WHERE setting_key='pacing_override_user_set'").fetchone()
+        onboarding=cursor.execute("SELECT setting_value FROM user_settings WHERE setting_key='onboarding_completed'").fetchone()
+        if onboarding and onboarding[0]=='1' and not override_marker:
+            cursor.execute("INSERT OR REPLACE INTO user_settings(setting_key,setting_value) VALUES('progression_profile','0')")
+            cursor.execute("INSERT OR REPLACE INTO user_settings(setting_key,setting_value) VALUES('pacing_override_user_set','0')")
         cursor.execute("INSERT OR IGNORE INTO user_settings (setting_key, setting_value) VALUES ('workout_focus_mode', '0')")
         cursor.execute("INSERT OR IGNORE INTO user_settings (setting_key, setting_value) VALUES ('ui_density', 'comfortable')")
         cursor.execute("INSERT OR REPLACE INTO user_settings (setting_key, setting_value) VALUES ('schema_version', ?)", (str(DATABASE_SCHEMA_VERSION),))
