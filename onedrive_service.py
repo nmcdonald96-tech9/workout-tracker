@@ -1,7 +1,10 @@
 """MSAL-backed OneDrive App Folder transport for IronCycle 1.42.0."""
 import hashlib, json, os, threading, time, urllib.error, urllib.parse, urllib.request
 from datetime import datetime, timezone
-import msal
+try:
+ import msal
+except ImportError:
+ msal=None
 
 CLIENT_ID="cab9c010-af5e-4d42-918f-51ae4a6ebdd8"
 AUTHORITY="https://login.microsoftonline.com/common"
@@ -9,6 +12,16 @@ GRAPH="https://graph.microsoft.com/v1.0"
 SCOPES=["Files.ReadWrite.AppFolder", "User.Read"]
 VERIFY_URI_FALLBACK="https://microsoft.com/devicelogin"
 CACHE_FORMAT_VERSION=6
+
+
+class _UnavailableTokenCache:
+ def deserialize(self,value):return None
+ def serialize(self):return ""
+ @property
+ def has_state_changed(self):return False
+ @property
+ def has_state_change(self):return False
+ def find(self,*args,**kwargs):return []
 
 class OneDriveError(RuntimeError):
  def __init__(self,message,status=None,stage=None,graph_code=None,request_id=None,www_authenticate=None):
@@ -19,7 +32,7 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 class OneDriveService:
  def __init__(self,cache_path,pending_path):
-  self.cache_path,self.pending_path=cache_path,pending_path;self.cache_marker=cache_path+".v6";self._migrate_once();self.cache=msal.SerializableTokenCache()
+  self.cache_path,self.pending_path=cache_path,pending_path;self.cache_marker=cache_path+".v6";self._migrate_once();self.cache=msal.SerializableTokenCache() if msal is not None else _UnavailableTokenCache()
   if os.path.exists(cache_path):
    try:self.cache.deserialize(open(cache_path,encoding='utf-8').read())
    except Exception:pass
@@ -33,6 +46,7 @@ class OneDriveService:
  def _get_app(self,stage='authentication'):
   """Create MSAL lazily so app startup remains fully offline-safe."""
   if self.app is not None:return self.app
+  if msal is None:raise OneDriveError('OneDrive sign-in is unavailable in this build because the MSAL runtime was not packaged.',stage=stage)
   try:self.app=msal.PublicClientApplication(CLIENT_ID,authority=AUTHORITY,token_cache=self.cache)
   except Exception as e:raise OneDriveError(f'Network unavailable: {e}',stage=stage)
   return self.app
@@ -49,6 +63,7 @@ class OneDriveService:
   return f
  def has_account(self):
   # SerializableTokenCache can be inspected without MSAL authority discovery.
+  if msal is None:return False
   try:return bool(self.cache.find(msal.TokenCache.CredentialType.ACCOUNT))
   except Exception:return False
  def begin_device_flow(self,force_new=False):
