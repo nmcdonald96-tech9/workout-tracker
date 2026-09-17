@@ -1,10 +1,12 @@
 """MSAL-backed OneDrive App Folder transport for IronCycle 1.42.0."""
 import hashlib, json, os, threading, time, urllib.error, urllib.parse, urllib.request
 from datetime import datetime, timezone
+MSAL_IMPORT_ERROR=None
 try:
  import msal
-except ImportError:
+except Exception as error:
  msal=None
+ MSAL_IMPORT_ERROR=f'{type(error).__name__}: {error}'
 
 CLIENT_ID="cab9c010-af5e-4d42-918f-51ae4a6ebdd8"
 AUTHORITY="https://login.microsoftonline.com/common"
@@ -13,6 +15,17 @@ SCOPES=["Files.ReadWrite.AppFolder", "User.Read"]
 VERIFY_URI_FALLBACK="https://microsoft.com/devicelogin"
 CACHE_FORMAT_VERSION=6
 
+
+def onedrive_dependency_diagnostics():
+ results={}
+ for name in ('msal','requests','jwt','cryptography'):
+  try:
+   module=__import__(name)
+   results[name]={'available':True,'version':str(getattr(module,'__version__','unknown'))}
+  except Exception as error:
+   results[name]={'available':False,'error':f'{type(error).__name__}: {error}'}
+ if msal is None and MSAL_IMPORT_ERROR:results['msal']['error']=MSAL_IMPORT_ERROR
+ return results
 
 class _UnavailableTokenCache:
  def deserialize(self,value):return None
@@ -46,7 +59,9 @@ class OneDriveService:
  def _get_app(self,stage='authentication'):
   """Create MSAL lazily so app startup remains fully offline-safe."""
   if self.app is not None:return self.app
-  if msal is None:raise OneDriveError('OneDrive sign-in is unavailable in this build because the MSAL runtime was not packaged.',stage=stage)
+  if msal is None:
+   detail=MSAL_IMPORT_ERROR or 'MSAL package was not found'
+   raise OneDriveError(f'OneDrive sign-in is unavailable in this build. MSAL import failed: {detail}',stage=stage)
   try:self.app=msal.PublicClientApplication(CLIENT_ID,authority=AUTHORITY,token_cache=self.cache)
   except Exception as e:raise OneDriveError(f'Network unavailable: {e}',stage=stage)
   return self.app
