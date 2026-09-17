@@ -2772,6 +2772,10 @@ class WorkoutTrackerApp:
         if callable(getattr(self.page, "set_clipboard", None)):
             clipboard_paths.append("page.set_clipboard")
 
+        dependency_rows=onedrive_dependency_diagnostics()
+        def dependency_line(name):
+            item=dependency_rows.get(name,{})
+            return f"{name} packaged: Yes ({item.get('version','unknown')})" if item.get('available') else f"{name} packaged: No - {item.get('error','unknown import error')}"
         lines = [
             f"App version: {APP_VERSION}",
             f"Schema version: {DATABASE_SCHEMA_VERSION}",
@@ -2790,6 +2794,11 @@ class WorkoutTrackerApp:
             f"Trial days remaining: {self.entitlement_snapshot().days_remaining}",
             f"Limited mode: {'Yes' if self.entitlement_snapshot().limited_mode else 'No'}",
             f"Billing provider: {self.entitlement.billing_diagnostics().get('provider')}",
+            dependency_line("msal"),
+            dependency_line("requests"),
+            dependency_line("jwt"),
+            dependency_line("cryptography"),
+            "OneDrive authentication mode: Microsoft device code flow",
             f"Billing runtime status: {self.billing_status}",
             f"Billing ownership verified: {'Yes' if self.entitlement.billing_diagnostics().get('owned') else 'No'}",
             f"Billing verification time: {self.entitlement.billing_diagnostics().get('verified_at') or 'Never'}",
