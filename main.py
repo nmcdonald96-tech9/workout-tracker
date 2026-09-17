@@ -1527,18 +1527,20 @@ class WorkoutTrackerApp:
 
         # Equal-width side slots keep the mesocycle indicator truly centered.
         # The extra right inset keeps Menu clear of Android's landscape nav overlay.
-        self.nav_collapse_button = ft.TextButton(content=ft.Text("▲", size=12, color="cyan300"), on_click=self.toggle_navigation_rows, width=34)
+        self.nav_collapse_button = ft.TextButton(content=ft.Text("▲ Hide weeks and days", size=10, color="cyan300"), on_click=self.toggle_navigation_rows)
         self.nav_position_text = ft.Text("", size=11, color="white70", weight="bold")
         self.top_header_row = ft.Row([
-            ft.Container(content=self.nav_position_text, width=140, padding=4),
+            ft.Container(content=self.nav_position_text, padding=4),
             self.meso_nav_row,
-            ft.Container(content=ft.Row([self.nav_collapse_button, self.btn_menu], spacing=4), width=140, padding=4),
-        ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN, vertical_alignment=ft.CrossAxisAlignment.CENTER, spacing=0)
+            ft.Container(content=self.btn_menu, padding=4),
+        ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN, vertical_alignment=ft.CrossAxisAlignment.CENTER, spacing=2)
+        self.nav_toggle_row = ft.Row([self.nav_collapse_button], alignment=ft.MainAxisAlignment.START, spacing=0)
         self.week_header_row = ft.Row([self.week_nav_row], alignment=ft.MainAxisAlignment.START, vertical_alignment=ft.CrossAxisAlignment.CENTER)
         self.day_header_row = ft.Row([self.day_nav_row], alignment=ft.MainAxisAlignment.START, vertical_alignment=ft.CrossAxisAlignment.CENTER)
 
         self.navigation_header_container = ft.Column([
             self.top_header_row,
+            self.nav_toggle_row,
             self.week_header_row,
             self.day_header_row
         ], spacing=3)
@@ -1987,18 +1989,20 @@ class WorkoutTrackerApp:
         goal=ft.Dropdown(label='Primary goal',value=self.get_text_setting('training_goal',ONBOARDING_GOALS[0]),options=[ft.dropdown.Option(x) for x in ONBOARDING_GOALS])
         equipment=ft.Column([ft.Checkbox(label=x,value=x in set(json.loads(self.get_text_setting('available_equipment','[]') or '[]'))) for x in ONBOARDING_EQUIPMENT],spacing=0)
         summary=ft.Text(f"{len(CANONICAL_EXERCISES)} standard exercises are available. Favorites will appear first in future add and replace pickers.",size=10,color='cyan200')
+        safety_ack=ft.Checkbox(label='I understand IronCycle is a fitness planning tool, not medical advice. I am responsible for choosing appropriate activity and should seek professional guidance when needed.',value=self.get_text_setting('safety_terms_accepted','0')=='1')
         def continue_to_architect(ev):
             try:
                 av=float(age.value);wv=float(weight.value)
                 if not 13<=av<=110 or not 50<=wv<=1000:raise ValueError()
             except Exception:self.show_snackbar('Enter a valid age and bodyweight.','red300');return
+            if not safety_ack.value:self.show_snackbar('Review and accept the safety acknowledgment to continue.','amber300');return
             chosen=[x.label for x in equipment.controls if x.value]
             if not chosen:self.show_snackbar('Select at least one available equipment option.','amber300');return
-            for k,v in [('profile_name',name.value.strip()),('profile_age',str(int(av))),('age',str(int(av))),('bodyweight',str(wv)),('training_experience',experience.value),('progression_profile','0'),('pacing_override_user_set','0'),('training_goal',goal.value),('available_equipment',json.dumps(chosen)),('onboarding_completed','1'),('onboarding_version','1')]:self.save_setting(k,v)
+            for k,v in [('profile_name',name.value.strip()),('profile_age',str(int(av))),('age',str(int(av))),('bodyweight',str(wv)),('training_experience',experience.value),('progression_profile','0'),('pacing_override_user_set','0'),('training_goal',goal.value),('available_equipment',json.dumps(chosen)),('safety_terms_accepted','1'),('safety_terms_version','2026-09-17'),('onboarding_completed','1'),('onboarding_version','1')]:self.save_setting(k,v)
             self.safe_close(dialog);self.show_snackbar('Profile saved. Opening Guided Architect.','green300');self.open_guided_architect()
         def later(ev):
             self.save_setting('onboarding_seen','1');self.safe_close(dialog)
-        content=ft.Column([ft.Text('Welcome to IronCycle',size=18,weight='bold',color='cyan200'),ft.Text('Create a profile, identify available equipment, and choose a starting plan. IronCycle will use experience to select a safer progression profile.',size=10),name,ft.Column([age,weight],spacing=6,tight=True),experience,goal,ft.Text('AVAILABLE EQUIPMENT',size=10,weight='bold',color='cyan300'),equipment,summary,ft.Text('Next, Guided Architect will show each default plan and let you choose the workouts before anything is activated.',size=9,color='white54')],scroll='auto',spacing=7)
+        content=ft.Column([ft.Text('Welcome to IronCycle',size=18,weight='bold',color='cyan200'),ft.Text('Create a profile, identify available equipment, and choose a starting plan. IronCycle will use experience to select a safer progression profile.',size=10),name,ft.Column([age,weight],spacing=6,tight=True),experience,goal,ft.Text('AVAILABLE EQUIPMENT',size=10,weight='bold',color='cyan300'),equipment,summary,safety_ack,ft.Text('Next, Guided Architect will show each default plan and let you choose the workouts before anything is activated.',size=9,color='white54')],scroll='auto',spacing=7)
         dialog=ft.AlertDialog(title=ft.Text('First Setup'),content=ft.Container(width=430,height=max(430,min(650,float(getattr(self.page,'height',700) or 700)-110)),content=content),actions=[ft.TextButton('Not Now',on_click=later),ft.ElevatedButton('Continue to Architect',on_click=continue_to_architect)],inset_padding=10)
         self.safe_open(dialog)
 
@@ -4455,34 +4459,45 @@ class WorkoutTrackerApp:
     def build_workout_context_panel(self):
         note, selected_tags = self.get_workout_context()
         with get_db() as conn:
-            readiness_row = conn.execute("SELECT sleep,joints,drive,COALESCE(diet,0) FROM readiness_logs WHERE meso_number=? AND week=? AND day_of_week=?", (self.current_meso,self.current_week,self.current_day)).fetchone()
-        readiness_logged = readiness_row is not None
-        initial = readiness_row if readiness_logged else (5,5,5,5)
-        normalized = sum(float(v or 0) for v in initial) / 2.0
+            row = conn.execute("SELECT sleep,joints,drive,COALESCE(diet,0) FROM readiness_logs WHERE meso_number=? AND week=? AND day_of_week=?", (self.current_meso,self.current_week,self.current_day)).fetchone()
+        logged = row is not None
+        initial = row if logged else (5,5,5,5)
+        score = sum(float(v or 0) for v in initial) / 2.0
         adjustment = get_readiness_adjustment(sum(int(v or 5) for v in initial[:3]), int(initial[1] or 5), "Compound")
-        adjustment_text = "No adjustment" if adjustment["reduction_pct"] <= 0 else f"Up to -{adjustment['reduction_pct']*100:g}% load, -{adjustment['rep_drop']} reps"
-        header=ft.Row([ft.Container(content=ft.Row([ft.Text("TODAY’S READINESS",size=9,weight="bold",color=COLOR_INFO),ft.Text(f"{normalized:.1f}/10",size=10,weight="bold",color="green300" if normalized>=8.5 else "amber300" if normalized>=7 else "red300"),ft.Text(adjustment_text,size=9,color=COLOR_MUTED,expand=True,text_align="right"),ft.Text("▼" if self.context_collapsed else "▲",size=11,color=COLOR_INFO)],spacing=5),padding=6,ink=True,on_click=self.toggle_context_panel,expand=True),ft.TextButton(f"{self.current_display_mode()}",on_click=self.open_display_mode,style=ft.ButtonStyle(padding=2))],spacing=3)
-        if self.context_collapsed: return ft.Container(content=header,bgcolor="white5",border_radius=8)
-        sleep_s=ft.Slider(min=1,max=5,divisions=4,value=int(initial[0] or 3),label="{value}"); joint_s=ft.Slider(min=1,max=5,divisions=4,value=int(initial[1] or 3),label="{value}"); drive_s=ft.Slider(min=1,max=5,divisions=4,value=int(initial[2] or 3),label="{value}"); diet_s=ft.Slider(min=1,max=5,divisions=4,value=int(initial[3] or 3),label="{value}")
-        preview=ft.Text("",size=10,color="cyan200",weight="bold")
-        note_field=ft.TextField(label="Add a workout note (optional)",value=note,hint_text="Context, limitations, cues, or session observations",multiline=True,min_lines=1,max_lines=2,text_size=11)
-        tag_checks=[]
-        def selected_tag_names(): return [c.label for c in tag_checks if c.value]
-        def save_context(e=None): self.save_workout_context(note_field.value,selected_tag_names())
-        def update_preview(e=None):
-            score=int(sleep_s.value)+int(joint_s.value)+int(drive_s.value); compound=get_readiness_adjustment(score,int(joint_s.value),"Compound"); isolation=get_readiness_adjustment(score,int(joint_s.value),"Isolation")
+        adjustment_text = "Normal targets" if adjustment["reduction_pct"] <= 0 else f"Up to -{adjustment['reduction_pct']*100:g}% load, -{adjustment['rep_drop']} reps"
+        arrow = "▼ Adjust" if self.context_collapsed else "▲ Hide details"
+        header = ft.Row([ft.Text(f"TODAY’S READINESS  {score:.1f}/10",size=9,weight="bold",color=COLOR_INFO),ft.Text(adjustment_text,size=9,color=COLOR_MUTED),ft.TextButton(arrow,on_click=self.toggle_context_panel)],alignment=ft.MainAxisAlignment.SPACE_BETWEEN,spacing=2)
+        preview = ft.Text("PROJECTED TODAY: Normal targets remain active.",size=10,weight="bold",color=COLOR_INFO)
+        explanation = ft.Text("Readiness adjusts today’s workout. Completed sets, RPE, and workout history guide future progression.",size=9,color=COLOR_MUTED,italic=True)
+        sleep_s=ft.Slider(min=1,max=5,divisions=4,value=initial[0],label="{value}")
+        joint_s=ft.Slider(min=1,max=5,divisions=4,value=initial[1],label="{value}")
+        drive_s=ft.Slider(min=1,max=5,divisions=4,value=initial[2],label="{value}")
+        diet_s=ft.Slider(min=1,max=5,divisions=4,value=initial[3],label="{value}")
+        intent_values=["Normal","Strength","Hypertrophy","Technique","Recovery","PR Attempt"]
+        selected_intent=next((x for x in intent_values if x in selected_tags),"Normal")
+        intent=ft.Dropdown(label="Session intent",value=selected_intent,options=[ft.dropdown.Option(x) for x in intent_values],expand=True)
+        note_field=ft.TextField(label="Workout note (optional)",value=note or "",min_lines=1,max_lines=2,multiline=True)
+        def tags_now():return [] if intent.value=="Normal" else [intent.value]
+        def save_context(ev=None):self.save_workout_context(note_field.value,tags_now())
+        intent.on_change=save_context; note_field.on_blur=save_context
+        def update_preview(ev=None):
+            compound=get_readiness_adjustment(int(sleep_s.value+joint_s.value+drive_s.value),int(joint_s.value),"Compound")
+            isolation=get_readiness_adjustment(int(sleep_s.value+joint_s.value+drive_s.value),int(joint_s.value),"Isolation")
             preview.value="PROJECTED TODAY: Normal targets remain active." if max(compound["reduction_pct"],isolation["reduction_pct"])<=0 else f"PROJECTED TODAY: Compound -{compound['reduction_pct']*100:g}% / -{compound['rep_drop']} reps • Isolation -{isolation['reduction_pct']*100:g}% / -{isolation['rep_drop']} reps"
-            try: preview.update()
-            except Exception: pass
-        def save_readiness(e=None):
-            with get_db() as conn:
-                readiness_date=datetime.now().strftime("%Y-%m-%d")
-                conn.execute("DELETE FROM readiness_logs WHERE date=? OR (meso_number=? AND week=? AND day_of_week=?)",(readiness_date,self.current_meso,self.current_week,self.current_day)); conn.execute("INSERT INTO readiness_logs(date,sleep,joints,drive,diet,meso_number,week,day_of_week) VALUES(?,?,?,?,?,?,?,?)",(readiness_date,int(sleep_s.value),int(joint_s.value),int(drive_s.value),int(diet_s.value),self.current_meso,self.current_week,self.current_day)); conn.commit()
-            save_context(); self.show_snackbar("Readiness updated. Pending targets recalculated; completed sets preserved.",COLOR_SUCCESS); self.rebuild_entire_display()
-        for slider in (sleep_s,joint_s,drive_s,diet_s): slider.on_change=update_preview
-        note_field.on_blur=save_context; tag_checks=build_tag_controls(ft,[x for x in SESSION_TAG_OPTIONS if x != "Short Session"],selected_tags,save_context); update_preview()
-        sliders=ft.Column([ft.Row([ft.Column([ft.Text("How well did you sleep?",size=10),sleep_s],expand=True),ft.Column([ft.Text("How do your joints feel?",size=10),joint_s],expand=True)]),ft.Row([ft.Column([ft.Text("How ready are you to train?",size=10),drive_s],expand=True),ft.Column([ft.Text("How supportive has your nutrition been?",size=10),diet_s],expand=True)])],spacing=2)
-        return ft.Container(content=ft.Column([header,preview,sliders,ft.Row(tag_checks,spacing=2,wrap=True),note_field,ft.Row([ft.ElevatedButton("Update Check-In" if readiness_logged else "Save Check-In",on_click=save_readiness,expand=True,height=36,style=ft.ButtonStyle(bgcolor="blue700",color="white")),ft.ElevatedButton("Shorten Workout",on_click=self.open_short_session,expand=True,height=36,style=ft.ButtonStyle(bgcolor="teal700",color="white"))],spacing=6),ft.Text("Readiness adjusts today’s workout. Completed sets, RPE, and history guide future progression.",size=9,color=COLOR_MUTED,italic=True)],spacing=4,tight=True),bgcolor="white5",border_radius=8,padding=4)
+            try:preview.update()
+            except:pass
+        for control in (sleep_s,joint_s,drive_s,diet_s):control.on_change=update_preview
+        def save_readiness(ev):
+            log_readiness(self.current_meso,self.current_week,self.current_day,int(sleep_s.value),int(joint_s.value),int(drive_s.value),int(diet_s.value));save_context();self.show_snackbar("Check-in saved. Pending targets recalculated; completed sets preserved.",COLOR_SUCCESS);self.rebuild_entire_display()
+        details=ft.Column([
+            ft.Row([ft.Column([ft.Text("How well did you sleep?",size=10),sleep_s],expand=True),ft.Column([ft.Text("How do your joints feel?",size=10),joint_s],expand=True)],spacing=4),
+            ft.Row([ft.Column([ft.Text("How ready are you to train?",size=10),drive_s],expand=True),ft.Column([ft.Text("How supportive has your nutrition been?",size=10),diet_s],expand=True)],spacing=4),
+            ft.Row([intent,note_field],spacing=5),
+            ft.Row([ft.ElevatedButton("Update Check-In" if logged else "Save Check-In",on_click=save_readiness,expand=True,height=36),ft.ElevatedButton("Shorten Workout",on_click=self.open_short_session,expand=True,height=36)],spacing=6)
+        ],spacing=3,tight=True)
+        controls=[header,preview,explanation]
+        if not self.context_collapsed:controls.append(details)
+        return ft.Container(content=ft.Column(controls,spacing=2,tight=True),bgcolor="white5",border_radius=8,padding=4)
 
     def toggle_navigation_rows(self, e=None):
         self.nav_collapsed = not self.nav_collapsed
@@ -6244,7 +6259,7 @@ class WorkoutTrackerApp:
         # The workout header shows only the active mesocycle title.
         self.current_meso_title.value = self.current_meso_label()
         self.nav_position_text.value = f"W{self.current_week} • {self.current_day[:3]}"
-        self.nav_collapse_button.content.value = "▼" if self.nav_collapsed else "▲"
+        self.nav_collapse_button.content.value = "▼ Show weeks and days" if self.nav_collapsed else "▲ Hide weeks and days"
         self.week_header_row.visible = (self.view_mode == "workout" and not self.nav_collapsed)
         self.day_header_row.visible = (self.view_mode == "workout" and not self.nav_collapsed)
         week_completions = {}
