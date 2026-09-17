@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ironcycle-billing"
-version = "0.1.0"
+version = "0.1.1"
 description = "IronCycle Google Play Billing service for Flet"
 requires-python = ">=3.10"
 dependencies = ["flet==0.86.5"]
@@ -13,3 +13,6 @@ dependencies = ["flet==0.86.5"]
 package-dir = {"" = "src"}
 packages = ["ironcycle_billing"]
 include-package-data = true
+
+[tool.setuptools.package-data]
+ironcycle_billing = ["flutter/**/*"]

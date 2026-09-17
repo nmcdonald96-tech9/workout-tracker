@@ -1827,12 +1827,27 @@ class WorkoutTrackerApp:
         if not rows:self.show_snackbar("No pending exercises in the current workout.","amber300");return
         slot=next_plan_slot(self.current_meso,self.current_week,self.current_day)
         if not slot:self.show_snackbar("No later training day is available.","amber300");return
-        dw,dd=slot;checks=[ft.Checkbox(label=f"{x['exercise']} • {x['category']} • {('Rolled from '+x['origin_day']) if x['exception'] else ('Normally '+x['origin_day'])}",data=x['id']) for x in rows];preview=ft.Text("",size=10,color="cyan200")
+        dw,dd=slot;checks=[];selection_rows=[];preview=ft.Text("",size=10,color="cyan200")
+        for item in rows:
+            box=ft.Checkbox(value=False,data=item['id'])
+            origin=('Rolled from '+item['origin_day']) if item['exception'] else ('Normally '+item['origin_day'])
+            details=ft.Column([ft.Text(item['exercise'],weight='bold',size=11),ft.Text(f"{item['category']} • {origin}",size=9,color='white54')],spacing=0,expand=True)
+            row=ft.Container(content=ft.Row([box,details],vertical_alignment=ft.CrossAxisAlignment.START,spacing=4),padding=4,border_radius=6,on_click=lambda ev,c=box:setattr(c,'value',not c.value))
+            checks.append(box);selection_rows.append(row)
+        select_all=ft.Checkbox(label='Select all exercises',value=False)
         def refresh(ev=None):
-            d=preview_rollover(self.current_meso,self.current_week,self.current_day,dw,dd,[c.data for c in checks if c.value]);preview.value=f"Move {len(d['rolled'])} • Skip {len(d['skipped'])} • Destination total {d['result_count']}"
-            if ev is not None:
-                try:preview.update()
-                except RuntimeError:pass
+            selected=[c.data for c in checks if c.value]
+            d=preview_rollover(self.current_meso,self.current_week,self.current_day,dw,dd,selected);preview.value=f"Move {len(d['rolled'])} • Skip {len(d['skipped'])} • Destination total {d['result_count']}"
+            select_all.value=bool(checks) and all(c.value for c in checks)
+            try:preview.update();select_all.update()
+            except Exception:pass
+        def set_all(ev=None):
+            for c in checks:
+                c.value=bool(select_all.value)
+                try:c.update()
+                except Exception:pass
+            refresh()
+        select_all.on_change=set_all
         for c in checks:c.on_change=refresh
         def apply(ev=None):
             try:
@@ -1843,7 +1858,8 @@ class WorkoutTrackerApp:
                 try:self.page.run_thread(finish_rollover_refresh)
                 except Exception:finish_rollover_refresh()
             except Exception as err:self.show_snackbar(str(err),"red300")
-        dialog=ft.AlertDialog(title=ft.Text("Roll Missed Workout",weight="bold"),content=ft.Container(width=390,height=460,content=ft.Column([ft.Text(f"W{self.current_week} {self.current_day} → W{dw} {dd}",weight="bold"),ft.Text("One-workout exception. Future weeks retain the recurring day.",size=10,color="green300"),ft.Column(checks,scroll="auto",expand=True),preview],expand=True)),actions=[ft.TextButton("Cancel",on_click=lambda ev:self.safe_close(dialog)),ft.ElevatedButton("Roll Selected & Skip Others",on_click=apply)],inset_padding=12);self.safe_open(dialog);refresh()
+        content=ft.Column([ft.Text(f"W{self.current_week} {self.current_day} → W{dw} {dd}",weight="bold"),ft.Text("One-workout exception. Future weeks retain the recurring day.",size=10,color="green300"),select_all,ft.Column(selection_rows,scroll="auto",expand=True,spacing=2),preview,ft.Text('Unselected exercises will be skipped for this occurrence only.',size=9,color='amber200')],expand=True,spacing=6)
+        dialog=ft.AlertDialog(title=ft.Text("Roll Missed Workout",weight="bold"),content=ft.Container(width=390,height=max(420,min(540,float(getattr(self.page,'height',700) or 700)-150)),content=content),actions=[ft.TextButton("Cancel",on_click=lambda ev:self.safe_close(dialog)),ft.ElevatedButton("Roll Selected",on_click=apply)],inset_padding=12,content_padding=14,actions_padding=8);self.safe_open(dialog);refresh()
 
     def open_plan_diagnostics(self,e=None):
         d=structure_diagnostics(self.current_meso);dialog=ft.AlertDialog(title=ft.Text("Plan Diagnostics",weight="bold"),content=ft.Text(f"Status: {'OK' if d['ok'] else 'Review'}\nPending: {d['pending']}\nExceptions: {d['exceptions']}\nUnexpected placements: {d['unexpected']}\nDuplicate exercises: {d['duplicates']}\nMissing order: {d['missing_order']}\nDuplicate order: {d['duplicate_order']}\nInvalid groups: {d['invalid_groups']}\nOrphan sets: {d['orphan_sets']}\nCompleted sessions protected: yes",font_family="monospace"),actions=[ft.TextButton("Close",on_click=lambda ev:self.safe_close(dialog))]);self.safe_open(dialog)
@@ -2007,6 +2023,16 @@ class WorkoutTrackerApp:
         safety_ack=ft.Checkbox(value=self.get_text_setting('safety_terms_accepted','0')=='1')
         safety_text=ft.Text('I understand that IronCycle provides general fitness planning and tracking tools. IronCycle does not provide medical advice, diagnosis, or treatment. I am responsible for choosing exercises and loads appropriate for my abilities and circumstances.',size=11)
         safety_row=ft.Row([safety_ack,ft.Container(content=safety_text,expand=True,on_click=lambda ev:setattr(safety_ack,'value',not safety_ack.value))],vertical_alignment=ft.CrossAxisAlignment.START,spacing=4)
+        continue_button=ft.ElevatedButton('Continue to Guided Architect')
+        next_step=ft.Text(size=9,color='white54')
+        def update_setup_destination(ev=None):
+            advanced=goal.value=='Create my own plan'
+            continue_button.text='Continue to Advanced Architect' if advanced else 'Continue to Guided Architect'
+            next_step.value='Next, Advanced Architect will let you build the plan directly.' if advanced else 'Next, Guided Architect will show default plans and let you review every workout before activation.'
+            try:continue_button.update();next_step.update()
+            except Exception:pass
+        goal.on_change=update_setup_destination
+        goal.on_select=update_setup_destination
         def continue_to_architect(ev):
             try:
                 av=float(age.value);wv=float(weight.value)
@@ -2016,12 +2042,16 @@ class WorkoutTrackerApp:
             chosen=[x.label for x in equipment_checks if x.value]
             if not chosen:self.show_snackbar('Select at least one available equipment option.','amber300');return
             for k,v in [('profile_name',name.value.strip()),('profile_age',str(int(av))),('age',str(int(av))),('bodyweight',str(wv)),('training_experience',experience.value),('progression_profile','0'),('pacing_override_user_set','0'),('training_goal',goal.value),('available_equipment',json.dumps(chosen)),('safety_terms_accepted','1'),('safety_terms_version','2026-09-17'),('onboarding_completed','1'),('onboarding_version','1')]:self.save_setting(k,v)
-            self.safe_close(dialog);self.show_snackbar('Profile saved. Opening Guided Architect.','green300');self.open_guided_architect()
+            self.safe_close(dialog)
+            if goal.value=='Create my own plan':
+                self.show_snackbar('Profile saved. Opening Advanced Architect.','green300');self.open_generator_view()
+            else:
+                self.show_snackbar('Profile saved. Opening Guided Architect.','green300');self.open_guided_architect()
         def later(ev):
             self.save_setting('onboarding_seen','1');self.safe_close(dialog)
-        content=ft.Column([ft.Text('Welcome to IronCycle',size=18,weight='bold',color='cyan200'),ft.Text('Create a profile, identify available equipment, and choose a starting plan. IronCycle will use experience to select a safer progression profile.',size=10),name,ft.Column([age,weight],spacing=6,tight=True),experience,goal,ft.Text('AVAILABLE EQUIPMENT',size=10,weight='bold',color='cyan300'),select_all,equipment,summary,safety_row,ft.Text('Next, Guided Architect will show each default plan and let you choose the workouts before anything is activated.',size=9,color='white54')],scroll='auto',spacing=7)
-        dialog=ft.AlertDialog(title=ft.Text('First Setup'),content=ft.Container(width=430,height=max(430,min(650,float(getattr(self.page,'height',700) or 700)-110)),content=content),actions=[ft.TextButton('Not Now',on_click=later),ft.ElevatedButton('Continue to Architect',on_click=continue_to_architect)],inset_padding=10)
-        self.safe_open(dialog)
+        content=ft.Column([ft.Text('Welcome to IronCycle',size=18,weight='bold',color='cyan200'),ft.Text('Create a profile, identify available equipment, and choose a starting plan. IronCycle will use experience to select a safer progression profile.',size=10),name,ft.Column([age,weight],spacing=6,tight=True),experience,goal,ft.Text('AVAILABLE EQUIPMENT',size=10,weight='bold',color='cyan300'),select_all,equipment,summary,safety_row,next_step],scroll='auto',spacing=7)
+        dialog=ft.AlertDialog(title=ft.Text('First Setup'),content=ft.Container(width=430,height=max(430,min(650,float(getattr(self.page,'height',700) or 700)-110)),content=content),actions=[ft.TextButton('Not Now',on_click=later),continue_button],inset_padding=10)
+        continue_button.on_click=continue_to_architect;update_setup_destination();self.safe_open(dialog)
 
     def open_settings_dialog(self, e=None):
         self.close_actions_menu()

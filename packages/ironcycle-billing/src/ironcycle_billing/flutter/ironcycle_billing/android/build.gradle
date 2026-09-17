@@ -1,0 +1,15 @@
+group 'com.ironcycle.billing'
+version '1.0'
+
+buildscript {
+    repositories { google(); mavenCentral() }
+}
+
+allprojects {
+    repositories { google(); mavenCentral() }
+}
+
+configurations.all {
+    resolutionStrategy.force 'com.android.billingclient:billing:8.0.0'
+    resolutionStrategy.force 'com.android.billingclient:billing-ktx:8.0.0'
+}

@@ -1,0 +1,6 @@
+Metadata-Version: 2.4
+Name: ironcycle-billing
+Version: 0.1.1
+Summary: IronCycle Google Play Billing service for Flet
+Requires-Python: >=3.10
+Requires-Dist: flet==0.86.5

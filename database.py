@@ -1518,8 +1518,9 @@ def guided_exercise_candidates(reference_name,equipment_profile=None,limit=40):
  ranked=[]
  for name,cat,fam,pat,equip,catalog_id,is_custom in rows:
   if equip not in allowed and equip not in ('Bodyweight',None,'Other'):continue
-  score=(80 if family and fam==family else 0)+(40 if category and cat==category else 0)+(20 if pattern and pat==pattern else 0)+(30 if catalog_id in favorites else 0)+(10 if name==reference_name else 0)
-  if score or not ref:ranked.append({'name':name,'category':cat or 'General','family':fam or pat or 'General','equipment':equip or 'Other','favorite':catalog_id in favorites,'custom':bool(is_custom),'score':score})
+  role_score=(80 if family and fam==family else 0)+(40 if category and cat==category else 0)+(20 if pattern and pat==pattern else 0)
+  score=role_score+(30 if catalog_id in favorites else 0)+(10 if name==reference_name else 0)
+  if role_score or not ref:ranked.append({'name':name,'category':cat or 'General','family':fam or pat or 'General','equipment':equip or 'Other','favorite':catalog_id in favorites,'custom':bool(is_custom),'score':score})
  return sorted(ranked,key=lambda x:(-x['score'],not x['favorite'],x['name']))[:int(limit)]
 
 def create_reviewed_starter_mesocycle(template_id,selected_days,reviewed_sessions,length_weeks=4,label=None,prescription=None,session_labels=None):
