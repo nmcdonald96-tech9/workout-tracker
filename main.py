@@ -4488,7 +4488,12 @@ class WorkoutTrackerApp:
             except:pass
         for control in (sleep_s,joint_s,drive_s,diet_s):control.on_change=update_preview
         def save_readiness(ev):
-            log_readiness(self.current_meso,self.current_week,self.current_day,int(sleep_s.value),int(joint_s.value),int(drive_s.value),int(diet_s.value));save_context();self.show_snackbar("Check-in saved. Pending targets recalculated; completed sets preserved.",COLOR_SUCCESS);self.rebuild_entire_display()
+            with get_db() as conn:
+                readiness_date=datetime.now().strftime("%Y-%m-%d")
+                conn.execute("DELETE FROM readiness_logs WHERE date=? OR (meso_number=? AND week=? AND day_of_week=?)",(readiness_date,self.current_meso,self.current_week,self.current_day))
+                conn.execute("INSERT INTO readiness_logs(date,sleep,joints,drive,diet,meso_number,week,day_of_week) VALUES(?,?,?,?,?,?,?,?)",(readiness_date,int(sleep_s.value),int(joint_s.value),int(drive_s.value),int(diet_s.value),self.current_meso,self.current_week,self.current_day))
+                conn.commit()
+            save_context();self.show_snackbar("Readiness updated. Pending targets recalculated; completed sets preserved.",COLOR_SUCCESS);self.rebuild_entire_display()
         details=ft.Column([
             ft.Row([ft.Column([ft.Text("How well did you sleep?",size=10),sleep_s],expand=True),ft.Column([ft.Text("How do your joints feel?",size=10),joint_s],expand=True)],spacing=4),
             ft.Row([ft.Column([ft.Text("How ready are you to train?",size=10),drive_s],expand=True),ft.Column([ft.Text("How supportive has your nutrition been?",size=10),diet_s],expand=True)],spacing=4),
