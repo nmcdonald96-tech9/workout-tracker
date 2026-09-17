@@ -1535,6 +1535,7 @@ class WorkoutTrackerApp:
             ft.Container(content=self.btn_menu, padding=4),
         ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN, vertical_alignment=ft.CrossAxisAlignment.CENTER, spacing=2)
         self.nav_toggle_row = ft.Row([self.nav_collapse_button], alignment=ft.MainAxisAlignment.START, spacing=0)
+        self.sticky_workout_header_host = ft.Container()
         self.week_header_row = ft.Row([self.week_nav_row], alignment=ft.MainAxisAlignment.START, vertical_alignment=ft.CrossAxisAlignment.CENTER)
         self.day_header_row = ft.Row([self.day_nav_row], alignment=ft.MainAxisAlignment.START, vertical_alignment=ft.CrossAxisAlignment.CENTER)
 
@@ -1542,8 +1543,9 @@ class WorkoutTrackerApp:
             self.top_header_row,
             self.nav_toggle_row,
             self.week_header_row,
-            self.day_header_row
-        ], spacing=3)
+            self.day_header_row,
+            self.sticky_workout_header_host
+        ], spacing=1, tight=True)
 
         self.page.add(
             ft.Container(height=1),
@@ -4363,15 +4365,7 @@ class WorkoutTrackerApp:
 
         if not buttons:
             return None
-        return ft.Container(
-            content=ft.Column([
-                ft.Text("JUMP TO MUSCLE GROUP", size=8, weight="bold", color="white38"),
-                ft.Row(buttons, spacing=5, scroll="auto"),
-            ], spacing=4, tight=True),
-            bgcolor="white5",
-            border_radius=8,
-            padding=6,
-        )
+        return ft.Container(content=ft.Row(buttons,spacing=4,scroll="auto"),padding=2)
 
     def category_key(self, category_name):
         return (self.current_meso, self.current_week, self.current_day, category_name)
@@ -4451,58 +4445,49 @@ class WorkoutTrackerApp:
             conn.commit()
         return changed
 
-    def toggle_context_panel(self, e=None):
-        self.context_collapsed = not self.context_collapsed
-        self.save_setting("context_collapsed", "1" if self.context_collapsed else "0")
-        self.rebuild_entire_display()
+    def readiness_row(self):
+        with get_db() as conn:return conn.execute("SELECT sleep,joints,drive,COALESCE(diet,0) FROM readiness_logs WHERE meso_number=? AND week=? AND day_of_week=?",(self.current_meso,self.current_week,self.current_day)).fetchone()
 
-    def build_workout_context_panel(self):
-        note, selected_tags = self.get_workout_context()
-        with get_db() as conn:
-            row = conn.execute("SELECT sleep,joints,drive,COALESCE(diet,0) FROM readiness_logs WHERE meso_number=? AND week=? AND day_of_week=?", (self.current_meso,self.current_week,self.current_day)).fetchone()
-        logged = row is not None
-        initial = row if logged else (5,5,5,5)
-        score = sum(float(v or 0) for v in initial) / 2.0
-        adjustment = get_readiness_adjustment(sum(int(v or 5) for v in initial[:3]), int(initial[1] or 5), "Compound")
-        adjustment_text = "Normal targets" if adjustment["reduction_pct"] <= 0 else f"Up to -{adjustment['reduction_pct']*100:g}% load, -{adjustment['rep_drop']} reps"
-        arrow = "▼ Adjust" if self.context_collapsed else "▲ Hide details"
-        header = ft.Row([ft.Text(f"TODAY’S READINESS  {score:.1f}/10",size=9,weight="bold",color=COLOR_INFO),ft.Text(adjustment_text,size=9,color=COLOR_MUTED),ft.TextButton(arrow,on_click=self.toggle_context_panel)],alignment=ft.MainAxisAlignment.SPACE_BETWEEN,spacing=2)
-        preview = ft.Text("PROJECTED TODAY: Normal targets remain active.",size=10,weight="bold",color=COLOR_INFO)
-        explanation = ft.Text("Readiness adjusts today’s workout. Completed sets, RPE, and workout history guide future progression.",size=9,color=COLOR_MUTED,italic=True)
-        sleep_s=ft.Slider(min=1,max=5,divisions=4,value=initial[0],label="{value}")
-        joint_s=ft.Slider(min=1,max=5,divisions=4,value=initial[1],label="{value}")
-        drive_s=ft.Slider(min=1,max=5,divisions=4,value=initial[2],label="{value}")
-        diet_s=ft.Slider(min=1,max=5,divisions=4,value=initial[3],label="{value}")
-        intent_values=["Normal","Strength","Hypertrophy","Technique","Recovery","PR Attempt"]
-        selected_intent=next((x for x in intent_values if x in selected_tags),"Normal")
-        intent=ft.Dropdown(label="Session intent",value=selected_intent,options=[ft.dropdown.Option(x) for x in intent_values],expand=True)
-        note_field=ft.TextField(label="Workout note (optional)",value=note or "",min_lines=1,max_lines=2,multiline=True)
-        def tags_now():return [] if intent.value=="Normal" else [intent.value]
-        def save_context(ev=None):self.save_workout_context(note_field.value,tags_now())
-        intent.on_change=save_context; note_field.on_blur=save_context
-        def update_preview(ev=None):
-            compound=get_readiness_adjustment(int(sleep_s.value+joint_s.value+drive_s.value),int(joint_s.value),"Compound")
-            isolation=get_readiness_adjustment(int(sleep_s.value+joint_s.value+drive_s.value),int(joint_s.value),"Isolation")
-            preview.value="PROJECTED TODAY: Normal targets remain active." if max(compound["reduction_pct"],isolation["reduction_pct"])<=0 else f"PROJECTED TODAY: Compound -{compound['reduction_pct']*100:g}% / -{compound['rep_drop']} reps • Isolation -{isolation['reduction_pct']*100:g}% / -{isolation['rep_drop']} reps"
-            try:preview.update()
-            except:pass
-        for control in (sleep_s,joint_s,drive_s,diet_s):control.on_change=update_preview
-        def save_readiness(ev):
+    def open_readiness_dialog(self,e=None):
+        row=self.readiness_row() or (5,5,5,5);_,tags=self.get_workout_context();choices=["Normal","Strength","Hypertrophy","Technique","Recovery","PR Attempt"]
+        intent=ft.Dropdown(label="Session intent",value=next((x for x in choices if x in tags),"Normal"),options=[ft.dropdown.Option(x) for x in choices])
+        fields=[(name,ft.Slider(min=1,max=5,divisions=4,value=int(value or 3),label="{value}")) for name,value in zip(("Sleep","Joints","Training readiness","Nutrition support"),row)]
+        def save(ev=None):
             with get_db() as conn:
-                readiness_date=datetime.now().strftime("%Y-%m-%d")
-                conn.execute("DELETE FROM readiness_logs WHERE date=? OR (meso_number=? AND week=? AND day_of_week=?)",(readiness_date,self.current_meso,self.current_week,self.current_day))
-                conn.execute("INSERT INTO readiness_logs(date,sleep,joints,drive,diet,meso_number,week,day_of_week) VALUES(?,?,?,?,?,?,?,?)",(readiness_date,int(sleep_s.value),int(joint_s.value),int(drive_s.value),int(diet_s.value),self.current_meso,self.current_week,self.current_day))
-                conn.commit()
-            save_context();self.show_snackbar("Readiness updated. Pending targets recalculated; completed sets preserved.",COLOR_SUCCESS);self.rebuild_entire_display()
-        details=ft.Column([
-            ft.Row([ft.Column([ft.Text("How well did you sleep?",size=10),sleep_s],expand=True),ft.Column([ft.Text("How do your joints feel?",size=10),joint_s],expand=True)],spacing=4),
-            ft.Row([ft.Column([ft.Text("How ready are you to train?",size=10),drive_s],expand=True),ft.Column([ft.Text("How supportive has your nutrition been?",size=10),diet_s],expand=True)],spacing=4),
-            ft.Row([intent,note_field],spacing=5),
-            ft.Row([ft.ElevatedButton("Update Check-In" if logged else "Save Check-In",on_click=save_readiness,expand=True,height=36),ft.ElevatedButton("Shorten Workout",on_click=self.open_short_session,expand=True,height=36)],spacing=6)
-        ],spacing=3,tight=True)
-        controls=[header,preview,explanation]
-        if not self.context_collapsed:controls.append(details)
-        return ft.Container(content=ft.Column(controls,spacing=2,tight=True),bgcolor="white5",border_radius=8,padding=4)
+                day=datetime.now().strftime("%Y-%m-%d");vals=[int(x[1].value) for x in fields]
+                conn.execute("DELETE FROM readiness_logs WHERE date=? OR (meso_number=? AND week=? AND day_of_week=?)",(day,self.current_meso,self.current_week,self.current_day))
+                conn.execute("INSERT INTO readiness_logs(date,sleep,joints,drive,diet,meso_number,week,day_of_week) VALUES(?,?,?,?,?,?,?,?)",(day,*vals,self.current_meso,self.current_week,self.current_day));conn.commit()
+            self.save_workout_context("",[] if intent.value=="Normal" else [intent.value]);self.safe_close(dialog);self.show_snackbar("Readiness saved. Pending targets recalculated; completed sets preserved.",COLOR_SUCCESS);self.rebuild_navigation_headers();self.rebuild_entire_display()
+        items=[]
+        for label,slider in fields:items.extend([ft.Text(label,size=11,weight="bold"),slider])
+        items.append(intent)
+        dialog=ft.AlertDialog(modal=False,title=ft.Text("Today’s Readiness"),content=ft.Column(items,spacing=2,tight=True,scroll="auto"),actions=[ft.TextButton("Not now",on_click=lambda ev:self.safe_close(dialog)),ft.ElevatedButton("Save and Begin Workout",on_click=save)])
+        self.safe_open(dialog)
+
+    async def _prompt_readiness(self):
+        await asyncio.sleep(0.05);self.open_readiness_dialog()
+
+    def maybe_prompt_readiness(self):
+        key=f"{self.current_meso}:{self.current_week}:{self.current_day}"
+        if self.readiness_row() or getattr(self,"_readiness_prompt_key",None)==key:return
+        with get_db() as conn:n=conn.execute("SELECT COUNT(*) FROM workout_sessions WHERE meso_number=? AND week=? AND day_of_week=? AND status NOT IN ('Completed','Skipped')",(self.current_meso,self.current_week,self.current_day)).fetchone()[0]
+        if n:
+            self._readiness_prompt_key=key
+            try:self.page.run_task(self._prompt_readiness)
+            except Exception:pass
+
+    def build_sticky_workout_header(self):
+        if self.view_mode!="workout":return None
+        row=self.readiness_row()
+        if row:
+            score=sum(float(v or 0) for v in row)/2;adj=get_readiness_adjustment(sum(int(v or 5) for v in row[:3]),int(row[1] or 5),"Compound");result="Normal targets" if adj["reduction_pct"]<=0 else f"Up to -{adj['reduction_pct']*100:g}% load, -{adj['rep_drop']} reps"
+            readiness=ft.Row([ft.Text(f"Readiness {score:.1f}/10 • {result}",size=9,color=COLOR_INFO,weight="bold"),ft.TextButton("Edit",on_click=self.open_readiness_dialog)],alignment=ft.MainAxisAlignment.SPACE_BETWEEN,spacing=2)
+        else:readiness=ft.Row([ft.Text("Readiness not entered",size=9,color=COLOR_MUTED),ft.TextButton("Check In",on_click=self.open_readiness_dialog)],alignment=ft.MainAxisAlignment.SPACE_BETWEEN,spacing=2)
+        with get_db() as conn:
+            rows=conn.execute("SELECT id,category,status FROM workout_sessions WHERE meso_number=? AND week=? AND day_of_week=? ORDER BY id",(self.current_meso,self.current_week,self.current_day)).fetchall();total=conn.execute("SELECT COUNT(*) FROM workout_sets s JOIN workout_sessions w ON w.id=s.session_id WHERE w.meso_number=? AND w.week=? AND w.day_of_week=?",(self.current_meso,self.current_week,self.current_day)).fetchone()[0];done=conn.execute("SELECT COUNT(*) FROM workout_sets s JOIN workout_sessions w ON w.id=s.session_id WHERE w.meso_number=? AND w.week=? AND w.day_of_week=? AND s.is_complete=1",(self.current_meso,self.current_week,self.current_day)).fetchone()[0]
+        ex=sum(1 for x in rows if x[2] in ('Completed','Skipped'));cats=list(dict.fromkeys(x[1] for x in rows));groups=sum(1 for c in cats if all(x[2] in ('Completed','Skipped') for x in rows if x[1]==c));quick=self.build_category_quick_nav()
+        progress=ft.Column([ft.Row([ft.Text("WORKOUT PROGRESS",size=8,weight="bold",color=COLOR_INFO),ft.Text(f"Exercises {ex}/{len(rows)} • Sets {done}/{total} • Groups {groups}/{len(cats)}",size=9,color="white70")],alignment=ft.MainAxisAlignment.SPACE_BETWEEN,spacing=2),ft.ProgressBar(value=(done/total if total else 0),color="cyan400",bgcolor="white10",height=4)],spacing=1,tight=True)
+        return ft.Column([readiness]+([quick] if quick else [])+[progress],spacing=1,tight=True)
 
     def toggle_navigation_rows(self, e=None):
         self.nav_collapsed = not self.nav_collapsed
@@ -6267,6 +6252,8 @@ class WorkoutTrackerApp:
         self.nav_collapse_button.content.value = "▼ Show weeks and days" if self.nav_collapsed else "▲ Hide weeks and days"
         self.week_header_row.visible = (self.view_mode == "workout" and not self.nav_collapsed)
         self.day_header_row.visible = (self.view_mode == "workout" and not self.nav_collapsed)
+        self.sticky_workout_header_host.content=self.build_sticky_workout_header()
+        self.sticky_workout_header_host.visible=self.sticky_workout_header_host.content is not None
         week_completions = {}
         day_completions = {}
         with get_db() as conn:
@@ -6496,11 +6483,7 @@ class WorkoutTrackerApp:
                 current_day_is_planned = self.current_day in planned_days
                 current_day_is_rest = self.is_planned_rest_day(self.current_day)
 
-            self.main_canvas.controls.append(self.build_workout_context_panel())
-            self.rebuild_readiness_survey_layer()
-
-            if self.survey_panel.content:
-                self.main_canvas.controls.append(self.survey_panel)
+            self.maybe_prompt_readiness()
 
             if current_day_is_planned and current_day_row_count == 0:
                 title_text = "🌙 Planned Rest Day" if current_day_is_rest else "No Sessions Stamped Yet"
@@ -6579,10 +6562,6 @@ class WorkoutTrackerApp:
                     self.main_canvas.controls.append(summary_container)
             # --- END OF READINESS BANNER PATCH ---
 
-            quick_nav = self.build_category_quick_nav()
-            if quick_nav is not None:
-                self.main_canvas.controls.append(quick_nav)
-
             with get_db() as conn:
                 cursor = conn.cursor()
                 cursor.execute("SELECT COUNT(*) FROM workout_sessions WHERE meso_number = ? AND week = ? AND status = 'Pending'", (self.current_meso, self.current_week))
@@ -6647,13 +6626,6 @@ class WorkoutTrackerApp:
                 )
                 current_rows = cursor.fetchall()
 
-            progress = workout_progress(current_rows, self.sets)
-            exercise_done = progress["completed_exercises"] + progress["skipped_exercises"]
-            progress_ratio = exercise_done / progress["total_exercises"] if progress["total_exercises"] else 0
-            self.main_canvas.controls.append(ft.Container(content=ft.Column([
-                ft.Row([ft.Text("WORKOUT PROGRESS",size=9,weight="bold",color=COLOR_INFO),ft.Text(f"Exercises {exercise_done}/{progress['total_exercises']} • Sets {progress['completed_sets']}/{progress['total_sets']} • Groups {progress['completed_categories']}/{progress['total_categories']}",size=10,color="white70")],alignment="spaceBetween"),
-                ft.ProgressBar(value=progress_ratio,color="cyan400",bgcolor="white10",height=5)],spacing=3),bgcolor="white5",border_radius=8,padding=7))
-                
             # --- START DATA BATCHING ENGINE ---
             with get_db() as conn:
                 cursor = conn.cursor()
