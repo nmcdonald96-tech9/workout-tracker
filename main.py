@@ -22,7 +22,8 @@ import inspect
 import sys
 
 from constants import *
-from onboarding_catalog import EXERCISES as CANONICAL_EXERCISES, STARTER_TEMPLATES, EQUIPMENT as ONBOARDING_EQUIPMENT, EXPERIENCE_LEVELS, GOALS as ONBOARDING_GOALS
+from exercise_catalog import BUILTIN_EXERCISE_CATALOG as CANONICAL_EXERCISES
+from onboarding_catalog import STARTER_TEMPLATES, EQUIPMENT as ONBOARDING_EQUIPMENT, EXPERIENCE_LEVELS, GOALS as ONBOARDING_GOALS, recommend_starter_template
 from database import *
 from app.compatibility import compatible_checkbox
 from components.session_context_panel import build_tag_controls
@@ -1998,12 +1999,24 @@ class WorkoutTrackerApp:
         except Exception:pass
 
     def open_first_setup_wizard(self,e=None,first_run=False):
-        """Collect a beginner-friendly profile and route the result into Architect."""
+        """Collect profile data, then route through one of three explicit plan paths."""
         name=ft.TextField(label='Display name (optional)',value=self.get_text_setting('profile_name',''))
         age=ft.TextField(label='Age',value=self.get_text_setting('profile_age',str(get_user_age())),keyboard_type=ft.KeyboardType.NUMBER)
         weight=ft.TextField(label='Bodyweight (lb)',value=self.get_text_setting('bodyweight',str(get_user_bodyweight())),keyboard_type=ft.KeyboardType.NUMBER)
         experience=ft.Dropdown(label='Training experience',value=self.get_text_setting('training_experience',EXPERIENCE_LEVELS[0]),options=[ft.dropdown.Option(x) for x in EXPERIENCE_LEVELS])
-        goal=ft.Dropdown(label='Primary goal',value=self.get_text_setting('training_goal',ONBOARDING_GOALS[0]),options=[ft.dropdown.Option(x) for x in ONBOARDING_GOALS])
+        saved_goal=self.get_text_setting('training_goal',ONBOARDING_GOALS[0])
+        if saved_goal not in ONBOARDING_GOALS:saved_goal=ONBOARDING_GOALS[0]
+        goal=ft.Dropdown(label='Primary training goal',value=saved_goal,options=[ft.dropdown.Option(x) for x in ONBOARDING_GOALS])
+        saved_mode=self.get_text_setting('plan_creation_mode','recommended')
+        if saved_mode not in ('recommended','guided','advanced_custom'):saved_mode='recommended'
+        plan_mode=ft.RadioGroup(value=saved_mode,content=ft.Column([
+            ft.Radio(value='recommended',label='Recommended plan'),
+            ft.Text('IronCycle selects a starter structure from your goal, experience, schedule, and equipment.',size=9,color='white54'),
+            ft.Radio(value='guided',label='Choose a plan style'),
+            ft.Text('Review Full Body, Upper / Lower, Push / Pull / Legs, focus, and home-training options.',size=9,color='white54'),
+            ft.Radio(value='advanced_custom',label='Create my own plan'),
+            ft.Text('Open Advanced Architect with an empty schedule and choose every movement.',size=9,color='white54'),
+        ],spacing=1,tight=True))
         saved_equipment=set(json.loads(self.get_text_setting('available_equipment','[]') or '[]'))
         equipment_checks=[ft.Checkbox(label=x,value=x in saved_equipment) for x in ONBOARDING_EQUIPMENT]
         select_all=ft.Checkbox(label='Select all available equipment',value=bool(equipment_checks) and all(x.value for x in equipment_checks))
@@ -2019,20 +2032,20 @@ class WorkoutTrackerApp:
                 except Exception:pass
         select_all.on_change=set_all_equipment
         for box in equipment_checks:box.on_change=sync_select_all
-        summary=ft.Text(f"{len(CANONICAL_EXERCISES)} standard exercises are available. Favorites will appear first in future add and replace pickers.",size=10,color='cyan200')
+        summary=ft.Text(f"{len(CANONICAL_EXERCISES)} unified catalog exercises are available. Favorites and equipment filters use the same stable catalog IDs.",size=10,color='cyan200')
         safety_ack=ft.Checkbox(value=self.get_text_setting('safety_terms_accepted','0')=='1')
         safety_text=ft.Text('I understand that IronCycle provides general fitness planning and tracking tools. IronCycle does not provide medical advice, diagnosis, or treatment. I am responsible for choosing exercises and loads appropriate for my abilities and circumstances.',size=11)
         safety_row=ft.Row([safety_ack,ft.Container(content=safety_text,expand=True,on_click=lambda ev:setattr(safety_ack,'value',not safety_ack.value))],vertical_alignment=ft.CrossAxisAlignment.START,spacing=4)
-        continue_button=ft.ElevatedButton('Continue to Guided Architect')
+        continue_button=ft.ElevatedButton('Continue')
         next_step=ft.Text(size=9,color='white54')
-        def update_setup_destination(ev=None):
-            advanced=goal.value=='Create my own plan'
-            continue_button.text='Continue to Advanced Architect' if advanced else 'Continue to Guided Architect'
-            next_step.value='Next, Advanced Architect will let you build the plan directly.' if advanced else 'Next, Guided Architect will show default plans and let you review every workout before activation.'
+        def update_destination(ev=None):
+            mode=plan_mode.value or 'recommended'
+            labels={'recommended':'Continue with Recommended Plan','guided':'Continue to Guided Architect','advanced_custom':'Continue to Advanced Architect'}
+            details={'recommended':'Next, IronCycle will preselect the plan style that best matches the training goal.','guided':'Next, review plan styles and every workout before activation.','advanced_custom':'Next, Advanced Architect opens with an empty schedule.'}
+            continue_button.text=labels[mode];next_step.value=details[mode]
             try:continue_button.update();next_step.update()
             except Exception:pass
-        goal.on_change=update_setup_destination
-        goal.on_select=update_setup_destination
+        plan_mode.on_change=update_destination
         def continue_to_architect(ev):
             try:
                 av=float(age.value);wv=float(weight.value)
@@ -2041,17 +2054,19 @@ class WorkoutTrackerApp:
             if not safety_ack.value:self.show_snackbar('Review and accept the safety acknowledgment to continue.','amber300');return
             chosen=[x.label for x in equipment_checks if x.value]
             if not chosen:self.show_snackbar('Select at least one available equipment option.','amber300');return
-            for k,v in [('profile_name',name.value.strip()),('profile_age',str(int(av))),('age',str(int(av))),('bodyweight',str(wv)),('training_experience',experience.value),('progression_profile','0'),('pacing_override_user_set','0'),('training_goal',goal.value),('available_equipment',json.dumps(chosen)),('safety_terms_accepted','1'),('safety_terms_version','2026-09-17'),('onboarding_completed','1'),('onboarding_version','1')]:self.save_setting(k,v)
+            mode=plan_mode.value or 'recommended'
+            for k,v in [('profile_name',name.value.strip()),('profile_age',str(int(av))),('age',str(int(av))),('bodyweight',str(wv)),('training_experience',experience.value),('progression_profile','0'),('pacing_override_user_set','0'),('training_goal',goal.value),('plan_creation_mode',mode),('available_equipment',json.dumps(chosen)),('safety_terms_accepted','1'),('safety_terms_version','2026-09-17'),('onboarding_completed','1'),('onboarding_version','2')]:self.save_setting(k,v)
             self.safe_close(dialog)
-            if goal.value=='Create my own plan':
-                self.show_snackbar('Profile saved. Opening Advanced Architect.','green300');self.open_generator_view()
+            if mode=='advanced_custom':
+                self.gen_blueprint={d:[] for d in self.gen_days};self.show_snackbar('Profile saved. Opening an empty Advanced Architect.','green300');self.open_generator_view()
+            elif mode=='recommended':
+                template_id=recommend_starter_template(goal.value,len([x for x in self.gen_days if self.gen_days[x]]),chosen);self.save_setting('starter_template',template_id);self.show_snackbar('Profile saved. Opening your recommended plan for review.','green300');self.open_guided_architect(preselected_template=template_id)
             else:
-                self.show_snackbar('Profile saved. Opening Guided Architect.','green300');self.open_guided_architect()
-        def later(ev):
-            self.save_setting('onboarding_seen','1');self.safe_close(dialog)
-        content=ft.Column([ft.Text('Welcome to IronCycle',size=18,weight='bold',color='cyan200'),ft.Text('Create a profile, identify available equipment, and choose a starting plan. IronCycle will use experience to select a safer progression profile.',size=10),name,ft.Column([age,weight],spacing=6,tight=True),experience,goal,ft.Text('AVAILABLE EQUIPMENT',size=10,weight='bold',color='cyan300'),select_all,equipment,summary,safety_row,next_step],scroll='auto',spacing=7)
-        dialog=ft.AlertDialog(title=ft.Text('First Setup'),content=ft.Container(width=430,height=max(430,min(650,float(getattr(self.page,'height',700) or 700)-110)),content=content),actions=[ft.TextButton('Not Now',on_click=later),continue_button],inset_padding=10)
-        continue_button.on_click=continue_to_architect;update_setup_destination();self.safe_open(dialog)
+                self.show_snackbar('Profile saved. Choose and review a plan style.','green300');self.open_guided_architect()
+        def later(ev):self.save_setting('onboarding_seen','1');self.safe_close(dialog)
+        content=ft.Column([ft.Text('Welcome to IronCycle',size=18,weight='bold',color='cyan200'),ft.Text('Create a profile, choose a real training goal, then select how you want to build the plan.',size=10),name,ft.Column([age,weight],spacing=6,tight=True),experience,goal,ft.Text('HOW DO YOU WANT TO START?',size=10,weight='bold',color='cyan300'),plan_mode,next_step,ft.Text('AVAILABLE EQUIPMENT',size=10,weight='bold',color='cyan300'),select_all,equipment,summary,safety_row],scroll='auto',spacing=7)
+        dialog=ft.AlertDialog(title=ft.Text('First Setup'),content=ft.Container(width=430,height=max(430,min(680,float(getattr(self.page,'height',720) or 720)-90)),content=content),actions=[ft.TextButton('Not Now',on_click=later),continue_button],inset_padding=8)
+        continue_button.on_click=continue_to_architect;update_destination();self.safe_open(dialog)
 
     def open_settings_dialog(self, e=None):
         self.close_actions_menu()
