@@ -1527,7 +1527,7 @@ class WorkoutTrackerApp:
 
         # Equal-width side slots keep the mesocycle indicator truly centered.
         # The extra right inset keeps Menu clear of Android's landscape nav overlay.
-        self.nav_collapse_button = ft.TextButton(content=ft.Text("▲ Hide weeks and days", size=10, color="cyan300"), on_click=self.toggle_navigation_rows)
+        self.nav_collapse_button = ft.TextButton(content=ft.Text("Weeks and days ▾", size=10, color="cyan300"), on_click=self.open_week_day_selector)
         self.nav_position_text = ft.Text("", size=11, color="white70", weight="bold")
         self.top_header_row = ft.Row([
             ft.Container(content=self.nav_position_text, padding=4),
@@ -1547,12 +1547,11 @@ class WorkoutTrackerApp:
             self.sticky_workout_header_host
         ], spacing=1, tight=True)
 
-        self.page.add(
-            ft.Container(height=1),
+        self.page.add(ft.SafeArea(content=ft.Column([
             self.navigation_header_container,
             ft.Divider(height=1, color="white10"),
             self.main_canvas_host
-        )
+        ], spacing=0, expand=True), expand=True))
 
     async def reconcile_billing_ownership(self, reason="background", force=False):
         """Quiet ownership recovery. Transient failures never revoke access."""
@@ -1989,16 +1988,32 @@ class WorkoutTrackerApp:
         weight=ft.TextField(label='Bodyweight (lb)',value=self.get_text_setting('bodyweight',str(get_user_bodyweight())),keyboard_type=ft.KeyboardType.NUMBER)
         experience=ft.Dropdown(label='Training experience',value=self.get_text_setting('training_experience',EXPERIENCE_LEVELS[0]),options=[ft.dropdown.Option(x) for x in EXPERIENCE_LEVELS])
         goal=ft.Dropdown(label='Primary goal',value=self.get_text_setting('training_goal',ONBOARDING_GOALS[0]),options=[ft.dropdown.Option(x) for x in ONBOARDING_GOALS])
-        equipment=ft.Column([ft.Checkbox(label=x,value=x in set(json.loads(self.get_text_setting('available_equipment','[]') or '[]'))) for x in ONBOARDING_EQUIPMENT],spacing=0)
+        saved_equipment=set(json.loads(self.get_text_setting('available_equipment','[]') or '[]'))
+        equipment_checks=[ft.Checkbox(label=x,value=x in saved_equipment) for x in ONBOARDING_EQUIPMENT]
+        select_all=ft.Checkbox(label='Select all available equipment',value=bool(equipment_checks) and all(x.value for x in equipment_checks))
+        equipment=ft.Column(equipment_checks,spacing=0)
+        def sync_select_all(ev=None):
+            select_all.value=all(x.value for x in equipment_checks)
+            try:select_all.update()
+            except Exception:pass
+        def set_all_equipment(ev):
+            for box in equipment_checks:
+                box.value=bool(select_all.value)
+                try:box.update()
+                except Exception:pass
+        select_all.on_change=set_all_equipment
+        for box in equipment_checks:box.on_change=sync_select_all
         summary=ft.Text(f"{len(CANONICAL_EXERCISES)} standard exercises are available. Favorites will appear first in future add and replace pickers.",size=10,color='cyan200')
-        safety_ack=ft.Checkbox(label='I understand IronCycle is a fitness planning tool, not medical advice. I am responsible for choosing appropriate activity and should seek professional guidance when needed.',value=self.get_text_setting('safety_terms_accepted','0')=='1')
+        safety_ack=ft.Checkbox(value=self.get_text_setting('safety_terms_accepted','0')=='1')
+        safety_text=ft.Text('I understand that IronCycle provides general fitness planning and tracking tools. IronCycle does not provide medical advice, diagnosis, or treatment. I am responsible for choosing exercises and loads appropriate for my abilities and circumstances.',size=11)
+        safety_row=ft.Row([safety_ack,ft.Container(content=safety_text,expand=True,on_click=lambda ev:setattr(safety_ack,'value',not safety_ack.value))],vertical_alignment=ft.CrossAxisAlignment.START,spacing=4)
         def continue_to_architect(ev):
             try:
                 av=float(age.value);wv=float(weight.value)
                 if not 13<=av<=110 or not 50<=wv<=1000:raise ValueError()
             except Exception:self.show_snackbar('Enter a valid age and bodyweight.','red300');return
             if not safety_ack.value:self.show_snackbar('Review and accept the safety acknowledgment to continue.','amber300');return
-            chosen=[x.label for x in equipment.controls if x.value]
+            chosen=[x.label for x in equipment_checks if x.value]
             if not chosen:self.show_snackbar('Select at least one available equipment option.','amber300');return
             for k,v in [('profile_name',name.value.strip()),('profile_age',str(int(av))),('age',str(int(av))),('bodyweight',str(wv)),('training_experience',experience.value),('progression_profile','0'),('pacing_override_user_set','0'),('training_goal',goal.value),('available_equipment',json.dumps(chosen)),('safety_terms_accepted','1'),('safety_terms_version','2026-09-17'),('onboarding_completed','1'),('onboarding_version','1')]:self.save_setting(k,v)
             self.safe_close(dialog);self.show_snackbar('Profile saved. Opening Guided Architect.','green300');self.open_guided_architect()
@@ -4489,11 +4504,10 @@ class WorkoutTrackerApp:
         progress=ft.Column([ft.Row([ft.Text("WORKOUT PROGRESS",size=8,weight="bold",color=COLOR_INFO),ft.Text(f"Exercises {ex}/{len(rows)} • Sets {done}/{total} • Groups {groups}/{len(cats)}",size=9,color="white70")],alignment=ft.MainAxisAlignment.SPACE_BETWEEN,spacing=2),ft.ProgressBar(value=(done/total if total else 0),color="cyan400",bgcolor="white10",height=4)],spacing=1,tight=True)
         return ft.Column([readiness]+([quick] if quick else [])+[progress],spacing=1,tight=True)
 
-    def toggle_navigation_rows(self, e=None):
-        self.nav_collapsed = not self.nav_collapsed
-        self.save_setting("nav_collapsed", "1" if self.nav_collapsed else "0")
+    def open_week_day_selector(self, e=None):
         self.rebuild_navigation_headers()
-        self.rebuild_entire_display()
+        dialog=ft.AlertDialog(title=ft.Text("Weeks and days"),content=ft.Column([ft.Text("Select week",size=10,weight="bold",color=COLOR_INFO),self.week_nav_row,ft.Text("Select day",size=10,weight="bold",color=COLOR_INFO),self.day_nav_row],spacing=6,tight=True),actions=[ft.TextButton("Close",on_click=lambda ev:self.safe_close(dialog))],inset_padding=12)
+        self.safe_open(dialog)
 
     def get_previous_workout_comparison(self):
         q = "SELECT COALESCE(SUM(s.weight*s.reps),0), COUNT(s.id), AVG(NULLIF(s.rpe,0)), AVG(s.rest_seconds) FROM workout_sessions ws JOIN workout_sets s ON s.session_id=ws.id WHERE ws.meso_number=? AND ws.week=? AND ws.day_of_week=? AND ws.status='Completed' AND s.is_complete=1"
@@ -6249,9 +6263,9 @@ class WorkoutTrackerApp:
         # The workout header shows only the active mesocycle title.
         self.current_meso_title.value = self.current_meso_label()
         self.nav_position_text.value = f"W{self.current_week} • {self.current_day[:3]}"
-        self.nav_collapse_button.content.value = "▼ Show weeks and days" if self.nav_collapsed else "▲ Hide weeks and days"
-        self.week_header_row.visible = (self.view_mode == "workout" and not self.nav_collapsed)
-        self.day_header_row.visible = (self.view_mode == "workout" and not self.nav_collapsed)
+        self.nav_collapse_button.content.value = "Weeks and days ▾" if self.nav_collapsed else "Weeks and days ▾"
+        self.week_header_row.visible = False
+        self.day_header_row.visible = False
         self.sticky_workout_header_host.content=self.build_sticky_workout_header()
         self.sticky_workout_header_host.visible=self.sticky_workout_header_host.content is not None
         week_completions = {}
@@ -6423,8 +6437,8 @@ class WorkoutTrackerApp:
             else:
                 self.main_canvas.controls.clear()
 
-            self.week_header_row.visible = (self.view_mode == "workout" and not self.nav_collapsed)
-            self.day_header_row.visible = (self.view_mode == "workout" and not self.nav_collapsed)
+            self.week_header_row.visible = False
+            self.day_header_row.visible = False
 
             if self.view_mode == "generator":
                 self.build_generator_view()
