@@ -1,0 +1,251 @@
+name: Build Permanently Signed IronCycle APK
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  FLET_SKIP_FLUTTER_PROMPT: "true"
+  SERIOUS_PYTHON_VERSION: "3.12"
+  EXPECTED_PACKAGE_ID: "com.ironcycle.myapp"
+  EXPECTED_PROJECT: "myapp"
+  EXPECTED_ORG: "com.ironcycle"
+
+jobs:
+  build:
+    name: Build and verify APK
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install Python dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Verify OneDrive dependencies on build host
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import cryptography, jwt, msal, requests
+          print("msal", getattr(msal, "__version__", "unknown"))
+          print("requests", requests.__version__)
+          print("PyJWT", jwt.__version__)
+          print("cryptography", cryptography.__version__)
+          PY
+
+      - name: Build local billing extension wheel
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/dist"
+          python -m pip wheel "$GITHUB_WORKSPACE/packages/ironcycle-billing" --no-deps --wheel-dir "$GITHUB_WORKSPACE/dist"
+          BILLING_WHEEL="$(find "$GITHUB_WORKSPACE/dist" -maxdepth 1 -type f -name 'ironcycle_billing-*.whl' -print -quit)"
+          test -n "$BILLING_WHEEL"
+          export BILLING_WHEEL
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          requirements = Path(os.environ["GITHUB_WORKSPACE"]) / "requirements.txt"
+          wheel_uri = Path(os.environ["BILLING_WHEEL"]).resolve().as_uri()
+          rows = [row for row in requirements.read_text(encoding="utf-8").splitlines()
+                  if row.strip() not in {"./packages/ironcycle-billing", "packages/ironcycle-billing"}]
+          rows.append(f"ironcycle-billing @ {wheel_uri}")
+          requirements.write_text("\n".join(rows) + "\n", encoding="utf-8")
+          PY
+          unzip -l "$BILLING_WHEEL" | grep 'flutter/ironcycle_billing/pubspec.yaml'
+
+      - name: Validate signing secrets
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_EXPECTED_SIGNER_SHA256: ${{ secrets.ANDROID_EXPECTED_SIGNER_SHA256 }}
+        run: |
+          set -euo pipefail
+          for name in ANDROID_KEYSTORE_BASE64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD ANDROID_EXPECTED_SIGNER_SHA256; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::Missing GitHub Actions secret: $name"
+              exit 1
+            fi
+          done
+
+      - name: Restore and verify permanent keystore
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          set -euo pipefail
+          KEYSTORE_PATH="$RUNNER_TEMP/ironcycle-release.jks"
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE_PATH"
+          chmod 600 "$KEYSTORE_PATH"
+          test -s "$KEYSTORE_PATH"
+          keytool -list -keystore "$KEYSTORE_PATH" -storepass "$ANDROID_KEYSTORE_PASSWORD" -alias "$ANDROID_KEY_ALIAS" >/dev/null
+          echo "KEYSTORE_PATH=$KEYSTORE_PATH" >> "$GITHUB_ENV"
+
+      - name: Compile Python source
+        shell: bash
+        run: |
+          set -euo pipefail
+          files=(main.py database.py)
+          for optional in constants.py exercise_catalog.py onboarding_catalog.py onedrive_service.py ironcycle_billing.py; do
+            [ ! -f "$optional" ] || files+=("$optional")
+          done
+          while IFS= read -r module; do files+=("$module"); done < <(find app components services -type f -name '*.py' -print 2>/dev/null | sort)
+          python -m py_compile "${files[@]}"
+
+      - name: Read application version
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP_VERSION="$(python - <<'PY'
+          import re
+          from pathlib import Path
+          text = Path("constants.py").read_text(encoding="utf-8")
+          match = re.search(r'^APP_VERSION\s*=\s*["\x27]([^"\x27]+)["\x27]', text, re.MULTILINE)
+          if not match:
+              raise SystemExit("APP_VERSION was not found in constants.py")
+          print(match.group(1))
+          PY
+          )"
+          ANDROID_VERSION_CODE=$((1100000 + GITHUB_RUN_NUMBER))
+          echo "APP_VERSION=$APP_VERSION" >> "$GITHUB_ENV"
+          echo "ANDROID_VERSION_CODE=$ANDROID_VERSION_CODE" >> "$GITHUB_ENV"
+          echo "Building IronCycle $APP_VERSION with Android version code $ANDROID_VERSION_CODE"
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.41.7"
+          channel: stable
+          cache: false
+
+      - name: Accept Android licenses
+        shell: bash
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+
+      - name: Reclaim runner disk space
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost "$AGENT_TOOLSDIRECTORY/CodeQL" || true
+          docker system prune --all --force --volumes || true
+          sudo apt-get clean
+          df -h /
+
+      - name: Build permanently signed APK
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          flet build apk \
+            --yes \
+            --python-version "$SERIOUS_PYTHON_VERSION" \
+            --product "IronCycle" \
+            --project "$EXPECTED_PROJECT" \
+            --org "$EXPECTED_ORG" \
+            --bundle-id "$EXPECTED_PACKAGE_ID" \
+            --build-version "$APP_VERSION" \
+            --build-number "$ANDROID_VERSION_CODE" \
+            --android-permissions "com.android.vending.BILLING=True" \
+            --android-signing-key-store "$KEYSTORE_PATH" \
+            --android-signing-key-store-password "$ANDROID_KEYSTORE_PASSWORD" \
+            --android-signing-key-alias "$ANDROID_KEY_ALIAS" \
+            --android-signing-key-password "$ANDROID_KEY_PASSWORD"
+
+      - name: Inspect packaged OneDrive dependencies without blocking APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "APK build completed. Inspecting package evidence only; compiled or archived packages are not treated as missing."
+          find build -type f \( -iname '*msal*' -o -path '*/msal/*' -o -iname '*cryptography*' -o -iname '*pyjwt*' -o -iname 'app.zip' -o -iname '*.apk' \) -print | head -200 || true
+          while IFS= read -r archive; do
+            echo "Inspecting archive: $archive"
+            unzip -l "$archive" 2>/dev/null | grep -Ei '(^|/)(msal|requests|jwt|cryptography)(/|-)|app\.zip' | head -100 || true
+          done < <(find build -type f \( -iname '*.zip' -o -iname '*.apk' \) -print)
+          echo "Inspection complete. IronCycle Diagnostics in the installed APK is authoritative."
+
+      - name: Locate and verify APK
+        shell: bash
+        env:
+          ANDROID_EXPECTED_SIGNER_SHA256: ${{ secrets.ANDROID_EXPECTED_SIGNER_SHA256 }}
+        run: |
+          set -euo pipefail
+          APK="$(find build/apk -type f -name '*.apk' -print -quit)"
+          test -n "$APK"
+          VERIFIED_APK="$GITHUB_WORKSPACE/IronCycle-${APP_VERSION}-permanent-signed.apk"
+          cp "$APK" "$VERIFIED_APK"
+          BUILD_TOOLS_DIR="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort -V | tail -n 1)"
+          if [ -z "$BUILD_TOOLS_DIR" ]; then
+            echo "::error::Android SDK Build Tools could not be located under $ANDROID_HOME/build-tools."
+            exit 1
+          fi
+          APKSIGNER="$ANDROID_HOME/build-tools/$BUILD_TOOLS_DIR/apksigner"
+          AAPT="$ANDROID_HOME/build-tools/$BUILD_TOOLS_DIR/aapt"
+          if [ ! -x "$APKSIGNER" ] || [ ! -x "$AAPT" ]; then
+            echo "::error::apksigner or aapt is unavailable in Android Build Tools $BUILD_TOOLS_DIR."
+            exit 1
+          fi
+          echo "Using Android Build Tools: $BUILD_TOOLS_DIR"
+          "$APKSIGNER" verify --verbose --print-certs "$VERIFIED_APK" > "$RUNNER_TEMP/apk-verify.txt"
+          EXPECTED="$(printf '%s' "$ANDROID_EXPECTED_SIGNER_SHA256" | tr '[:lower:]' '[:upper:]' | tr -d ':[:space:]')"
+          ACTUAL="$(grep -m1 'Signer #1 certificate SHA-256 digest:' "$RUNNER_TEMP/apk-verify.txt" | awk -F': ' '{print $2}' | tr '[:lower:]' '[:upper:]' | tr -d ':[:space:]')"
+          if [ "$EXPECTED" != "$ACTUAL" ]; then
+            echo "::error::APK signer SHA-256 did not match the expected permanent signer."
+            exit 1
+          fi
+          "$AAPT" dump badging "$VERIFIED_APK" > "$RUNNER_TEMP/apk-badging.txt"
+          grep -F "package: name='$EXPECTED_PACKAGE_ID'" "$RUNNER_TEMP/apk-badging.txt"
+          grep -F "versionName='$APP_VERSION'" "$RUNNER_TEMP/apk-badging.txt"
+          grep -F "versionCode='$ANDROID_VERSION_CODE'" "$RUNNER_TEMP/apk-badging.txt"
+          "$AAPT" dump permissions "$VERIFIED_APK" | grep -F 'com.android.vending.BILLING'
+          echo "VERIFIED_APK=$VERIFIED_APK" >> "$GITHUB_ENV"
+
+      - name: Create APK verification report
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "IronCycle Android verification"
+            echo "Version: $APP_VERSION"
+            echo "Version code: $ANDROID_VERSION_CODE"
+            echo "Package: $EXPECTED_PACKAGE_ID"
+            echo
+            cat "$RUNNER_TEMP/apk-verify.txt"
+            echo
+            cat "$RUNNER_TEMP/apk-badging.txt"
+          } > IronCycle_APK_Verification.txt
+
+      - name: Upload APK and verification report
+        uses: actions/upload-artifact@v4
+        with:
+          name: IronCycle-${{ env.APP_VERSION }}-signed-apk
+          path: |
+            ${{ env.VERIFIED_APK }}
+            IronCycle_APK_Verification.txt
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Delete restored keystore
+        if: always()
+        shell: bash
+        run: rm -f "${{ env.KEYSTORE_PATH }}"
