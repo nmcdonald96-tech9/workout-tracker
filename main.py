@@ -2019,7 +2019,7 @@ class WorkoutTrackerApp:
             self.safe_close(dialog);self.show_snackbar('Profile saved. Opening Guided Architect.','green300');self.open_guided_architect()
         def later(ev):
             self.save_setting('onboarding_seen','1');self.safe_close(dialog)
-        content=ft.Column([ft.Text('Welcome to IronCycle',size=18,weight='bold',color='cyan200'),ft.Text('Create a profile, identify available equipment, and choose a starting plan. IronCycle will use experience to select a safer progression profile.',size=10),name,ft.Column([age,weight],spacing=6,tight=True),experience,goal,ft.Text('AVAILABLE EQUIPMENT',size=10,weight='bold',color='cyan300'),equipment,summary,safety_ack,ft.Text('Next, Guided Architect will show each default plan and let you choose the workouts before anything is activated.',size=9,color='white54')],scroll='auto',spacing=7)
+        content=ft.Column([ft.Text('Welcome to IronCycle',size=18,weight='bold',color='cyan200'),ft.Text('Create a profile, identify available equipment, and choose a starting plan. IronCycle will use experience to select a safer progression profile.',size=10),name,ft.Column([age,weight],spacing=6,tight=True),experience,goal,ft.Text('AVAILABLE EQUIPMENT',size=10,weight='bold',color='cyan300'),select_all,equipment,summary,safety_row,ft.Text('Next, Guided Architect will show each default plan and let you choose the workouts before anything is activated.',size=9,color='white54')],scroll='auto',spacing=7)
         dialog=ft.AlertDialog(title=ft.Text('First Setup'),content=ft.Container(width=430,height=max(430,min(650,float(getattr(self.page,'height',700) or 700)-110)),content=content),actions=[ft.TextButton('Not Now',on_click=later),ft.ElevatedButton('Continue to Architect',on_click=continue_to_architect)],inset_padding=10)
         self.safe_open(dialog)
 
@@ -3249,6 +3249,22 @@ class WorkoutTrackerApp:
         def session_label(day_index):
             labels=STARTER_SESSION_LABELS.get(template.value,[])
             return labels[day_index%len(labels)] if labels else f'Session {day_index+1}'
+        def candidate_record(reference,name):
+            return next((x for x in guided_exercise_candidates(reference,equipment_profile,50) if x['name']==name),None)
+        def is_bodyweight_choice(reference,name):
+            row=candidate_record(reference,name)
+            return bool(row and str(row.get('equipment','')).strip().lower()=='bodyweight')
+        def refresh_day_choices(day,changed=None):
+            rows=editor_by_day.get(day,[]);selected={dd.value for ref,dd,wt in rows if dd.value}
+            for reference,dd,weight_field in rows:
+                candidates=guided_exercise_candidates(reference,equipment_profile,50)
+                dd.options=[ft.dropdown.Option(x['name'],('★ ' if x['favorite'] else '')+f"{x['name']} • {x['equipment']}") for x in candidates if x['name']==dd.value or x['name'] not in selected]
+                bodyweight=is_bodyweight_choice(reference,dd.value)
+                weight_field.visible=not bodyweight
+                if bodyweight:weight_field.value='0'
+                try:dd.update();weight_field.update()
+                except Exception:pass
+            render_day()
         def render_day(ev=None):
             day=day_picker.value
             while len(review_surface.controls)>header_count:review_surface.controls.pop()
@@ -3256,8 +3272,12 @@ class WorkoutTrackerApp:
             idx=selected_days().index(day);rows=editor_by_day.get(day,[])
             progress.value=f'Reviewing day {idx+1} of {len(selected_days())}: {day}'
             review_surface.controls.append(ft.Text(f'{day.upper()} • {session_label(idx).upper()}',weight='bold',color='cyan300'))
-            review_surface.controls.append(ft.Text('Starting load is optional. Leave 0 lb to establish the working weight during the first session.',size=9,color='white54'))
-            for reference,dd,weight in rows:review_surface.controls.append(ft.Column([dd,weight],spacing=2,tight=True))
+            selected_names=[dd.value for reference,dd,weight in rows if dd.value]
+            review_surface.controls.append(ft.Text('Final workout: '+(' • '.join(selected_names) if selected_names else 'Choose an exercise for every slot.'),size=9,color='cyan200'))
+            review_surface.controls.append(ft.Text('Starting load is optional for weighted exercises. Bodyweight exercises begin without a load field.',size=9,color='white54'))
+            for reference,dd,weight in rows:
+                weight.visible=not is_bodyweight_choice(reference,dd.value)
+                review_surface.controls.append(ft.Column([dd,ft.Text(f'Movement role: {reference}',size=8,color='white38'),weight],spacing=2,tight=True))
             try:review_surface.update();progress.update()
             except:pass
         def move_day(step):
@@ -3289,7 +3309,7 @@ class WorkoutTrackerApp:
             meta=next((x for x in choices if x['id']==template.value),{})
             base=STARTER_PLAN_BLUEPRINTS.get(template.value,[])
             labels=STARTER_SESSION_LABELS.get(template.value,[])
-            plan_preview.controls=[ft.Text(meta.get('description',''),size=9,color='white70')]
+            plan_preview.controls=[ft.Text(meta.get('description',''),size=9,color='white70'),ft.Text('These roles guide compatible substitutions. The selected exercises below are the workout that will be created.',size=9,color='amber200')]
             for index,session in enumerate(base):
                 plan_preview.controls.append(ft.Text(f'{labels[index] if index<len(labels) else "Session "+str(index+1)}: '+', '.join(session),size=9,color='cyan200'))
             prescription_view.controls=[
@@ -3300,13 +3320,17 @@ class WorkoutTrackerApp:
                 ft.Text(f"Programming emphasis: {rx['emphasis']} • {rx['complexity']}",size=9,color='white70')]
             prior={day:[(ref,dd.value,wt.value) for ref,dd,wt in rows] for day,rows in editor_by_day.items()};editor_by_day.clear();chosen=selected_days()
             for idx,day in enumerate(chosen):
-                rows=[]
+                rows=[];used_names=set()
                 for pos,reference in enumerate(session_for(idx)):
                     candidates=guided_exercise_candidates(reference,equipment_profile,50);names=[x['name'] for x in candidates]
                     old=prior.get(day,[]);old_name=old[pos][1] if pos<len(old) else None;old_weight=old[pos][2] if pos<len(old) else '0'
-                    value=old_name if old_name in names else (reference if reference in names else (names[0] if names else None))
-                    dd=ft.Dropdown(label=reference,value=value,options=[ft.dropdown.Option(x['name'],('★ ' if x['favorite'] else '')+f"{x['name']} • {x['equipment']}") for x in candidates])
-                    wt=ft.TextField(label='Starting load (lb, optional)',value=str(old_weight or '0'),keyboard_type=ft.KeyboardType.NUMBER)
+                    preferred=old_name if old_name in names and old_name not in used_names else (reference if reference in names and reference not in used_names else next((name for name in names if name not in used_names),None))
+                    value=preferred
+                    if value:used_names.add(value)
+                    dd=ft.Dropdown(label=f'Exercise {pos+1}',hint_text='Choose exercise',value=value,options=[ft.dropdown.Option(x['name'],('★ ' if x['favorite'] else '')+f"{x['name']} • {x['equipment']}") for x in candidates])
+                    wt=ft.TextField(label='Starting load (lb, optional)',value=str(old_weight or '0'),keyboard_type=ft.KeyboardType.NUMBER,visible=not is_bodyweight_choice(reference,value))
+                    dd.on_change=lambda ev,day_name=day:refresh_day_choices(day_name,ev.control)
+                    dd.on_select=dd.on_change
                     rows.append((reference,dd,wt))
                 editor_by_day[day]=rows
             day_picker.options=[ft.dropdown.Option(x) for x in chosen]
@@ -3333,11 +3357,16 @@ class WorkoutTrackerApp:
             reviewed=[]
             for day in chosen:
                 entries=[];seen=set()
-                for reference,dd,wt in editor_by_day.get(day,[]):
-                    if not dd.value:self.show_snackbar(f'Choose an exercise for {reference} on {day}.','amber300');return
-                    if dd.value in seen:self.show_snackbar(f'Remove duplicate {dd.value} on {day}.','amber300');return
-                    try:load=max(0.0,float(wt.value or 0))
-                    except Exception:self.show_snackbar(f'Enter a valid starting load for {dd.value} on {day}.','amber300');return
+                for slot_index,(reference,dd,wt) in enumerate(editor_by_day.get(day,[]),start=1):
+                    if not dd.value:self.show_snackbar(f'Choose Exercise {slot_index} on {day}.','amber300');return
+                    if dd.value in seen:self.show_snackbar(f'Exercise {slot_index} duplicates {dd.value} on {day}. Choose a different exercise.','amber300');return
+                    compatible={x['name'] for x in guided_exercise_candidates(reference,equipment_profile,50)}
+                    if dd.value not in compatible:self.show_snackbar(f'Exercise {slot_index} on {day} is not compatible with the selected equipment.','amber300');return
+                    if wt.visible:
+                        try:load=float(wt.value or 0)
+                        except Exception:self.show_snackbar(f'Enter a valid starting load for Exercise {slot_index} on {day}.','amber300');return
+                        if load<0:self.show_snackbar(f'Enter a valid starting load for Exercise {slot_index} on {day}.','amber300');return
+                    else:load=0.0;wt.value='0'
                     seen.add(dd.value);entries.append({'name':dd.value,'weight':load})
                 reviewed.append(entries)
             try:
@@ -3347,7 +3376,7 @@ class WorkoutTrackerApp:
                 if count<=0:raise ValueError('No scheduled rows were created.')
                 self.safe_close(dialog);self.current_meso=meso;self.current_week='1';self.current_day=chosen[0];self.set_active_position();self.build_ui_shell();self.rebuild_navigation_headers();self.rebuild_entire_display();self.show_snackbar(f'{label} created for {length.value} weeks across {len(chosen)} training days.','green300')
             except Exception as err:self.show_snackbar(f'Could not create mesocycle: {err}','red300')
-        review_surface.controls=[ft.Text('Choose a plan style and review its default workouts. Changing Plan Style refreshes the preview and every selected day.',size=10),template,ft.Text('YOUR STARTER PRESCRIPTION',weight='bold',size=10,color='cyan300'),prescription_view,ft.Text('DEFAULT PLAN PREVIEW',weight='bold',size=10,color='cyan300'),plan_preview,length,ft.Text('TRAINING DAYS',weight='bold',size=10,color='cyan300'),days,status,ft.Row([previous_day,day_picker,next_day],spacing=2),progress,ft.Row([restore_day_button,restore_plan_button],wrap=True,spacing=2),reset_note,ft.Divider(height=5)]
+        review_surface.controls=[ft.Text('Choose a plan style and review its default workouts. Changing Plan Style refreshes the preview and every selected day.',size=10),template,ft.Text('YOUR STARTER PRESCRIPTION',weight='bold',size=10,color='cyan300'),prescription_view,ft.Text('BLUEPRINT MOVEMENT ROLES',weight='bold',size=10,color='cyan300'),plan_preview,length,ft.Text('TRAINING DAYS',weight='bold',size=10,color='cyan300'),days,status,ft.Row([previous_day,day_picker,next_day],spacing=2),progress,ft.Row([restore_day_button,restore_plan_button],wrap=True,spacing=2),reset_note,ft.Divider(height=5)]
         header_count=len(review_surface.controls)
         rebuild()
         dialog=ft.AlertDialog(title=ft.Text('Guided Architect'),content=ft.Container(width=450,height=max(450,min(680,float(getattr(self.page,'height',720) or 720)-100)),content=review_surface),actions=[ft.TextButton('Advanced Architect',on_click=lambda ev:[self.safe_close(dialog),self.open_generator_view()]),ft.ElevatedButton('Create Meso',on_click=create)],inset_padding=7,content_padding=10,actions_padding=8)
@@ -6519,62 +6548,7 @@ class WorkoutTrackerApp:
                 )
                 self.main_canvas.controls.append(ft.Container(height=4))
 
-            # --- NEW DIET-AWARE READINESS BANNER ---
-            with get_db() as conn:
-                cursor = conn.cursor()
-                # Safely check if diet exists for legacy compatibility
-                cursor.execute("PRAGMA table_info(readiness_logs)")
-                r_cols = {row[1] for row in cursor.fetchall()}
-                diet_expr = "diet" if "diet" in r_cols else "0 as diet"
 
-                cursor.execute(f"SELECT sleep, joints, drive, {diet_expr} FROM readiness_logs WHERE meso_number = ? AND week = ? AND day_of_week = ?", (self.current_meso, self.current_week, self.current_day))
-                r_row = cursor.fetchone()
-                
-                if r_row:
-                    sleep_s, joint_s, drive_s, diet_s = r_row
-                    
-                    # 1. Backend Math (Kept safely out of 15 for progression logic)
-                    t_score = sleep_s + joint_s + drive_s 
-                    
-                    # 2. Frontend Math (Dynamic 10-point normalization)
-                    max_pts = 0
-                    daily_sum = 0
-                    if sleep_s > 0: daily_sum += sleep_s; max_pts += 5
-                    if joint_s > 0: daily_sum += joint_s; max_pts += 5
-                    if drive_s > 0: daily_sum += drive_s; max_pts += 5
-                    if diet_s > 0: daily_sum += diet_s; max_pts += 5
-                    
-                    normalized_score = (daily_sum / max_pts * 10.0) if max_pts > 0 else 0.0
-                    
-                    banner_texts = []
-                    if t_score <= 7:
-                        banner_texts.append("Fatigue: -10% Load")
-                    if joint_s <= 2:
-                        banner_texts.append("Joints: -15% Load Compound")
-                    
-                    score_color = "green300" if normalized_score >= 8.5 else ("amber300" if normalized_score >= 7.0 else "red400")
-
-                    diet_string = f" • Diet: {diet_s}" if diet_s > 0 else ""
-
-                    readiness_text = ft.Row([
-                        ft.Text("✅ Readiness:", size=11, weight="bold", color="white70"),
-                        ft.Text(f"{normalized_score:.1f}/10", size=11, weight="bold", color=score_color),
-                        ft.Text(f"(Sleep: {sleep_s} • Joints: {joint_s} • Drive: {drive_s}{diet_string})", size=10, color="white54")
-                    ], spacing=4, wrap=True)
-
-                    content_col = [readiness_text]
-                    
-                    if banner_texts:
-                        content_col.append(ft.Text("⚠️ Penalty: " + " • ".join(banner_texts), size=10, color="amber300", italic=True))
-                    
-                    summary_container = ft.Container(
-                        content=ft.Column(content_col, spacing=1, tight=True),
-                        bgcolor="white5",
-                        padding=6,
-                        border_radius=6
-                    )
-                    self.main_canvas.controls.append(summary_container)
-            # --- END OF READINESS BANNER PATCH ---
 
             with get_db() as conn:
                 cursor = conn.cursor()
