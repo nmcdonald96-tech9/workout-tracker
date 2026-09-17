@@ -31,7 +31,7 @@ from app.application import ApplicationFoundation
 from services.backup_service import BackupService
 from services.entitlement_service import (EntitlementService, TRIAL_ACTIVE, TRIAL_EXPIRED,
     LIFETIME_UNLOCKED, NOT_STARTED, PURCHASE_CHECK_PENDING, TEMPORARILY_OFFLINE)
-from onedrive_service import OneDriveService, OneDriveError
+from onedrive_service import OneDriveService, OneDriveError, onedrive_dependency_diagnostics
 
 class WorkoutStateService:
  @staticmethod
