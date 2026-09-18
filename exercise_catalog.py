@@ -27,7 +27,7 @@ def rank_catalog_candidates(name,category=None,family=None,equipment=None,angle=
 
 
 # --- 1.71 CANONICAL RUNTIME METADATA ---
-CATALOG_VERSION=3
+CATALOG_VERSION=4
 CATALOG_REVISION=1
 _EQUIPMENT_DEFAULTS={
  "Bodyweight":dict(min_weight=0.0,max_weight=500.0,default_weight=0.0,weight_step=1.0),
@@ -48,8 +48,16 @@ def _runtime_item(item):
  row.setdefault("plate_loaded",bool(legacy.get("plate_loaded",False)));row.setdefault("bar_weight",float(legacy.get("bar_weight",0) or 0));row.setdefault("plate_mode",legacy.get("plate_mode"));row.setdefault("plate_weights",legacy.get("plate_weights"))
  if "smith" in row.get("name","").lower():row["plate_loaded"]=True;row["bar_weight"]=0.0
  return row
+# Starter-plan exercises are canonical entries in catalog v4 rather than database-only fallbacks.
+BUILTIN_EXERCISE_CATALOG.extend([
+ {"id":"front_plank","name":"Front Plank","aliases":["Plank"],"category":"Abs","family":"trunk_flexion","pattern":"Core Stability","movement_type":"Isolation","equipment":"Bodyweight","angle":ANGLE_NOT_SPECIFIED},
+ {"id":"pallof_press","name":"Pallof Press","aliases":["Cable Pallof Press"],"category":"Abs","family":"trunk_flexion","pattern":"Anti-Rotation","movement_type":"Isolation","equipment":"Cable","angle":ANGLE_NOT_SPECIFIED},
+])
 BUILTIN_EXERCISE_CATALOG=[_runtime_item(x) for x in BUILTIN_EXERCISE_CATALOG]
 CATALOG_BY_ID={x["id"]:x for x in BUILTIN_EXERCISE_CATALOG};CATALOG_BY_NAME={x["name"]:x for x in BUILTIN_EXERCISE_CATALOG}
+CATALOG_BY_ALIAS={str(alias).strip().lower():x for x in BUILTIN_EXERCISE_CATALOG for alias in ([x["name"]]+list(x.get("aliases",[])))}
+def resolve_catalog_exercise(name):
+ return CATALOG_BY_ALIAS.get(str(name or "").strip().lower())
 try:
  from constants import EXERCISE_METADATA
  for x in BUILTIN_EXERCISE_CATALOG:

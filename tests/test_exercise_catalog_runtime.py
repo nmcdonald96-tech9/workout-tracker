@@ -1,6 +1,6 @@
 from exercise_catalog import CATALOG_VERSION,resolve_exercise_metadata,validate_exercise_values
 def test_expanded_runtime_metadata():
- assert CATALOG_VERSION==3
+ assert CATALOG_VERSION==4
  assert resolve_exercise_metadata("Push-Up")["equipment"]=="Bodyweight"
  assert resolve_exercise_metadata("Cable Crunch")["equipment"]=="Cable"
 def test_smith_zero_bar():

@@ -1562,3 +1562,41 @@ def create_reviewed_starter_mesocycle(template_id,selected_days,reviewed_session
     for week in range(1,int(length_weeks)+1):c.execute("INSERT INTO workout_sessions(date,exercise,category,day_of_week,week,target_weight,target_reps,status,movement_type,meso_number,schedule_origin_day,workout_order) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",(datetime.now().strftime('%Y-%m-%d'),name,row[0],day,str(week),weight,reps,STATUS_PENDING,row[1],meso,day,order))
   upsert_meso_config(c,meso,int(length_weeks),json.dumps(days),json.dumps({'mode':'guided_reviewed','template':template_id,'equipment_filtered':True,'starting_loads_user_entered':True,'prescription':prescription or {},'session_labels':session_labels or {}}),0,json.dumps(blueprint));c.commit()
  return meso
+
+
+# --- Uniform exercise standard (1.73) ---
+def uniform_exercise_review(limit=200):
+ out=[]
+ with get_db() as c:
+  rows=c.execute("SELECT name,category,movement_family,equipment,catalog_id,is_custom FROM exercise_dict ORDER BY name").fetchall()
+ for name,category,family,equipment,catalog_id,is_custom in rows:
+  if catalog_id:continue
+  candidates=rank_catalog_candidates(name,category,family,equipment,ANGLE_NOT_SPECIFIED,3)
+  exact=resolve_catalog_exercise(name)
+  out.append({"name":name,"category":category,"is_custom":bool(is_custom),"exact_catalog_id":exact.get("id") if exact else None,"candidates":[{"id":x["item"]["id"],"name":x["item"]["name"],"score":x["score"]} for x in candidates]})
+  if len(out)>=limit:break
+ return out
+
+def uniform_exercise_summary():
+ with get_db() as c:
+  total=c.execute("SELECT COUNT(*) FROM exercise_dict").fetchone()[0]
+  linked=c.execute("SELECT COUNT(*) FROM exercise_dict WHERE catalog_id IS NOT NULL").fetchone()[0]
+  custom=c.execute("SELECT COUNT(*) FROM exercise_dict WHERE COALESCE(is_custom,0)=1").fetchone()[0]
+ return {"total":total,"linked":linked,"custom":custom,"unlinked":total-linked,"review":len(uniform_exercise_review())}
+
+def apply_uniform_exercise_link(exercise_name,catalog_id):
+ item=CATALOG_BY_ID.get(catalog_id)
+ if not item:raise ValueError("Catalog exercise not found.")
+ meta=resolve_exercise_metadata(item["name"])
+ with get_db() as c:
+  c.execute("""UPDATE exercise_dict SET catalog_id=?,display_name=COALESCE(NULLIF(display_name,''),name),category=?,movement_family=?,movement_pattern=?,movement_type=?,equipment=?,angle=?,is_custom=0,catalog_revision=?,min_reps=COALESCE(min_reps,?),max_reps=COALESCE(max_reps,?),default_reps=COALESCE(default_reps,?),min_weight=COALESCE(min_weight,?),max_weight=COALESCE(max_weight,?),default_weight=COALESCE(default_weight,?),weight_step=COALESCE(weight_step,?) WHERE name=?""",(catalog_id,item["category"],item["family"],item["pattern"],item["movement_type"],item["equipment"],item.get("angle",ANGLE_NOT_SPECIFIED),CATALOG_VERSION,meta.get("min_reps"),meta.get("max_reps"),meta.get("default_reps"),meta.get("min_weight"),meta.get("max_weight"),meta.get("default_weight"),meta.get("weight_step"),exercise_name))
+  c.execute("INSERT OR REPLACE INTO exercise_aliases(alias,catalog_id,exercise_name,source,confirmed) VALUES(?,?,?,?,1)",(exercise_name,catalog_id,exercise_name,"uniform_review"));c.commit()
+ record_audit("exercise_catalog_link",f"exercise={exercise_name}; catalog_id={catalog_id}")
+ return exercise_name
+
+def auto_link_exact_uniform_exercises():
+ linked=[]
+ for row in uniform_exercise_review():
+  if row.get("exact_catalog_id"):
+   apply_uniform_exercise_link(row["name"],row["exact_catalog_id"]);linked.append(row["name"])
+ return linked

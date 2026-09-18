@@ -558,6 +558,7 @@ class ExerciseCard(ft.Card):
                 keyboard_type=ft.KeyboardType.NUMBER
             )
             rpe_f.on_change = self.make_rpe_updater(idx)
+            rpe_f.on_focus = self.maybe_show_rpe_guide
             rpe_f.on_blur = self.make_blur_handler(idx, "rpe")
 
             self.weight_fields.append(w_f)
@@ -699,6 +700,8 @@ class ExerciseCard(ft.Card):
         
         if regulation_msg:
             chips_row.controls.append(make_helper_chip(regulation_msg, "red900", "red100"))
+        if any(x.get("r_source") == "weight_derived" for x in self.app.sets.get(self.db_id, [])):
+            chips_row.controls.append(make_helper_chip("REPS AUTO-ADJUSTED FROM WEIGHT", "teal900", "teal100"))
         effective_settings = get_effective_progression_settings(self.exercise, self.mov_type, eq_type, get_user_age(), get_user_progression_profile())
         max_load = effective_settings.get("max_progression_weight")
         if max_load is not None:
@@ -791,6 +794,50 @@ class ExerciseCard(ft.Card):
             self.app.safe_close(dialog);self.app.show_snackbar("Setup notes saved.","green300")
         dialog=ft.AlertDialog(title=ft.Text(f"Setup Notes: {self.exercise}",weight="bold"),content=field,actions=[ft.TextButton("Cancel",on_click=lambda ev:self.app.safe_close(dialog)),ft.ElevatedButton("Save",on_click=save)]);self.app.safe_open(dialog)
 
+    def open_rpe_guide(self, e=None, first_use=False):
+        content = ft.Column([
+            ft.Text("RPE: Rate of Perceived Exertion", size=15, weight="bold", color="cyan200"),
+            ft.Text("After a completed set, estimate how many additional repetitions were possible with good technique.", size=11),
+            ft.Text("RPE 7 = about 3 reps remaining\nRPE 8 = about 2 reps remaining\nRPE 9 = about 1 rep remaining\nRPE 10 = no additional good-form reps remaining", size=11),
+            ft.Text("Half steps are allowed. IronCycle accepts 1 to 10 in 0.5 steps and combines RPE with completed reps to progress, hold, or reduce future targets.", size=10, color="white70"),
+            ft.Text("Rate the set just completed, not the entire workout.", size=10, color="amber200"),
+        ], tight=True, spacing=7)
+        def close(ev=None):
+            self.app.save_setting("rpe_guide_seen", "1")
+            self.app.safe_close(dialog)
+        dialog = ft.AlertDialog(title=ft.Text("How RPE Works", weight="bold"), content=ft.Container(width=370, content=content), actions=[ft.ElevatedButton("Got it", on_click=close)])
+        self.app.safe_open(dialog)
+
+    def maybe_show_rpe_guide(self, e=None):
+        if not self.app.get_bool_setting("rpe_guide_seen", False):
+            self.open_rpe_guide(first_use=True)
+
+    def open_exercise_limits_editor(self, e=None):
+        with get_db() as conn:
+            row = conn.execute("SELECT min_reps,max_reps,default_reps,min_weight,max_weight,default_weight,weight_step FROM exercise_dict WHERE name=?", (self.exercise,)).fetchone()
+        meta = resolve_exercise_metadata(self.exercise)
+        values = list(row or (None,)*7)
+        defaults = [meta.get("min_reps",1),meta.get("max_reps",50),meta.get("default_reps",10),meta.get("min_weight",0),meta.get("max_weight"),meta.get("default_weight",0),meta.get("weight_step")]
+        fields=[]
+        labels=["Minimum reps","Maximum reps","Default reps","Minimum weight (lb)","Maximum weight (lb)","Default weight (lb)","Weight increment (lb)"]
+        for label,current,default in zip(labels,values,defaults):
+            value=current if current is not None else default
+            fields.append(ft.TextField(label=label,value="" if value is None else f"{float(value):g}",keyboard_type=ft.KeyboardType.NUMBER))
+        def save(ev=None):
+            try:
+                min_r,max_r,def_r=[int(float((fields[i].value or '').strip())) for i in range(3)]
+                min_w=float((fields[3].value or '0').strip()); max_w=float(fields[4].value) if str(fields[4].value or '').strip() else None
+                def_w=float((fields[5].value or '0').strip()); step=float(fields[6].value) if str(fields[6].value or '').strip() else None
+                if min_r<1 or max_r<min_r or not min_r<=def_r<=max_r: raise ValueError("Rep limits must contain the default value.")
+                if min_w<0 or (max_w is not None and max_w<min_w) or def_w<min_w or (max_w is not None and def_w>max_w): raise ValueError("Weight limits must contain the default value.")
+                if step is not None and step<=0: raise ValueError("Weight increment must be positive.")
+                with get_db() as conn:
+                    conn.execute("UPDATE exercise_dict SET min_reps=?,max_reps=?,default_reps=?,min_weight=?,max_weight=?,default_weight=?,weight_step=? WHERE name=?",(min_r,max_r,def_r,min_w,max_w,def_w,step,self.exercise));conn.commit()
+                self.app.safe_close(dialog);self.app.show_snackbar(f"Exercise limits saved for {self.exercise}.","green300");self.app.sets.clear();self.app.rebuild_entire_display()
+            except Exception as err:self.app.show_snackbar(str(err),"red300")
+        dialog=ft.AlertDialog(title=ft.Text(f"Exercise Limits: {self.exercise}",weight="bold"),content=ft.Container(width=370,height=500,content=ft.Column([ft.Text("Valid entry limits are separate from progression preferences.",size=9,color="cyan200"),*fields],scroll="auto",spacing=6)),actions=[ft.TextButton("Cancel",on_click=lambda ev:self.app.safe_close(dialog)),ft.ElevatedButton("Save",on_click=save)])
+        self.app.safe_open(dialog)
+
     def open_target_explanation(self, e=None):
         lines = []
         if self.app.current_week == "Deload":
@@ -829,6 +876,8 @@ class ExerciseCard(ft.Card):
             content=ft.Column([
                 ft.TextButton("Setup notes", on_click=lambda ev: [self.app.safe_close(dialog), self.open_setup_notes_dialog()]),
                 ft.TextButton("Why this target?", on_click=lambda ev: [self.app.safe_close(dialog), self.open_target_explanation()]),
+                ft.TextButton("How RPE works", on_click=lambda ev: [self.app.safe_close(dialog), self.open_rpe_guide()]),
+                ft.TextButton("Exercise limits", on_click=lambda ev: [self.app.safe_close(dialog), self.open_exercise_limits_editor()]),
                 ft.TextButton("Repeat previous set", on_click=lambda ev: [self.app.safe_close(dialog), self.repeat_previous_set()]),
                 ft.TextButton("Progression history", on_click=lambda ev: [self.app.safe_close(dialog), self.open_progression_history()]),
                 ft.TextButton("Modify progression", on_click=lambda ev: [self.app.safe_close(dialog), self.app.open_exercise_progression_editor(self.exercise, self)]),
@@ -944,6 +993,12 @@ class ExerciseCard(ft.Card):
                     int(r_raw)
                 except ValueError:
                     self.app.show_snackbar(f"Set {set_idx + 1} reps must be a whole number.", "red300")
+                    self.app.rebuild_entire_display()
+                    return
+                try:
+                    validate_exercise_values(self.exercise, float(w_raw), int(r_raw))
+                except ValueError as err:
+                    self.app.show_snackbar(str(err), "red300")
                     self.app.rebuild_entire_display()
                     return
                 normalized_rpe = self.normalize_rpe(rpe_raw)
@@ -1113,14 +1168,16 @@ class ExerciseCard(ft.Card):
                 self.app.show_snackbar(f"Set {idx} reps must be a whole number.", "red300")
                 return
 
-            if rpe_raw:
-                try:
-                    rpe_val = float(rpe_raw)
-                except ValueError:
-                    self.app.show_snackbar(f"Set {idx} RPE must be numeric.", "red300")
-                    return
-            else:
-                rpe_val = 10.0
+            try:
+                w_val, r_val = validate_exercise_values(self.exercise, w_val, r_val)
+            except ValueError as err:
+                self.app.show_snackbar(f"Set {idx}: {err}", "red300")
+                return
+            normalized_rpe = self.normalize_rpe(rpe_raw)
+            if normalized_rpe is None:
+                self.app.show_snackbar(f"Set {idx} RPE must be 1 to 10 in 0.5 steps.", "red300")
+                return
+            rpe_val = float(normalized_rpe)
 
             if not set_data.get("done") or not set_data.get("completed_at"):
                 self.app.show_snackbar(f"Mark Set {idx} Done before logging the exercise.", "red300")
@@ -1756,6 +1813,7 @@ class WorkoutTrackerApp:
                     ft.ElevatedButton("🚀 First Setup Wizard", on_click=lambda ev:[self.safe_close(self.actions_menu_dialog),self.open_first_setup_wizard()], width=float('inf'), style=btn_style),
                     ft.ElevatedButton("👤 Profile Settings", on_click=self.open_settings_dialog, width=float('inf'), style=btn_style),
                     ft.ElevatedButton("⭐ Browse & Favorite Exercises", on_click=lambda ev:[self.safe_close(self.actions_menu_dialog),self.open_canonical_exercise_browser()], width=float('inf'), style=btn_style),
+                    ft.ElevatedButton("🧬 Uniform Exercise Review", on_click=lambda ev:[self.safe_close(self.actions_menu_dialog),self.open_uniform_exercise_review()], width=float('inf'), style=btn_style),
                     ft.ElevatedButton("🧭 Guided Architect", on_click=lambda ev:[self.safe_close(self.actions_menu_dialog),self.open_guided_architect()], width=float('inf'), style=btn_style),
                     ft.ElevatedButton("📚 Exercise Library", on_click=self.menu_manage_dict, width=float('inf'), style=btn_style),
                     ft.ElevatedButton("🧪 Closed Testing Guide", on_click=lambda ev:[self.safe_close(self.actions_menu_dialog),self.open_closed_testing_guide()], width=float('inf'), style=btn_style),
@@ -2075,7 +2133,7 @@ class WorkoutTrackerApp:
             else:
                 self.show_snackbar('Profile saved. Choose and review a plan style.','green300');self.open_guided_architect()
         def later(ev):self.save_setting('onboarding_seen','1');self.safe_close(dialog)
-        content=ft.Column([ft.Text('Welcome to IronCycle',size=18,weight='bold',color='cyan200'),ft.Text('Create a profile, choose a real training goal, then select how you want to build the plan.',size=10),name,ft.Column([age,weight],spacing=6,tight=True),experience,goal,ft.Text('HOW DO YOU WANT TO START?',size=10,weight='bold',color='cyan300'),plan_mode,next_step,ft.Text('AVAILABLE EQUIPMENT',size=10,weight='bold',color='cyan300'),select_all,equipment,summary,safety_row],scroll='auto',spacing=7)
+        content=ft.Column([ft.Text('Welcome to IronCycle',size=18,weight='bold',color='cyan200'),ft.Text('Create a profile, choose a real training goal, then select how you want to build the plan.',size=10),ft.Container(content=ft.Column([ft.Text('RPE QUICK GUIDE',size=10,weight='bold',color='cyan300'),ft.Text('RPE 7 ≈ 3 good-form reps left • 8 ≈ 2 • 9 ≈ 1 • 10 ≈ none. Half steps are allowed.',size=9,color='white70')],spacing=2),bgcolor='white10',padding=7,border_radius=7),name,ft.Column([age,weight],spacing=6,tight=True),experience,goal,ft.Text('HOW DO YOU WANT TO START?',size=10,weight='bold',color='cyan300'),plan_mode,next_step,ft.Text('AVAILABLE EQUIPMENT',size=10,weight='bold',color='cyan300'),select_all,equipment,summary,safety_row],scroll='auto',spacing=7)
         dialog=ft.AlertDialog(title=ft.Text('First Setup'),content=ft.Container(width=430,height=max(430,min(680,float(getattr(self.page,'height',720) or 720)-90)),content=content),actions=[ft.TextButton('Not Now',on_click=later),continue_button],inset_padding=8)
         continue_button.on_click=continue_to_architect;update_destination();self.safe_open(dialog)
 
@@ -2822,7 +2880,8 @@ class WorkoutTrackerApp:
             "Closed-test support guide: enabled",
             f"Onboarding completed: {'Yes' if self.get_bool_setting('onboarding_completed',False) else 'No'}",
             f"Automatic First Setup eligible: {'No - existing onboarding state is preserved' if self.get_bool_setting('onboarding_completed',False) else 'Yes if no completed workout history'}",
-            f"Canonical exercise catalog: {len(CANONICAL_EXERCISES)} entries / v1",
+            f"Canonical exercise catalog: {len(CANONICAL_EXERCISES)} entries / v{CATALOG_VERSION}",
+            f"Uniform exercise coverage: {uniform_exercise_summary()['linked']}/{uniform_exercise_summary()['total']} linked",
             f"Equipment profile: {self.get_text_setting('available_equipment','Not configured')}",
             f"Starter plan preference: {self.get_text_setting('starter_template','Not selected')}",
             f"Exercise favorites: {len(favorite_exercise_ids())}",
@@ -3264,6 +3323,29 @@ class WorkoutTrackerApp:
         self.rebuild_navigation_headers()
         self.rebuild_entire_display()
 
+    def open_uniform_exercise_review(self, e=None):
+        summary=uniform_exercise_summary();review=uniform_exercise_review();items=ft.Column(scroll="auto",expand=True,spacing=5)
+        status=ft.Text(f"{summary['linked']} of {summary['total']} linked • {summary['custom']} custom • {summary['unlinked']} need review",size=10,color="cyan200")
+        def refresh():
+            current=uniform_exercise_review();items.controls.clear()
+            for row in current:
+                suggestions=row.get("candidates") or []
+                options=[ft.dropdown.Option(key=x["id"],text=f"{x['name']} • score {x['score']}") for x in suggestions]
+                choice=ft.Dropdown(label="Canonical match",options=options,value=row.get("exact_catalog_id") or (suggestions[0]["id"] if suggestions else None),expand=True)
+                def link(ev,name=row["name"],dd=choice):
+                    if not dd.value:self.show_snackbar("Choose a canonical exercise or keep this entry custom.","amber300");return
+                    apply_uniform_exercise_link(name,dd.value);self.show_snackbar(f"Linked {name} without renaming history.","green300");refresh()
+                items.controls.append(ft.Container(content=ft.Column([ft.Text(row["name"],weight="bold",size=11),ft.Text(f"Current category: {row['category']} • {'Custom' if row['is_custom'] else 'Legacy'}",size=9,color="white54"),ft.Row([choice,ft.ElevatedButton("Link",on_click=link)],spacing=5)],spacing=3),bgcolor="white10",padding=7,border_radius=7))
+            if not current:items.controls.append(ft.Text("All exercise entries are linked or intentionally retained.",color="green300"))
+            s=uniform_exercise_summary();status.value=f"{s['linked']} of {s['total']} linked • {s['custom']} custom • {s['unlinked']} need review"
+            try:items.update();status.update()
+            except Exception:pass
+        def exact(ev=None):
+            names=auto_link_exact_uniform_exercises();self.show_snackbar(f"Linked {len(names)} exact canonical names or aliases.","green300");refresh()
+        refresh()
+        dialog=ft.AlertDialog(title=ft.Text("Uniform Exercise Review",weight="bold"),content=ft.Container(width=430,height=560,content=ft.Column([status,ft.Text("Linking assigns stable metadata while preserving the stored exercise name, completed history, setup notes, limits, and progression settings.",size=9,color="white70"),ft.ElevatedButton("Safely Link Exact Names and Aliases",on_click=exact),items],expand=True,spacing=6)),actions=[ft.TextButton("Close",on_click=lambda ev:self.safe_close(dialog))],inset_padding=10)
+        self.safe_open(dialog)
+
     def open_canonical_exercise_browser(self,e=None):
         query=ft.TextField(label='Search name, category, or movement',prefix_icon=ft.Icons.SEARCH)
         equipment=ft.Dropdown(label='Equipment',value='All',options=[ft.dropdown.Option('All')]+[ft.dropdown.Option(x) for x in sorted({x.get('equipment','Other') for x in BUILTIN_EXERCISE_CATALOG})])
@@ -3428,9 +3510,11 @@ class WorkoutTrackerApp:
                     compatible={x['name'] for x in guided_exercise_candidates(reference,equipment_profile,50)}
                     if dd.value not in compatible:self.show_snackbar(f'Exercise {slot_index} on {day} is not compatible with the selected equipment.','amber300');return
                     if wt.visible:
-                        try:load=float(wt.value or 0)
+                        try:
+                            load=float(wt.value or 0)
+                            meta=resolve_exercise_metadata(dd.value)
+                            if load<float(meta.get('min_weight',0)) or (meta.get('max_weight') is not None and load>float(meta['max_weight'])):raise ValueError()
                         except Exception:self.show_snackbar(f'Enter a valid starting load for Exercise {slot_index} on {day}.','amber300');return
-                        if load<0:self.show_snackbar(f'Enter a valid starting load for Exercise {slot_index} on {day}.','amber300');return
                     else:load=0.0;wt.value='0'
                     seen.add(dd.value);entries.append({'name':dd.value,'weight':load})
                 reviewed.append(entries)
