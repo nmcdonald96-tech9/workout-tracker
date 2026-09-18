@@ -1,0 +1,219 @@
+name: Export IronCycle comparison bundles
+
+on:
+  workflow_dispatch:
+    inputs:
+      baseline_ref:
+        description: "Working baseline tag, branch, or full commit SHA, for example v1.58.0"
+        required: true
+        default: "v1.58.0"
+        type: string
+      current_ref:
+        description: "Current tag, branch, or full commit SHA"
+        required: true
+        default: "main"
+        type: string
+      include_main:
+        description: "Include main.py in both bundles. This makes the files much larger."
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  export-context:
+    name: Create version comparison files
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Check out baseline
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.baseline_ref }}
+          path: baseline
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Check out current version
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.current_ref }}
+          path: current
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Create safe structured source bundles
+        shell: bash
+        env:
+          BASELINE_REF: ${{ inputs.baseline_ref }}
+          CURRENT_REF: ${{ inputs.current_ref }}
+          INCLUDE_MAIN: ${{ inputs.include_main }}
+        run: |
+          set -euo pipefail
+          mkdir -p comparison-output
+
+          cat > "$RUNNER_TEMP/make_bundle.py" <<'PY'
+          from __future__ import annotations
+
+          import os
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          repo = Path(sys.argv[1]).resolve()
+          label = sys.argv[2]
+          output = Path(sys.argv[3]).resolve()
+          include_main = os.environ.get("INCLUDE_MAIN", "false").lower() == "true"
+
+          exact_files = {
+              "requirements.txt",
+              "pyproject.toml",
+              "flet.toml",
+              "constants.py",
+              "onedrive_service.py",
+              "ironcycle_billing.py",
+          }
+          if include_main:
+              exact_files.add("main.py")
+
+          included_directories = (
+              ".github/workflows/",
+              "packages/ironcycle-billing/",
+              "packages/ironcycle_billing/",
+              "services/",
+          )
+
+          allowed_extensions = {
+              ".py", ".toml", ".yml", ".yaml", ".dart", ".kt", ".kts",
+              ".gradle", ".properties", ".json", ".txt", ".md",
+          }
+
+          excluded_parts = {
+              ".git", "build", "dist", "__pycache__", ".pytest_cache",
+              ".venv", "venv", "node_modules", ".gradle", ".dart_tool",
+              ".pub-cache", ".idea", ".vscode",
+          }
+
+          excluded_extensions = {
+              ".apk", ".aab", ".jks", ".keystore", ".db", ".sqlite",
+              ".sqlite3", ".icbackup", ".pyc", ".p12", ".pfx", ".pem",
+              ".key", ".cer", ".crt",
+          }
+
+          excluded_names = {
+              ".env", "key.properties", "google-services.json",
+              "msal_cache.json", "onedrive_pending.json",
+              "service-account.json", "secrets.json",
+          }
+
+          def git(*args: str) -> str:
+              return subprocess.check_output(
+                  ["git", "-C", str(repo), *args], text=True
+              ).strip()
+
+          def should_include(relative: Path) -> bool:
+              posix = relative.as_posix()
+              if any(part in excluded_parts for part in relative.parts):
+                  return False
+              if relative.name in excluded_names:
+                  return False
+              if relative.suffix.lower() in excluded_extensions:
+                  return False
+              if posix in exact_files:
+                  return True
+              return (
+                  posix.startswith(included_directories)
+                  and relative.suffix.lower() in allowed_extensions
+              )
+
+          def fence_language(path: Path) -> str:
+              return {
+                  ".py": "python", ".toml": "toml", ".yml": "yaml",
+                  ".yaml": "yaml", ".dart": "dart", ".kt": "kotlin",
+                  ".kts": "kotlin", ".gradle": "groovy",
+                  ".properties": "properties", ".json": "json",
+                  ".md": "markdown", ".txt": "text",
+              }.get(path.suffix.lower(), "text")
+
+          files = sorted(
+              p for p in repo.rglob("*")
+              if p.is_file() and should_include(p.relative_to(repo))
+          )
+
+          commit = git("rev-parse", "HEAD")
+          short_commit = git("rev-parse", "--short=12", "HEAD")
+          commit_date = git("show", "-s", "--format=%cI", "HEAD")
+          subject = git("show", "-s", "--format=%s", "HEAD")
+
+          with output.open("w", encoding="utf-8") as out:
+              out.write(f"# IronCycle source context: {label}\n\n")
+              out.write(f"- Requested ref: `{label}`\n")
+              out.write(f"- Commit: `{commit}`\n")
+              out.write(f"- Short commit: `{short_commit}`\n")
+              out.write(f"- Commit date: `{commit_date}`\n")
+              out.write(f"- Commit subject: `{subject}`\n")
+              out.write(f"- main.py included: `{include_main}`\n")
+              out.write(f"- Included text files: `{len(files)}`\n\n")
+
+              out.write("## Included file tree\n\n```text\n")
+              for path in files:
+                  out.write(path.relative_to(repo).as_posix() + "\n")
+              out.write("```\n")
+
+              for path in files:
+                  relative = path.relative_to(repo)
+                  out.write(f"\n\n## File: `{relative.as_posix()}`\n\n")
+                  out.write(f"```{fence_language(relative)}\n")
+                  try:
+                      content = path.read_text(encoding="utf-8")
+                  except UnicodeDecodeError:
+                      out.write("[Skipped because this file is not UTF-8 text.]\n")
+                  else:
+                      out.write(content)
+                      if content and not content.endswith("\n"):
+                          out.write("\n")
+                  out.write("```\n")
+
+          print(f"Created {output} with {len(files)} files from {commit}")
+          PY
+
+          python "$RUNNER_TEMP/make_bundle.py" \
+            baseline "$BASELINE_REF" \
+            comparison-output/IronCycle_baseline_context.md
+
+          python "$RUNNER_TEMP/make_bundle.py" \
+            current "$CURRENT_REF" \
+            comparison-output/IronCycle_current_context.md
+
+      - name: Create comparison manifest
+        shell: bash
+        env:
+          BASELINE_REF: ${{ inputs.baseline_ref }}
+          CURRENT_REF: ${{ inputs.current_ref }}
+        run: |
+          set -euo pipefail
+          {
+            echo "IronCycle comparison export"
+            echo "Baseline requested ref: $BASELINE_REF"
+            echo "Baseline commit: $(git -C baseline rev-parse HEAD)"
+            echo "Current requested ref: $CURRENT_REF"
+            echo "Current commit: $(git -C current rev-parse HEAD)"
+            echo
+            echo "Files:"
+            sha256sum comparison-output/*.md
+            echo
+            echo "Safety note: generated binaries, databases, backups, caches, keystores, and common secret files were excluded. Review the Markdown files before sharing."
+          } > comparison-output/COMPARISON_MANIFEST.txt
+
+          ls -lh comparison-output
+
+      - name: Upload comparison files
+        uses: actions/upload-artifact@v4
+        with:
+          name: IronCycle-comparison-context
+          path: comparison-output/
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 6
