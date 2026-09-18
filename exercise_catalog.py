@@ -24,3 +24,49 @@ def rank_catalog_candidates(name,category=None,family=None,equipment=None,angle=
   if angle!=ANGLE_NOT_SPECIFIED and x.get("angle")==angle:score+=15;why.append("same angle")
   if score:out.append({"item":x,"score":score,"reasons":why})
  return sorted(out,key=lambda y:(-y["score"],y["item"]["name"]))[:limit]
+
+
+# --- 1.71 CANONICAL RUNTIME METADATA ---
+CATALOG_VERSION=3
+CATALOG_REVISION=1
+_EQUIPMENT_DEFAULTS={
+ "Bodyweight":dict(min_weight=0.0,max_weight=500.0,default_weight=0.0,weight_step=1.0),
+ "Dumbbell":dict(min_weight=0.0,max_weight=100.0,default_weight=0.0,weight_step=None),
+ "Barbell":dict(min_weight=0.0,max_weight=1500.0,default_weight=45.0,weight_step=5.0),
+ "Cable":dict(min_weight=0.0,max_weight=1000.0,default_weight=0.0,weight_step=2.5),
+ "Machine":dict(min_weight=0.0,max_weight=2000.0,default_weight=0.0,weight_step=2.5),
+ "Plate":dict(min_weight=0.0,max_weight=2000.0,default_weight=0.0,weight_step=2.5),
+ "Other":dict(min_weight=0.0,max_weight=None,default_weight=0.0,weight_step=None)}
+def _runtime_item(item):
+ row=dict(item);eq=row.get("equipment","Other");legacy={}
+ try:
+  from constants import EXERCISE_METADATA
+  legacy=dict(EXERCISE_METADATA.get(row["name"],{}))
+ except Exception:pass
+ for k,v in _EQUIPMENT_DEFAULTS.get(eq,_EQUIPMENT_DEFAULTS["Other"]).items():row.setdefault(k,v)
+ row.setdefault("min_reps",1);row.setdefault("max_reps",50);row.setdefault("default_reps",10 if row.get("movement_type")=="Compound" else 12)
+ row.setdefault("plate_loaded",bool(legacy.get("plate_loaded",False)));row.setdefault("bar_weight",float(legacy.get("bar_weight",0) or 0));row.setdefault("plate_mode",legacy.get("plate_mode"));row.setdefault("plate_weights",legacy.get("plate_weights"))
+ if "smith" in row.get("name","").lower():row["plate_loaded"]=True;row["bar_weight"]=0.0
+ return row
+BUILTIN_EXERCISE_CATALOG=[_runtime_item(x) for x in BUILTIN_EXERCISE_CATALOG]
+CATALOG_BY_ID={x["id"]:x for x in BUILTIN_EXERCISE_CATALOG};CATALOG_BY_NAME={x["name"]:x for x in BUILTIN_EXERCISE_CATALOG}
+try:
+ from constants import EXERCISE_METADATA
+ for x in BUILTIN_EXERCISE_CATALOG:
+  prior=dict(EXERCISE_METADATA.get(x["name"],{}));prior.update({k:x.get(k) for k in ("category","pattern","movement_type","equipment","plate_loaded","bar_weight","plate_mode","plate_weights","min_reps","max_reps","default_reps","min_weight","max_weight","default_weight","weight_step")});EXERCISE_METADATA[x["name"]]=prior
+except Exception:pass
+def resolve_exercise_metadata(name):
+ item=CATALOG_BY_NAME.get(str(name or ""));result=dict(item or {})
+ try:
+  from constants import EXERCISE_METADATA
+  for k,v in EXERCISE_METADATA.get(str(name or ""),{}).items():result.setdefault(k,v)
+ except Exception:pass
+ result.setdefault("name",str(name or "").strip());result.setdefault("category","General");result.setdefault("family","general");result.setdefault("pattern","General");result.setdefault("movement_type","Isolation");result.setdefault("equipment","Other");result.setdefault("angle",ANGLE_NOT_SPECIFIED)
+ for k,v in _EQUIPMENT_DEFAULTS.get(result["equipment"],_EQUIPMENT_DEFAULTS["Other"]).items():result.setdefault(k,v)
+ result.setdefault("min_reps",1);result.setdefault("max_reps",50);result.setdefault("default_reps",10 if result["movement_type"]=="Compound" else 12);result.setdefault("plate_loaded",False);result.setdefault("bar_weight",0.0)
+ return result
+def validate_exercise_values(name,weight,reps):
+ m=resolve_exercise_metadata(name);weight=float(weight);reps=int(reps)
+ if not int(m["min_reps"])<=reps<=int(m["max_reps"]):raise ValueError(f"Reps must be {m['min_reps']}-{m['max_reps']} for {m['name']}.")
+ if weight<float(m["min_weight"] or 0) or (m.get("max_weight") is not None and weight>float(m["max_weight"])):raise ValueError(f"Weight is outside the valid range for {m['name']}.")
+ return weight,reps

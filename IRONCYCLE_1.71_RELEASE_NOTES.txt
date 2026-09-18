@@ -1,0 +1,11 @@
+IronCycle 1.71.0
+
+Differences from 1.70.0:
+- Unified catalog is now the runtime metadata authority (catalog v3).
+- Expanded exercises receive correct equipment and bodyweight behavior.
+- Schema 18 adds separate min/max/default rep and weight boundaries plus weight step.
+- Progression rep ceilings and maximum progression weights remain separate and preserved.
+- Smith Machine bar accounting remains 0 lb.
+- Final persistence revalidates RPE as 1.0-10.0 in 0.5 steps.
+- Diagnostics reports the actual catalog version.
+- Packaging remains the confirmed-working requirements-driven 1.70 layout.

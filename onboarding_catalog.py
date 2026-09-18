@@ -2,8 +2,7 @@
 Exercise definitions are sourced exclusively from exercise_catalog.py.
 """
 import json
-from exercise_catalog import BUILTIN_EXERCISE_CATALOG
-CATALOG_VERSION=2
+from exercise_catalog import BUILTIN_EXERCISE_CATALOG, CATALOG_VERSION
 STARTER_TEMPLATES=[
  {'id':'general_full_body','name':'General Full Body','focus':'Balanced','days':'2-4','description':'Balanced push, pull, squat, hinge, single-leg, and core work.'},
  {'id':'chest_focus','name':'Chest Focus','focus':'Chest','days':'3-5','description':'Additional pressing with balanced pulling and lower-body work.'},

@@ -23,7 +23,7 @@ import sys
 
 from constants import *
 from exercise_catalog import BUILTIN_EXERCISE_CATALOG as CANONICAL_EXERCISES
-from onboarding_catalog import STARTER_TEMPLATES, EQUIPMENT as ONBOARDING_EQUIPMENT, EXPERIENCE_LEVELS, GOALS as ONBOARDING_GOALS, recommend_starter_template
+from onboarding_catalog import STARTER_TEMPLATES, EQUIPMENT as ONBOARDING_EQUIPMENT, EXPERIENCE_LEVELS, GOALS as ONBOARDING_GOALS, recommend_starter_template, CATALOG_VERSION
 from database import *
 from app.compatibility import compatible_checkbox
 from components.session_context_panel import build_tag_controls
@@ -1102,14 +1102,16 @@ class ExerciseCard(ft.Card):
                 self.app.show_snackbar(f"Set {idx} reps must be a whole number.", "red300")
                 return
 
-            if rpe_raw:
-                try:
-                    rpe_val = float(rpe_raw)
-                except ValueError:
-                    self.app.show_snackbar(f"Set {idx} RPE must be numeric.", "red300")
-                    return
-            else:
-                rpe_val = 10.0
+            normalized_rpe = self.normalize_rpe(rpe_raw)
+            if normalized_rpe is None:
+                self.app.show_snackbar(f"Set {idx} RPE must be 1 to 10 in 0.5 steps.", "red300")
+                return
+            rpe_val = float(normalized_rpe)
+            try:
+                w_val, r_val = validate_exercise_values(self.exercise, w_val, r_val)
+            except ValueError as boundary_error:
+                self.app.show_snackbar(str(boundary_error), "red300")
+                return
 
             if not set_data.get("done") or not set_data.get("completed_at"):
                 self.app.show_snackbar(f"Mark Set {idx} Done before logging the exercise.", "red300")
@@ -2811,7 +2813,7 @@ class WorkoutTrackerApp:
             "Closed-test support guide: enabled",
             f"Onboarding completed: {'Yes' if self.get_bool_setting('onboarding_completed',False) else 'No'}",
             f"Automatic First Setup eligible: {'No - existing onboarding state is preserved' if self.get_bool_setting('onboarding_completed',False) else 'Yes if no completed workout history'}",
-            f"Canonical exercise catalog: {len(CANONICAL_EXERCISES)} entries / v1",
+            f"Canonical exercise catalog: {len(CANONICAL_EXERCISES)} entries / v{CATALOG_VERSION}",
             f"Equipment profile: {self.get_text_setting('available_equipment','Not configured')}",
             f"Starter plan preference: {self.get_text_setting('starter_template','Not selected')}",
             f"Exercise favorites: {len(favorite_exercise_ids())}",

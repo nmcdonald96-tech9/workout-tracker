@@ -264,6 +264,7 @@ def init_and_seed_db():
 
         for item in BUILTIN_EXERCISE_CATALOG:
             cursor.execute("INSERT OR IGNORE INTO exercise_dict(name,category,movement_pattern,catalog_id,display_name,movement_family,movement_type,equipment,angle,is_custom) VALUES(?,?,?,?,?,?,?,?,?,0)",(item['name'],item['category'],item['pattern'],item['id'],item['name'],item['family'],item['movement_type'],item['equipment'],item.get('angle','Not specified')))
+            cursor.execute("UPDATE exercise_dict SET catalog_revision=COALESCE(catalog_revision,?),min_reps=COALESCE(min_reps,?),max_reps=COALESCE(max_reps,?),default_reps=COALESCE(default_reps,?),min_weight=COALESCE(min_weight,?),max_weight=COALESCE(max_weight,?),default_weight=COALESCE(default_weight,?),weight_step=COALESCE(weight_step,?) WHERE name=?",(CATALOG_REVISION,item.get('min_reps'),item.get('max_reps'),item.get('default_reps'),item.get('min_weight'),item.get('max_weight'),item.get('default_weight'),item.get('weight_step'),item['name']))
         conn.commit()
         # Fresh installs remain blank; existing plans are preserved.
 
