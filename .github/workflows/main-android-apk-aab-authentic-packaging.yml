@@ -1,0 +1,386 @@
+name: Build IronCycle Android APK and AAB with authentic packaging
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  FLET_SKIP_FLUTTER_PROMPT: "true"
+  EXPECTED_PACKAGE_ID: "com.ironcycle.myapp"
+  EXPECTED_PROJECT: "myapp"
+  EXPECTED_ORG: "com.ironcycle"
+
+jobs:
+  build:
+    name: Build and verify authentic-layout APK and AAB
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+
+    steps:
+      - name: Check out selected branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Validate and normalize repository layout on runner
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          required=(main.py database.py constants.py onedrive_service.py requirements.txt packages/ironcycle-billing/pyproject.toml)
+          for path in "${required[@]}"; do
+            if [ ! -e "$path" ]; then
+              echo "::error::Required path is missing: $path"
+              exit 1
+            fi
+          done
+
+          # The authentic 1.58 application had no root pyproject.toml.
+          rm -f pyproject.toml
+
+          # Remove loose duplicate extension source files only in this runner checkout.
+          # The canonical extension remains packages/ironcycle-billing/.
+          rm -rf ironcycle_billing
+          rm -f '__init__ (1).py' __init__.py 'billing (2).py' billing.py billing.dart
+          rm -f build.gradle extension.dart ironcycle_billing.dart pubspec.yaml setup.py
+          rm -f Flet.yaml Flet.yaml.txt
+          rm -f main-apk-only-billing-library-8.yml
+          rm -f main-play-billing-extension-apk-only.yml
+          rm -f main-play-billing-library-apk-aab-8.yml
+          rm -f test_entitlement_foundation.py test_entitlement_states.py
+          rm -f test_readiness_target_sync.py test_target_ownership_rpe.py
+
+          # Reproduce the proven authentic dependency declaration.
+          cat > requirements.txt <<'EOF'
+          flet==0.86.5
+          msal>=1.31,<2
+          ./packages/ironcycle-billing
+          EOF
+
+          if [ -e pyproject.toml ]; then
+            echo "::error::Root pyproject.toml still exists."
+            exit 1
+          fi
+          if [ -e ironcycle_billing ]; then
+            echo "::error::Duplicate root ironcycle_billing directory still exists."
+            exit 1
+          fi
+
+          echo "Normalized top-level tree:"
+          find . -maxdepth 1 -mindepth 1 -printf '%f\n' | sort
+          echo "Requirements:"
+          cat requirements.txt
+
+      - name: Build canonical billing extension wheel
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip wheel
+          mkdir -p "$GITHUB_WORKSPACE/dist"
+          python -m pip wheel "$GITHUB_WORKSPACE/packages/ironcycle-billing" --no-deps --wheel-dir "$GITHUB_WORKSPACE/dist"
+          BILLING_WHEEL="$(find "$GITHUB_WORKSPACE/dist" -maxdepth 1 -type f -name 'ironcycle_billing-*.whl' -print -quit)"
+          test -n "$BILLING_WHEEL"
+          test -f "$BILLING_WHEEL"
+
+          unzip -l "$BILLING_WHEEL" | tee "$RUNNER_TEMP/billing-wheel.txt"
+          grep -F 'ironcycle_billing/flutter/ironcycle_billing/pubspec.yaml' "$RUNNER_TEMP/billing-wheel.txt"
+          grep -F 'ironcycle_billing/flutter/ironcycle_billing/lib/src/extension.dart' "$RUNNER_TEMP/billing-wheel.txt"
+          grep -F 'ironcycle_billing/flutter/ironcycle_billing/lib/src/billing.dart' "$RUNNER_TEMP/billing-wheel.txt"
+
+          export BILLING_WHEEL
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          path = Path("requirements.txt")
+          wheel_uri = Path(os.environ["BILLING_WHEEL"]).resolve().as_uri()
+          rows = [r for r in path.read_text(encoding="utf-8").splitlines()
+                  if r.strip() not in {"./packages/ironcycle-billing", "packages/ironcycle-billing"}]
+          rows.append(f"ironcycle-billing @ {wheel_uri}")
+          path.write_text("\n".join(rows) + "\n", encoding="utf-8")
+          PY
+          echo "BILLING_WHEEL=$BILLING_WHEEL" >> "$GITHUB_ENV"
+          cat requirements.txt
+
+      - name: Install and verify build-host dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install -r requirements.txt
+          python - <<'PY'
+          import cryptography, jwt, msal, requests, ironcycle_billing
+          print("msal", getattr(msal, "__version__", "unknown"))
+          print("requests", getattr(requests, "__version__", "unknown"))
+          print("PyJWT", getattr(jwt, "__version__", "unknown"))
+          print("cryptography", getattr(cryptography, "__version__", "unknown"))
+          location = str(ironcycle_billing.__file__)
+          print("ironcycle_billing", location)
+          if "/packages/ironcycle-billing/" in location:
+              raise SystemExit("Billing import resolved to repository source instead of installed wheel")
+          PY
+
+      - name: Compile current application source and read version
+        shell: bash
+        run: |
+          set -euo pipefail
+          files=(main.py database.py constants.py onedrive_service.py)
+          for optional in exercise_catalog.py onboarding_catalog.py ironcycle_billing.py; do
+            [ ! -f "$optional" ] || files+=("$optional")
+          done
+          while IFS= read -r module; do files+=("$module"); done < <(find app components services views -type f -name '*.py' -print 2>/dev/null | sort)
+          python -m py_compile "${files[@]}"
+
+          APP_VERSION="$(python - <<'PY'
+          import re
+          from pathlib import Path
+          text = Path("constants.py").read_text(encoding="utf-8")
+          match = re.search(r'^APP_VERSION\s*=\s*["\x27]([^"\x27]+)["\x27]', text, re.MULTILINE)
+          if not match:
+              raise SystemExit("APP_VERSION was not found")
+          print(match.group(1))
+          PY
+          )"
+          ANDROID_VERSION_CODE=$((1300000 + GITHUB_RUN_NUMBER))
+          echo "APP_VERSION=$APP_VERSION" >> "$GITHUB_ENV"
+          echo "ANDROID_VERSION_CODE=$ANDROID_VERSION_CODE" >> "$GITHUB_ENV"
+
+      - name: Validate signing secrets and restore keystore
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_EXPECTED_SIGNER_SHA256: ${{ secrets.ANDROID_EXPECTED_SIGNER_SHA256 }}
+        run: |
+          set -euo pipefail
+          for name in ANDROID_KEYSTORE_BASE64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD ANDROID_EXPECTED_SIGNER_SHA256; do
+            [ -n "${!name:-}" ] || { echo "::error::Missing secret: $name"; exit 1; }
+          done
+          KEYSTORE_PATH="$RUNNER_TEMP/ironcycle-release.jks"
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE_PATH"
+          chmod 600 "$KEYSTORE_PATH"
+          keytool -list -keystore "$KEYSTORE_PATH" -storepass "$ANDROID_KEYSTORE_PASSWORD" -alias "$ANDROID_KEY_ALIAS" >/dev/null
+          echo "KEYSTORE_PATH=$KEYSTORE_PATH" >> "$GITHUB_ENV"
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.41.7"
+          channel: stable
+          cache: false
+
+      - name: Accept Android licenses and reclaim space
+        shell: bash
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost "$AGENT_TOOLSDIRECTORY/CodeQL" || true
+          docker system prune --all --force --volumes || true
+          sudo apt-get clean
+          df -h /
+
+      - name: Build APK and AAB with authentic dependency discovery
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          flet build apk \
+            --yes \
+            --product "IronCycle" \
+            --project "$EXPECTED_PROJECT" \
+            --org "$EXPECTED_ORG" \
+            --bundle-id "$EXPECTED_PACKAGE_ID" \
+            --build-version "$APP_VERSION" \
+            --build-number "$ANDROID_VERSION_CODE" \
+            --android-permissions "com.android.vending.BILLING=True" \
+            --android-signing-key-store "$KEYSTORE_PATH" \
+            --android-signing-key-store-password "$ANDROID_KEYSTORE_PASSWORD" \
+            --android-signing-key-alias "$ANDROID_KEY_ALIAS" \
+            --android-signing-key-password "$ANDROID_KEY_PASSWORD"
+
+          flet build aab \
+            --yes \
+            --product "IronCycle" \
+            --project "$EXPECTED_PROJECT" \
+            --org "$EXPECTED_ORG" \
+            --bundle-id "$EXPECTED_PACKAGE_ID" \
+            --build-version "$APP_VERSION" \
+            --build-number "$ANDROID_VERSION_CODE" \
+            --android-permissions "com.android.vending.BILLING=True" \
+            --android-signing-key-store "$KEYSTORE_PATH" \
+            --android-signing-key-store-password "$ANDROID_KEYSTORE_PASSWORD" \
+            --android-signing-key-alias "$ANDROID_KEY_ALIAS" \
+            --android-signing-key-password "$ANDROID_KEY_PASSWORD"
+
+
+      - name: Locate APK, AAB, and Android tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK_PATH="$(find build/apk -type f -name '*.apk' -print -quit)"
+          AAB_PATH="$(find build/aab -type f -name '*.aab' -print -quit)"
+          test -n "$APK_PATH"
+          test -n "$AAB_PATH"
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner -print | sort -V | tail -n 1)"
+          AAPT="$(find "$ANDROID_HOME/build-tools" -type f -name aapt -print | sort -V | tail -n 1)"
+          test -x "$APKSIGNER"
+          test -x "$AAPT"
+          echo "APK_PATH=$APK_PATH" >> "$GITHUB_ENV"
+          echo "AAB_PATH=$AAB_PATH" >> "$GITHUB_ENV"
+          echo "APKSIGNER=$APKSIGNER" >> "$GITHUB_ENV"
+          echo "AAPT=$AAPT" >> "$GITHUB_ENV"
+
+      - name: Hard-check packaged Python and billing content
+        shell: bash
+        run: |
+          set -euo pipefail
+          export APK_PATH
+          python - <<'PY'
+          import io, os, zipfile
+          from pathlib import PurePosixPath
+
+          found = {k: False for k in ("msal", "requests", "jwt", "cryptography", "billing_pubspec", "billing_extension")}
+          evidence = []
+
+          def inspect(data, label, depth=0):
+              if depth > 6:
+                  return
+              try:
+                  z = zipfile.ZipFile(io.BytesIO(data))
+              except zipfile.BadZipFile:
+                  return
+              with z:
+                  for info in z.infolist():
+                      name = info.filename.replace("\\", "/")
+                      lower = "/" + name.lower().lstrip("/")
+                      parts = {p.lower() for p in PurePosixPath(name).parts}
+                      checks = {
+                          "msal": "msal" in parts or "/msal-" in lower,
+                          "requests": "requests" in parts or "/requests-" in lower,
+                          "jwt": "jwt" in parts or "/pyjwt-" in lower,
+                          "cryptography": "cryptography" in parts or "/cryptography-" in lower,
+                          "billing_pubspec": name.endswith("ironcycle_billing/flutter/ironcycle_billing/pubspec.yaml"),
+                          "billing_extension": name.endswith("ironcycle_billing/flutter/ironcycle_billing/lib/src/extension.dart"),
+                      }
+                      for key, hit in checks.items():
+                          if hit and not found[key]:
+                              found[key] = True
+                              evidence.append(f"{key}: {label}!/{name}")
+                      if info.file_size <= 150_000_000 and name.lower().endswith((".zip", ".whl", ".apk")):
+                          try:
+                              nested = z.read(info)
+                          except Exception:
+                              continue
+                          if nested[:4] == b"PK\x03\x04":
+                              inspect(nested, f"{label}!/{name}", depth + 1)
+
+          with open(os.environ["APK_PATH"], "rb") as f:
+              inspect(f.read(), os.environ["APK_PATH"])
+          print("\n".join(evidence))
+          print(found)
+          missing = [k for k, v in found.items() if not v]
+          if missing:
+              raise SystemExit("Missing packaged evidence: " + ", ".join(missing))
+          PY
+
+      - name: Verify identity permission and permanent signer
+        shell: bash
+        env:
+          ANDROID_EXPECTED_SIGNER_SHA256: ${{ secrets.ANDROID_EXPECTED_SIGNER_SHA256 }}
+        run: |
+          set -euo pipefail
+          "$APKSIGNER" verify --verbose --print-certs "$APK_PATH" 2>&1 | tee "$RUNNER_TEMP/apk-verify.txt"
+          EXPECTED="$(printf '%s' "$ANDROID_EXPECTED_SIGNER_SHA256" | tr '[:lower:]' '[:upper:]' | tr -d ':[:space:]')"
+          ACTUAL="$(sed -n 's/^.*certificate SHA-256 digest: //p' "$RUNNER_TEMP/apk-verify.txt" | head -n 1 | tr '[:lower:]' '[:upper:]' | tr -d ':[:space:]')"
+          if [ -z "$ACTUAL" ]; then
+            echo "::error::Could not extract APK signer SHA-256 digest from apksigner output."
+            exit 1
+          fi
+          if [ "$EXPECTED" != "$ACTUAL" ]; then
+            echo "::error::APK signer mismatch. Expected $EXPECTED but found $ACTUAL."
+            exit 1
+          fi
+          echo "Permanent APK signer verified."
+
+          "$AAPT" dump badging "$APK_PATH" > "$RUNNER_TEMP/apk-badging.txt"
+          grep -F "package: name='$EXPECTED_PACKAGE_ID'" "$RUNNER_TEMP/apk-badging.txt"
+          grep -F "versionName='$APP_VERSION'" "$RUNNER_TEMP/apk-badging.txt"
+          grep -F "versionCode='$ANDROID_VERSION_CODE'" "$RUNNER_TEMP/apk-badging.txt"
+          "$AAPT" dump permissions "$APK_PATH" | grep -F 'com.android.vending.BILLING'
+
+          VERIFIED_APK="$GITHUB_WORKSPACE/IronCycle-${APP_VERSION}-authentic-packaging.apk"
+          cp "$APK_PATH" "$VERIFIED_APK"
+          echo "VERIFIED_APK=$VERIFIED_APK" >> "$GITHUB_ENV"
+
+      - name: Verify signed AAB for Google Play
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f "$AAB_PATH"
+
+          # An Android App Bundle is a signed ZIP/JAR container. jarsigner verifies
+          # the upload-key signature used by Google Play App Signing.
+          jarsigner -verify -verbose -certs "$AAB_PATH" 2>&1 | tee "$RUNNER_TEMP/aab-verify.txt"
+          grep -Eiq 'jar verified|verified' "$RUNNER_TEMP/aab-verify.txt"
+
+          # Basic bundle structure checks.
+          unzip -t "$AAB_PATH" > "$RUNNER_TEMP/aab-unzip-test.txt"
+          unzip -l "$AAB_PATH" > "$RUNNER_TEMP/aab-contents.txt"
+          grep -F 'base/manifest/AndroidManifest.xml' "$RUNNER_TEMP/aab-contents.txt"
+          grep -F 'base/dex/' "$RUNNER_TEMP/aab-contents.txt"
+
+          VERIFIED_AAB="$GITHUB_WORKSPACE/IronCycle-${APP_VERSION}-google-play.aab"
+          cp "$AAB_PATH" "$VERIFIED_AAB"
+          echo "VERIFIED_AAB=$VERIFIED_AAB" >> "$GITHUB_ENV"
+
+      - name: Create verification report
+        shell: bash
+        run: |
+          {
+            echo "IronCycle authentic-layout APK and AAB packaging verification"
+            echo "Branch: $GITHUB_REF_NAME"
+            echo "Commit: $GITHUB_SHA"
+            echo "Version: $APP_VERSION"
+            echo "Version code: $ANDROID_VERSION_CODE"
+            echo "Root pyproject.toml: absent during build"
+            echo "Dependency source: authentic minimal requirements.txt"
+            echo "Python version override: none"
+            echo "OneDrive dependency evidence: verified"
+            echo "Billing extension evidence: verified"
+            echo "Permanent signer and package identity: verified
+            echo "Google Play AAB signature and bundle structure: verified""
+            echo
+            cat "$RUNNER_TEMP/apk-verify.txt"
+            echo
+            cat "$RUNNER_TEMP/apk-badging.txt"
+            echo
+            cat "$RUNNER_TEMP/aab-verify.txt"
+            echo
+            cat "$RUNNER_TEMP/aab-unzip-test.txt"
+          } > IronCycle_Authentic_Packaging_Verification.txt
+
+      - name: Upload verified APK, AAB, and report
+        uses: actions/upload-artifact@v4
+        with:
+          name: IronCycle-${{ env.APP_VERSION }}-android-play-artifacts
+          path: |
+            ${{ env.VERIFIED_APK }}
+            ${{ env.VERIFIED_AAB }}
+            IronCycle_Authentic_Packaging_Verification.txt
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Remove temporary keystore
+        if: always()
+        shell: bash
+        run: rm -f "${{ env.KEYSTORE_PATH }}"
