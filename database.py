@@ -262,6 +262,23 @@ def init_and_seed_db():
             cursor.execute("INSERT OR REPLACE INTO user_settings(setting_key,setting_value) VALUES('legacy_seed_removed','1')")
             conn.commit()
 
+        # 1.71.1 startup guard: ensure schema-18 catalog columns exist before seeding.
+        cursor.execute("PRAGMA table_info(exercise_dict)")
+        catalog_columns = {row[1] for row in cursor.fetchall()}
+        for column_name, column_type in {
+            "catalog_revision": "INTEGER DEFAULT 1",
+            "min_reps": "INTEGER",
+            "max_reps": "INTEGER",
+            "default_reps": "INTEGER",
+            "min_weight": "REAL",
+            "max_weight": "REAL",
+            "default_weight": "REAL",
+            "weight_step": "REAL",
+        }.items():
+            if column_name not in catalog_columns:
+                cursor.execute(f"ALTER TABLE exercise_dict ADD COLUMN {column_name} {column_type}")
+                catalog_columns.add(column_name)
+        conn.commit()
         for item in BUILTIN_EXERCISE_CATALOG:
             cursor.execute("INSERT OR IGNORE INTO exercise_dict(name,category,movement_pattern,catalog_id,display_name,movement_family,movement_type,equipment,angle,is_custom) VALUES(?,?,?,?,?,?,?,?,?,0)",(item['name'],item['category'],item['pattern'],item['id'],item['name'],item['family'],item['movement_type'],item['equipment'],item.get('angle','Not specified')))
             cursor.execute("UPDATE exercise_dict SET catalog_revision=COALESCE(catalog_revision,?),min_reps=COALESCE(min_reps,?),max_reps=COALESCE(max_reps,?),default_reps=COALESCE(default_reps,?),min_weight=COALESCE(min_weight,?),max_weight=COALESCE(max_weight,?),default_weight=COALESCE(default_weight,?),weight_step=COALESCE(weight_step,?) WHERE name=?",(CATALOG_REVISION,item.get('min_reps'),item.get('max_reps'),item.get('default_reps'),item.get('min_weight'),item.get('max_weight'),item.get('default_weight'),item.get('weight_step'),item['name']))
