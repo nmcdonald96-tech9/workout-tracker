@@ -23,7 +23,7 @@ import sys
 
 from constants import *
 from exercise_catalog import BUILTIN_EXERCISE_CATALOG as CANONICAL_EXERCISES
-from onboarding_catalog import STARTER_TEMPLATES, EQUIPMENT as ONBOARDING_EQUIPMENT, EXPERIENCE_LEVELS, GOALS as ONBOARDING_GOALS, recommend_starter_template, CATALOG_VERSION
+from onboarding_catalog import STARTER_TEMPLATES, EQUIPMENT as ONBOARDING_EQUIPMENT, EXPERIENCE_LEVELS, GOALS as ONBOARDING_GOALS, recommend_starter_template
 from database import *
 from app.compatibility import compatible_checkbox
 from components.session_context_panel import build_tag_controls
@@ -195,6 +195,8 @@ class ExerciseCard(ft.Card):
 
             if raw_val in ("", ".", "-", "-."):
                 set_data["r"] = str(orig_r)
+                set_data["r_source"] = "target"
+                set_data.pop("derived_from_weight", None)
                 self.set_targets[set_idx]["r"] = orig_r
                 self.autosave_pending_sets()
                 self.app.pending_scroll_key = self.app.exercise_anchor_key(self.db_id)
@@ -213,8 +215,17 @@ class ExerciseCard(ft.Card):
                     new_target_r = int(round(37 - (36 * new_total_w / orig_e1rm)))
                 else:
                     new_target_r = 1
-                new_target_r = max(1, new_target_r)
+                # Keep the automatic left-to-right result inside the exercise's
+                # valid rep boundaries. The adapted value belongs to the weight
+                # edit until the user explicitly edits REPS afterward.
+                resolved_meta = resolve_exercise_metadata(self.exercise)
+                new_target_r = max(
+                    int(resolved_meta.get("min_reps", 1)),
+                    min(int(resolved_meta.get("max_reps", 50)), new_target_r),
+                )
                 set_data["r"] = str(new_target_r)
+                set_data["r_source"] = "weight_derived"
+                set_data["derived_from_weight"] = str(new_w)
                 self.set_targets[set_idx]["r"] = new_target_r
 
             # Rebuild regardless of whether the reps branch above fired --
@@ -1102,16 +1113,14 @@ class ExerciseCard(ft.Card):
                 self.app.show_snackbar(f"Set {idx} reps must be a whole number.", "red300")
                 return
 
-            normalized_rpe = self.normalize_rpe(rpe_raw)
-            if normalized_rpe is None:
-                self.app.show_snackbar(f"Set {idx} RPE must be 1 to 10 in 0.5 steps.", "red300")
-                return
-            rpe_val = float(normalized_rpe)
-            try:
-                w_val, r_val = validate_exercise_values(self.exercise, w_val, r_val)
-            except ValueError as boundary_error:
-                self.app.show_snackbar(str(boundary_error), "red300")
-                return
+            if rpe_raw:
+                try:
+                    rpe_val = float(rpe_raw)
+                except ValueError:
+                    self.app.show_snackbar(f"Set {idx} RPE must be numeric.", "red300")
+                    return
+            else:
+                rpe_val = 10.0
 
             if not set_data.get("done") or not set_data.get("completed_at"):
                 self.app.show_snackbar(f"Mark Set {idx} Done before logging the exercise.", "red300")
@@ -2813,7 +2822,7 @@ class WorkoutTrackerApp:
             "Closed-test support guide: enabled",
             f"Onboarding completed: {'Yes' if self.get_bool_setting('onboarding_completed',False) else 'No'}",
             f"Automatic First Setup eligible: {'No - existing onboarding state is preserved' if self.get_bool_setting('onboarding_completed',False) else 'Yes if no completed workout history'}",
-            f"Canonical exercise catalog: {len(CANONICAL_EXERCISES)} entries / v{CATALOG_VERSION}",
+            f"Canonical exercise catalog: {len(CANONICAL_EXERCISES)} entries / v1",
             f"Equipment profile: {self.get_text_setting('available_equipment','Not configured')}",
             f"Starter plan preference: {self.get_text_setting('starter_template','Not selected')}",
             f"Exercise favorites: {len(favorite_exercise_ids())}",
