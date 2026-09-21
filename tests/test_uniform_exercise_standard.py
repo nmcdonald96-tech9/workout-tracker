@@ -1,7 +1,7 @@
 from exercise_catalog import CATALOG_VERSION,resolve_catalog_exercise
 
 def test_catalog_v4_contains_starter_core_exercises():
- assert CATALOG_VERSION==4
+ assert CATALOG_VERSION==5
  assert resolve_catalog_exercise("Front Plank")["id"]=="front_plank"
  assert resolve_catalog_exercise("Plank")["id"]=="front_plank"
  assert resolve_catalog_exercise("Pallof Press")["id"]=="pallof_press"
