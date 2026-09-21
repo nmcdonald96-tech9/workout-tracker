@@ -1366,16 +1366,47 @@ def superset_timing_analytics(meso,week,day):
 
 # --- 1.35 WORKOUT FLOW AND DATA MANAGEMENT ---
 def resolve_next_group_step(meso,week,day,session_id,completed_set):
- with get_db() as c:
-  src=c.execute("SELECT exercise_group_id,COALESCE(group_position,999) FROM workout_sessions WHERE id=?",(int(session_id),)).fetchone()
-  if not src or not src[0]:return None
-  members=c.execute("SELECT id,exercise,category,status,COALESCE(group_position,999) FROM workout_sessions WHERE meso_number=? AND week=? AND day_of_week=? AND exercise_group_id=? ORDER BY COALESCE(group_position,999)",(meso,str(week),day,src[0])).fetchall();cand=[]
-  for sid,ex,cat,status,pos in members:
-   if status!=STATUS_PENDING:continue
-   sets=c.execute("SELECT set_number,is_complete FROM workout_sets WHERE session_id=? ORDER BY set_number",(sid,)).fetchall();pending=next((int(n) for n,d in sets if not d),None) if sets else 1
-   if pending is not None:cand.append({'session_id':sid,'exercise':ex,'category':cat,'pending_set':pending,'position':int(pos)})
- if not cand:return None
- key=(int(completed_set or 0),int(src[1]));ordered=sorted(cand,key=lambda x:(x['pending_set'],x['position']));nxt=next((x for x in ordered if (x['pending_set'],x['position'])>key),ordered[0]);out={k:v for k,v in nxt.items() if k!='position'};out['round_complete']=(nxt['pending_set'],nxt['position'])<=key or nxt['pending_set']>int(completed_set or 0);return out
+    """Resolve the next eligible superset/circuit set in round-major order.
+
+    Pending members only are considered. Completed, skipped, deleted, and
+    fully-finished members are bypassed. Unequal set counts are supported.
+    """
+    with get_db() as c:
+        source=c.execute("SELECT exercise_group_id,COALESCE(group_position,999) FROM workout_sessions WHERE id=?",(int(session_id),)).fetchone()
+        if not source or not source[0]:return None
+        members=c.execute("""SELECT id,exercise,category,status,COALESCE(group_position,999)
+                             FROM workout_sessions
+                             WHERE meso_number=? AND week=? AND day_of_week=? AND exercise_group_id=?
+                             ORDER BY COALESCE(group_position,999),COALESCE(workout_order,id),id""",
+                          (meso,str(week),day,source[0])).fetchall()
+        candidates=[]
+        for sid,exercise,category,status,position in members:
+            if status!=STATUS_PENDING:continue
+            set_rows=c.execute("SELECT set_number,is_complete FROM workout_sets WHERE session_id=? ORDER BY set_number",(sid,)).fetchall()
+            if set_rows:
+                pending_set=next((int(number) for number,done in set_rows if not done),None)
+            else:
+                pending_set=1
+            if pending_set is not None:
+                candidates.append({"session_id":sid,"exercise":exercise,"category":category,"pending_set":pending_set,"position":int(position)})
+    if not candidates:return None
+    completed_key=(int(completed_set or 0),int(source[1]))
+    ordered=sorted(candidates,key=lambda item:(item["pending_set"],item["position"],item["session_id"]))
+    next_item=next((item for item in ordered if (item["pending_set"],item["position"])>completed_key),ordered[0])
+    next_key=(next_item["pending_set"],next_item["position"])
+    wrapped=next_key<=completed_key
+    round_complete=wrapped or next_item["pending_set"]>int(completed_set or 0)
+    remaining=len(candidates)
+    result={key:value for key,value in next_item.items() if key!="position"}
+    result.update({
+        "round_complete":round_complete,
+        "group_complete":False,
+        "remaining_members":remaining,
+        "single_member_remaining":remaining==1,
+        "group_id":source[0],
+    })
+    return result
+
 def record_audit(action,details=''):
     with get_db() as c:
         c.execute("INSERT INTO app_audit(created_at,action,details) VALUES(?,?,?)",(datetime.now().isoformat(timespec='seconds'),action,details));c.execute("DELETE FROM app_audit WHERE id NOT IN (SELECT id FROM app_audit ORDER BY id DESC LIMIT 500)");c.commit()

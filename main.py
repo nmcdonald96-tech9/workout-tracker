@@ -697,8 +697,14 @@ class ExerciseCard(ft.Card):
         group_label=group_label_for_session(self.db_id)
         if group_label: chips_row.controls.append(make_helper_chip(group_label, "purple900", "purple100"))
         chips_row.controls.append(make_helper_chip(f"SET {active_pos} OF {total_pos}", "blue900", "blue100"))
-        group_next=group_next_action(self.app.current_meso,self.app.current_week,self.app.current_day,self.db_id,active_pos) if group_label else None
-        if group_next: action_text=("Round complete • " if group_next["round_complete"] else "Next • ")+f"{group_next['exercise']} Set {group_next['set_number']}"
+        group_next=resolve_next_group_step(self.app.current_meso,self.app.current_week,self.app.current_day,self.db_id,active_pos) if group_label else None
+        if group_next:
+            if group_next.get("single_member_remaining"):
+                action_text=f"Continue • {group_next['exercise']} Set {group_next['pending_set']}"
+            elif group_next.get("round_complete"):
+                action_text=f"Round complete • Next {group_next['exercise']} Set {group_next['pending_set']}"
+            else:
+                action_text=f"Next • {group_next['exercise']} Set {group_next['pending_set']}"
         chips_row.controls.append(make_helper_chip(action_text, "white10", "white70"))
         completed_times = [x.get("completed_at") for x in self.app.sets.get(self.db_id, []) if x.get("done") and x.get("completed_at")]
         if completed_times and self.status == STATUS_PENDING:
@@ -817,8 +823,8 @@ class ExerciseCard(ft.Card):
 
     def open_rpe_guide(self, e=None, first_use=False):
         content = ft.Column([
-            ft.Text("RPE: Rate of Perceived Exertion", size=15, weight="bold", color="cyan200"),
-            ft.Text("After a completed set, estimate how many additional repetitions were possible with good technique.", size=11),
+            ft.Text("RPE means Rate of Perceived Exertion", size=15, weight="bold", color="cyan200"),
+            ft.Text("RPE describes how difficult an individual completed set felt. After the set, estimate how many additional repetitions you could have completed with good technique.", size=11),
             ft.Text("RPE 7 = about 3 reps remaining\nRPE 8 = about 2 reps remaining\nRPE 9 = about 1 rep remaining\nRPE 10 = no additional good-form reps remaining", size=11),
             ft.Text("Half steps are allowed. IronCycle accepts 1 to 10 in 0.5 steps and combines RPE with completed reps to progress, hold, or reduce future targets.", size=10, color="white70"),
             ft.Text("Rate the set just completed, not the entire workout.", size=10, color="amber200"),
@@ -2157,7 +2163,7 @@ class WorkoutTrackerApp:
             else:
                 self.show_snackbar('Profile saved. Choose and review a plan style.','green300');self.open_guided_architect()
         def later(ev):self.save_setting('onboarding_seen','1');self.safe_close(dialog)
-        content=ft.Column([ft.Text('Welcome to IronCycle',size=18,weight='bold',color='cyan200'),ft.Text('Create a profile, choose a real training goal, then select how you want to build the plan.',size=10),ft.Container(content=ft.Column([ft.Text('RPE QUICK GUIDE',size=10,weight='bold',color='cyan300'),ft.Text('RPE 7 ≈ 3 good-form reps left • 8 ≈ 2 • 9 ≈ 1 • 10 ≈ none. Half steps are allowed.',size=9,color='white70')],spacing=2),bgcolor='white10',padding=7,border_radius=7),name,ft.Column([age,weight],spacing=6,tight=True),experience,goal,ft.Text('HOW DO YOU WANT TO START?',size=10,weight='bold',color='cyan300'),plan_mode,next_step,ft.Text('AVAILABLE EQUIPMENT',size=10,weight='bold',color='cyan300'),select_all,equipment,summary,safety_row],scroll='auto',spacing=7)
+        content=ft.Column([ft.Text('Welcome to IronCycle',size=18,weight='bold',color='cyan200'),ft.Text('Create a profile, choose a real training goal, then select how you want to build the plan.',size=10),ft.Container(content=ft.Column([ft.Text('RPE QUICK GUIDE',size=10,weight='bold',color='cyan300'),ft.Text('RPE means Rate of Perceived Exertion. After each set, estimate how many more good-form reps you could have completed. 7 = 3 left • 8 = 2 • 9 = 1 • 10 = none. Half steps are allowed.',size=9,color='white70')],spacing=2),bgcolor='white10',padding=7,border_radius=7),name,ft.Column([age,weight],spacing=6,tight=True),experience,goal,ft.Text('HOW DO YOU WANT TO START?',size=10,weight='bold',color='cyan300'),plan_mode,next_step,ft.Text('AVAILABLE EQUIPMENT',size=10,weight='bold',color='cyan300'),select_all,equipment,summary,safety_row],scroll='auto',spacing=7)
         dialog=ft.AlertDialog(title=ft.Text('First Setup'),content=ft.Container(width=430,height=max(430,min(680,float(getattr(self.page,'height',720) or 720)-90)),content=content),actions=[ft.TextButton('Not Now',on_click=later),continue_button],inset_padding=8)
         continue_button.on_click=continue_to_architect;update_destination();self.safe_open(dialog)
 
@@ -2927,6 +2933,10 @@ class WorkoutTrackerApp:
             "Static Android-safe warm-up guidance: enabled",
             "Setup notes location: exercise actions menu",
             "Superset execution guidance: enabled",
+            "Superset execution resolver: v2",
+            "Unequal group set counts: supported",
+            "Skipped/completed group members: safely bypassed",
+            "Group labels in Focus Mode: enabled",
             "Structured blueprint compatibility: enabled",
             "Plan integrity repair: enabled",
             "Whole-exercise progression intelligence: enabled",
@@ -4490,7 +4500,7 @@ class WorkoutTrackerApp:
             cats=[r[0] for r in conn.execute("SELECT DISTINCT category FROM workout_sessions WHERE meso_number=? AND week=? AND day_of_week=?",(self.current_meso,self.current_week,self.current_day)).fetchall() if r[0]]
         for dcat in cats:self.collapsed_categories[self.category_key(dcat)]=(dcat!=nxt['category'])
         self.collapsed_categories[self.category_key(nxt['category'])]=False;self.active_exercise_by_category[self.category_key(nxt['category'])]=nxt['session_id'];self.pending_scroll_key=self.exercise_anchor_key(nxt['session_id']);self.remount_main_canvas_on_rebuild=True
-        record_audit('superset_advance',f"{session_id} set {completed_set} -> {nxt['session_id']} set {nxt['pending_set']}");self.rebuild_entire_display();return True
+        record_audit('superset_advance',f"{session_id} set {completed_set} -> {nxt['session_id']} set {nxt['pending_set']}; round_complete={int(bool(nxt.get('round_complete')))}; remaining={nxt.get('remaining_members')}");self.rebuild_entire_display();return True
 
     def activate_exercise(self, category_name, session_id):
         if not category_name:
