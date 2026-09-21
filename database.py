@@ -76,9 +76,17 @@ def init_and_seed_db():
                 conn.commit()
         cursor.execute("PRAGMA table_info(exercise_dict)")
         columns=[x[1] for x in cursor.fetchall()]
-        for n,t in {"catalog_id":"TEXT","display_name":"TEXT","movement_family":"TEXT","movement_type":"TEXT DEFAULT 'Isolation'","equipment":"TEXT DEFAULT 'Other'","angle":"TEXT DEFAULT 'Not specified'","is_custom":"INTEGER DEFAULT 0"}.items():
+        for n,t in {"catalog_id":"TEXT","display_name":"TEXT","movement_family":"TEXT","movement_type":"TEXT DEFAULT 'Isolation'","equipment":"TEXT DEFAULT 'Other'","angle":"TEXT DEFAULT 'Not specified'","is_custom":"INTEGER DEFAULT 0","identity_status":"TEXT DEFAULT 'needs_review'"}.items():
             if n not in columns: cursor.execute(f"ALTER TABLE exercise_dict ADD COLUMN {n} {t}")
         cursor.execute("UPDATE exercise_dict SET display_name=name WHERE display_name IS NULL OR TRIM(display_name)='' ")
+        # Schema 19 makes exercise identity explicit. Existing linked rows are
+        # canonical unless the user has retained a different display name.
+        cursor.execute("""UPDATE exercise_dict SET identity_status=CASE
+            WHEN catalog_id IS NOT NULL AND COALESCE(NULLIF(display_name,''),name)<>name THEN 'customized_canonical'
+            WHEN catalog_id IS NOT NULL THEN 'canonical'
+            WHEN COALESCE(is_custom,0)=1 THEN 'intentional_custom'
+            ELSE 'needs_review' END
+            WHERE identity_status IS NULL OR identity_status='' OR identity_status='needs_review'""")
         cursor.execute("CREATE TABLE IF NOT EXISTS exercise_aliases(alias TEXT PRIMARY KEY,catalog_id TEXT,exercise_name TEXT,source TEXT,confirmed INTEGER DEFAULT 0)")
         cursor.execute("CREATE TABLE IF NOT EXISTS exercise_favorites(catalog_id TEXT PRIMARY KEY,created_at TEXT NOT NULL)")
         conn.commit()
@@ -280,7 +288,7 @@ def init_and_seed_db():
                 catalog_columns.add(column_name)
         conn.commit()
         for item in BUILTIN_EXERCISE_CATALOG:
-            cursor.execute("INSERT OR IGNORE INTO exercise_dict(name,category,movement_pattern,catalog_id,display_name,movement_family,movement_type,equipment,angle,is_custom) VALUES(?,?,?,?,?,?,?,?,?,0)",(item['name'],item['category'],item['pattern'],item['id'],item['name'],item['family'],item['movement_type'],item['equipment'],item.get('angle','Not specified')))
+            cursor.execute("INSERT OR IGNORE INTO exercise_dict(name,category,movement_pattern,catalog_id,display_name,movement_family,movement_type,equipment,angle,is_custom,identity_status) VALUES(?,?,?,?,?,?,?,?,?,0,'canonical')",(item['name'],item['category'],item['pattern'],item['id'],item['name'],item['family'],item['movement_type'],item['equipment'],item.get('angle','Not specified')))
             cursor.execute("UPDATE exercise_dict SET catalog_revision=COALESCE(catalog_revision,?),min_reps=COALESCE(min_reps,?),max_reps=COALESCE(max_reps,?),default_reps=COALESCE(default_reps,?),min_weight=COALESCE(min_weight,?),max_weight=COALESCE(max_weight,?),default_weight=COALESCE(default_weight,?),weight_step=COALESCE(weight_step,?) WHERE name=?",(CATALOG_REVISION,item.get('min_reps'),item.get('max_reps'),item.get('default_reps'),item.get('min_weight'),item.get('max_weight'),item.get('default_weight'),item.get('weight_step'),item['name']))
         conn.commit()
         # Fresh installs remain blank; existing plans are preserved.
@@ -1046,14 +1054,14 @@ def create_classified_exercise(name,category,family,equipment,angle="Not specifi
  item=CATALOG_BY_ID.get(catalog_id) if catalog_id else None;pattern=item["pattern"] if item else movement_family_label(family)
  with get_db() as c:
   if c.execute("SELECT 1 FROM exercise_dict WHERE name=?",(name,)).fetchone():raise ValueError("Exercise already exists.")
-  c.execute("INSERT INTO exercise_dict(name,category,movement_pattern,setup_notes,catalog_id,display_name,movement_family,movement_type,equipment,angle,is_custom) VALUES(?,?,?,'',?,?,?,?,?,?,?)",(name,category,pattern,catalog_id,name,family,movement_type,equipment,angle,0 if catalog_id else 1));c.commit()
+  c.execute("INSERT INTO exercise_dict(name,category,movement_pattern,setup_notes,catalog_id,display_name,movement_family,movement_type,equipment,angle,is_custom,identity_status) VALUES(?,?,?,'',?,?,?,?,?,?,?,?)",(name,category,pattern,catalog_id,name,family,movement_type,equipment,angle,0 if catalog_id else 1,'canonical' if catalog_id else 'intentional_custom'));c.commit()
  return name
 def link_exercise_to_catalog(name,catalog_id):
  item=CATALOG_BY_ID.get(catalog_id)
  if not item:raise ValueError("Unknown catalog exercise.")
- with get_db() as c:c.execute("UPDATE exercise_dict SET catalog_id=?,movement_family=?,movement_type=?,equipment=?,angle=? WHERE name=?",(catalog_id,item["family"],item["movement_type"],item["equipment"],item.get("angle","Not specified"),name));c.execute("INSERT OR REPLACE INTO exercise_aliases(alias,catalog_id,exercise_name,source,confirmed) VALUES(?,?,?,?,1)",(name,catalog_id,name,"user"));c.commit()
+ with get_db() as c:c.execute("UPDATE exercise_dict SET catalog_id=?,movement_family=?,movement_type=?,equipment=?,angle=?,is_custom=0,identity_status='canonical' WHERE name=?",(catalog_id,item["family"],item["movement_type"],item["equipment"],item.get("angle","Not specified"),name));c.execute("INSERT OR REPLACE INTO exercise_aliases(alias,catalog_id,exercise_name,source,confirmed) VALUES(?,?,?,?,1)",(name,catalog_id,name,"user"));c.commit()
 def unlink_exercise_from_catalog(name):
- with get_db() as c:c.execute("UPDATE exercise_dict SET catalog_id=NULL WHERE name=?",(name,));c.execute("DELETE FROM exercise_aliases WHERE exercise_name=? AND source='user'",(name,));c.commit()
+ with get_db() as c:c.execute("UPDATE exercise_dict SET catalog_id=NULL,is_custom=1,identity_status='intentional_custom' WHERE name=?",(name,));c.execute("DELETE FROM exercise_aliases WHERE exercise_name=? AND source='user'",(name,));c.commit()
 def probable_dictionary_duplicates():
  with get_db() as c:rows=c.execute("SELECT name,catalog_id,movement_family,equipment FROM exercise_dict ORDER BY name").fetchall()
  out=[]
@@ -1599,7 +1607,7 @@ def create_reviewed_starter_mesocycle(template_id,selected_days,reviewed_session
 def uniform_exercise_review(limit=200):
  out=[]
  with get_db() as c:
-  rows=c.execute("SELECT name,category,movement_family,equipment,catalog_id,is_custom FROM exercise_dict ORDER BY name").fetchall()
+  rows=c.execute("SELECT name,category,movement_family,equipment,catalog_id,is_custom FROM exercise_dict WHERE COALESCE(identity_status,'needs_review')='needs_review' ORDER BY name").fetchall()
  for name,category,family,equipment,catalog_id,is_custom in rows:
   if catalog_id:continue
   candidates=rank_catalog_candidates(name,category,family,equipment,ANGLE_NOT_SPECIFIED,3)
@@ -1619,19 +1627,45 @@ def uniform_exercise_review(limit=200):
   if len(out)>=limit:break
  return out
 
-def uniform_exercise_summary():
+IDENTITY_STATUSES=("canonical","customized_canonical","intentional_custom","needs_review")
+def exercise_identity_summary():
  with get_db() as c:
-  total=c.execute("SELECT COUNT(*) FROM exercise_dict").fetchone()[0]
-  linked=c.execute("SELECT COUNT(*) FROM exercise_dict WHERE catalog_id IS NOT NULL").fetchone()[0]
-  custom=c.execute("SELECT COUNT(*) FROM exercise_dict WHERE COALESCE(is_custom,0)=1").fetchone()[0]
- return {"total":total,"linked":linked,"custom":custom,"unlinked":total-linked,"review":len(uniform_exercise_review())}
+  rows=c.execute("SELECT COALESCE(identity_status,'needs_review'),COUNT(*) FROM exercise_dict GROUP BY COALESCE(identity_status,'needs_review')").fetchall()
+ counts={key:0 for key in IDENTITY_STATUSES}
+ for key,count in rows:
+  counts[key if key in counts else "needs_review"]+=int(count)
+ counts["total"]=sum(counts[key] for key in IDENTITY_STATUSES)
+ counts["linked"]=counts["canonical"]+counts["customized_canonical"]
+ counts["custom"]=counts["intentional_custom"]
+ counts["unlinked"]=counts["intentional_custom"]+counts["needs_review"]
+ counts["review"]=counts["needs_review"]
+ return counts
+def uniform_exercise_summary():
+ return exercise_identity_summary()
+def mark_exercise_intentional_custom(exercise_name):
+ with get_db() as c:
+  changed=c.execute("UPDATE exercise_dict SET catalog_id=NULL,is_custom=1,identity_status='intentional_custom' WHERE name=?",(exercise_name,)).rowcount
+  c.execute("DELETE FROM exercise_aliases WHERE exercise_name=? AND source IN ('uniform_review','user')",(exercise_name,));c.commit()
+ if not changed:raise ValueError("Exercise was not found.")
+ record_audit("exercise_identity_custom",f"exercise={exercise_name}")
+ return exercise_name
+def set_exercise_display_name(exercise_name,display_name):
+ value=str(display_name or '').strip()
+ if not value:raise ValueError("Display name is required.")
+ with get_db() as c:
+  row=c.execute("SELECT catalog_id,name FROM exercise_dict WHERE name=?",(exercise_name,)).fetchone()
+  if not row:raise ValueError("Exercise was not found.")
+  status='customized_canonical' if row[0] and value!=row[1] else ('canonical' if row[0] else 'intentional_custom')
+  c.execute("UPDATE exercise_dict SET display_name=?,identity_status=? WHERE name=?",(value,status,exercise_name));c.commit()
+ record_audit("exercise_display_name_changed",f"exercise={exercise_name}; display_name={value}")
+ return value
 
 def apply_uniform_exercise_link(exercise_name,catalog_id):
  item=CATALOG_BY_ID.get(catalog_id)
  if not item:raise ValueError("Catalog exercise not found.")
  meta=resolve_exercise_metadata(item["name"])
  with get_db() as c:
-  c.execute("""UPDATE exercise_dict SET catalog_id=?,display_name=COALESCE(NULLIF(display_name,''),name),category=?,movement_family=?,movement_pattern=?,movement_type=?,equipment=?,angle=?,is_custom=0,catalog_revision=?,min_reps=COALESCE(min_reps,?),max_reps=COALESCE(max_reps,?),default_reps=COALESCE(default_reps,?),min_weight=COALESCE(min_weight,?),max_weight=COALESCE(max_weight,?),default_weight=COALESCE(default_weight,?),weight_step=COALESCE(weight_step,?) WHERE name=?""",(catalog_id,item["category"],item["family"],item["pattern"],item["movement_type"],item["equipment"],item.get("angle",ANGLE_NOT_SPECIFIED),CATALOG_VERSION,meta.get("min_reps"),meta.get("max_reps"),meta.get("default_reps"),meta.get("min_weight"),meta.get("max_weight"),meta.get("default_weight"),meta.get("weight_step"),exercise_name))
+  c.execute("""UPDATE exercise_dict SET catalog_id=?,display_name=COALESCE(NULLIF(display_name,''),name),category=?,movement_family=?,movement_pattern=?,movement_type=?,equipment=?,angle=?,is_custom=0,identity_status='canonical',catalog_revision=?,min_reps=COALESCE(min_reps,?),max_reps=COALESCE(max_reps,?),default_reps=COALESCE(default_reps,?),min_weight=COALESCE(min_weight,?),max_weight=COALESCE(max_weight,?),default_weight=COALESCE(default_weight,?),weight_step=COALESCE(weight_step,?) WHERE name=?""",(catalog_id,item["category"],item["family"],item["pattern"],item["movement_type"],item["equipment"],item.get("angle",ANGLE_NOT_SPECIFIED),CATALOG_VERSION,meta.get("min_reps"),meta.get("max_reps"),meta.get("default_reps"),meta.get("min_weight"),meta.get("max_weight"),meta.get("default_weight"),meta.get("weight_step"),exercise_name))
   c.execute("INSERT OR REPLACE INTO exercise_aliases(alias,catalog_id,exercise_name,source,confirmed) VALUES(?,?,?,?,1)",(exercise_name,catalog_id,exercise_name,"uniform_review"));c.commit()
  record_audit("exercise_catalog_link",f"exercise={exercise_name}; catalog_id={catalog_id}")
  return exercise_name

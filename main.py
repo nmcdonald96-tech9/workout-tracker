@@ -2742,61 +2742,15 @@ class WorkoutTrackerApp:
         self.rebuild_entire_display()
 
     def rename_dictionary_exercise(self, e):
-        old_name = self.dict_dropdown.value
-        new_name = self.dict_rename_field.value.strip() if hasattr(self, 'dict_rename_field') else ""
-
-        if not old_name:
-            self.show_snackbar("Select an exercise first.", "red300")
-            return
-        if not new_name:
-            self.show_snackbar("Enter a new name.", "red300")
-            return
-        if new_name == old_name:
-            self.show_snackbar("Name is unchanged.", "white54")
-            return
-
-        with get_db() as conn:
-            cursor = conn.cursor()
-
-            # Check for collision
-            cursor.execute("SELECT COUNT(*) FROM exercise_dict WHERE name = ?", (new_name,))
-            if cursor.fetchone()[0] > 0:
-                self.show_snackbar(f"'{new_name}' already exists in the dictionary.", "red300")
-                return
-
-            # 1. Rename in the dictionary
-            cursor.execute("UPDATE exercise_dict SET name = ? WHERE name = ?", (new_name, old_name))
-
-            # 2. Cascade to all workout sessions
-            cursor.execute("UPDATE workout_sessions SET exercise = ? WHERE exercise = ?", (new_name, old_name))
-
-            # 3. Cascade into every meso's blueprint_json
-            cursor.execute("SELECT meso_number, blueprint_json FROM meso_configs WHERE blueprint_json IS NOT NULL")
-            meso_rows = cursor.fetchall()
-            for meso_num, bp_raw in meso_rows:
-                try:
-                    bp = json.loads(bp_raw)
-                    updated = False
-                    for day, exercises in bp.items():
-                        if isinstance(exercises, list) and old_name in exercises:
-                            bp[day] = [new_name if ex == old_name else ex for ex in exercises]
-                            updated = True
-                    if updated:
-                        cursor.execute(
-                            "UPDATE meso_configs SET blueprint_json = ? WHERE meso_number = ?",
-                            (json.dumps(bp), meso_num)
-                        )
-                except (json.JSONDecodeError, AttributeError):
-                    pass  # Skip malformed blueprints silently
-
-            conn.commit()
-
+        exercise_name=self.dict_dropdown.value
+        display_name=self.dict_rename_field.value.strip() if hasattr(self,'dict_rename_field') else ""
+        if not exercise_name:self.show_snackbar("Select an exercise first.","red300");return
+        if not display_name:self.show_snackbar("Enter a display name.","red300");return
+        try:set_exercise_display_name(exercise_name,display_name)
+        except Exception as ex:self.show_snackbar(str(ex),"red300");return
         self.close_dict_dialog()
-        self.show_snackbar(f"Renamed '{old_name}' → '{new_name}' everywhere.", "green300")
-
-        self.build_ui_shell()
-        self.rebuild_navigation_headers()
-        self.rebuild_entire_display()
+        self.show_snackbar("Display name updated. Completed history and plan identities were not rewritten.","green300")
+        self.build_ui_shell();self.rebuild_navigation_headers();self.rebuild_entire_display()
 
     def close_dict_dialog(self, e=None):
         if hasattr(self, 'dict_dialog'):
@@ -2928,7 +2882,7 @@ class WorkoutTrackerApp:
             f"Onboarding completed: {'Yes' if self.get_bool_setting('onboarding_completed',False) else 'No'}",
             f"Automatic First Setup eligible: {'No - existing onboarding state is preserved' if self.get_bool_setting('onboarding_completed',False) else 'Yes if no completed workout history'}",
             f"Canonical exercise catalog: {len(CANONICAL_EXERCISES)} entries / v{CATALOG_VERSION}",
-            f"Uniform exercise coverage: {uniform_exercise_summary()['linked']}/{uniform_exercise_summary()['total']} linked",
+            f"Exercise identity: {exercise_identity_summary()['canonical']} canonical / {exercise_identity_summary()['customized_canonical']} customized / {exercise_identity_summary()['intentional_custom']} intentional custom / {exercise_identity_summary()['needs_review']} need review",
             f"Equipment profile: {self.get_text_setting('available_equipment','Not configured')}",
             f"Starter plan preference: {self.get_text_setting('starter_template','Not selected')}",
             f"Exercise favorites: {len(favorite_exercise_ids())}",
@@ -3375,29 +3329,30 @@ class WorkoutTrackerApp:
         self.rebuild_entire_display()
 
     def open_uniform_exercise_review(self, e=None):
-        summary=uniform_exercise_summary();review=uniform_exercise_review();items=ft.Column(scroll="auto",expand=True,spacing=5)
-        status=ft.Text(f"{summary['linked']} of {summary['total']} linked • {summary['custom']} custom • {summary['unlinked']} need review",size=10,color="cyan200")
+        summary=uniform_exercise_summary();items=ft.Column(scroll="auto",expand=True,spacing=5)
+        status=ft.Text(f"{summary['canonical']} canonical • {summary['customized_canonical']} customized • {summary['intentional_custom']} custom • {summary['needs_review']} need review",size=10,color="cyan200")
         def refresh():
-            current=uniform_exercise_review();items.controls.clear()
+            current=uniform_exercise_review();items.controls.clear();summary_now=uniform_exercise_summary()
+            status.value=f"{summary_now['canonical']} canonical • {summary_now['customized_canonical']} customized • {summary_now['intentional_custom']} custom • {summary_now['needs_review']} need review"
             for row in current:
                 suggestions=row.get("candidates") or []
                 options=[ft.dropdown.Option(key=x["id"],text=f"{x['name']} • score {x['score']}{' • safe' if x.get('safe') else ' • review'}") for x in suggestions]
                 safe_suggestions=[x for x in suggestions if x.get("safe")]
                 selected=row.get("exact_catalog_id") or (safe_suggestions[0]["id"] if safe_suggestions else None)
-                match_label="Canonical match" if selected else "No safe canonical match"
-                choice=ft.Dropdown(label=match_label,options=options,value=selected,expand=True)
+                choice=ft.Dropdown(label="Canonical match" if selected else "No safe canonical match",options=options,value=selected,expand=True)
                 def link(ev,name=row["name"],dd=choice):
-                    if not dd.value:self.show_snackbar("Choose a canonical exercise or keep this entry custom.","amber300");return
+                    if not dd.value:self.show_snackbar("Choose a safe canonical exercise or mark this entry intentionally custom.","amber300");return
                     apply_uniform_exercise_link(name,dd.value);self.show_snackbar(f"Linked {name} without renaming history.","green300");refresh()
-                items.controls.append(ft.Container(content=ft.Column([ft.Text(row["name"],weight="bold",size=11),ft.Text(f"Current category: {row['category']} • {'Custom' if row['is_custom'] else 'Legacy'}",size=9,color="white54"),ft.Row([choice,ft.ElevatedButton("Link",on_click=link)],spacing=5)],spacing=3),bgcolor="white10",padding=7,border_radius=7))
-            if not current:items.controls.append(ft.Text("All exercise entries are linked or intentionally retained.",color="green300"))
-            s=uniform_exercise_summary();status.value=f"{s['linked']} of {s['total']} linked • {s['custom']} custom • {s['unlinked']} need review"
+                def keep_custom(ev,name=row["name"]):
+                    mark_exercise_intentional_custom(name);self.show_snackbar(f"{name} is now an intentional custom exercise.","green300");refresh()
+                items.controls.append(ft.Container(content=ft.Column([ft.Text(row["name"],weight="bold",size=11),ft.Text(f"Current category: {row['category']} • {'Custom' if row['is_custom'] else 'Legacy'}",size=9,color="white54"),ft.Row([choice,ft.ElevatedButton("Link",on_click=link)],spacing=5),ft.TextButton("Keep as Intentional Custom",on_click=keep_custom)],spacing=3),bgcolor="white10",padding=7,border_radius=7))
+            if not current:items.controls.append(ft.Text("Exercise identity review is complete.",color="green300"))
             try:items.update();status.update()
             except Exception:pass
-        def exact(ev=None):
-            names=auto_link_exact_uniform_exercises();self.show_snackbar(f"Linked {len(names)} exact canonical names or aliases.","green300");refresh()
+        def exact(ev):
+            names=auto_link_exact_uniform_exercises();self.show_snackbar(f"Linked {len(names)} exact exercise identities.","green300");refresh()
         refresh()
-        dialog=ft.AlertDialog(title=ft.Text("Uniform Exercise Review",weight="bold"),content=ft.Container(width=430,height=560,content=ft.Column([status,ft.Text("Linking assigns stable metadata while preserving the stored exercise name, completed history, setup notes, limits, and progression settings.",size=9,color="white70"),ft.ElevatedButton("Safely Link Exact Names and Aliases",on_click=exact),items],expand=True,spacing=6)),actions=[ft.TextButton("Close",on_click=lambda ev:self.safe_close(dialog))],inset_padding=10)
+        dialog=ft.AlertDialog(title=ft.Text("Exercise Identity Review",weight="bold"),content=ft.Container(width=430,height=560,content=ft.Column([status,ft.Text("Link to a stable catalog identity or explicitly keep a distinct movement as intentional custom. Stored history, notes, limits, and progression settings remain intact.",size=9,color="white70"),ft.ElevatedButton("Safely Link Exact Names and Aliases",on_click=exact),items],expand=True,spacing=6)),actions=[ft.TextButton("Close",on_click=lambda ev:self.safe_close(dialog))],inset_padding=10)
         self.safe_open(dialog)
 
     def open_canonical_exercise_browser(self,e=None):
