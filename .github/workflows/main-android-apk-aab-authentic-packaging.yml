@@ -357,8 +357,8 @@ jobs:
             echo "Python version override: none"
             echo "OneDrive dependency evidence: verified"
             echo "Billing extension evidence: verified"
-            echo "Permanent signer and package identity: verified
-            echo "Google Play AAB signature and bundle structure: verified""
+            echo "Permanent signer and package identity: verified"
+            echo "Google Play AAB signature and bundle structure: verified"
             echo
             cat "$RUNNER_TEMP/apk-verify.txt"
             echo
