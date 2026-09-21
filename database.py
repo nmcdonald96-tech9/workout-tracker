@@ -1600,3 +1600,24 @@ def auto_link_exact_uniform_exercises():
   if row.get("exact_catalog_id"):
    apply_uniform_exercise_link(row["name"],row["exact_catalog_id"]);linked.append(row["name"])
  return linked
+
+# --- 1.74 AUTHORITATIVE PROGRESSION EXPORTS ---
+# Keep database.py as a compatibility facade while all production progression
+# policy is owned by services.progression_service. Existing callers that import
+# these names from database continue to work without two competing engines.
+from services.progression_service import (
+    calculate_progression as _authoritative_calculate_progression,
+    calculate_set_specific_progression as _authoritative_calculate_set_specific_progression,
+    classify_set_progression as _authoritative_classify_set_progression,
+    get_effective_progression_settings as _authoritative_get_effective_progression_settings,
+    invalidate_progression_settings_cache as _authoritative_invalidate_progression_settings_cache,
+    progression_clarity as _authoritative_progression_clarity,
+    simulate_progression as _authoritative_simulate_progression,
+)
+calculate_progression = _authoritative_calculate_progression
+calculate_set_specific_progression = _authoritative_calculate_set_specific_progression
+classify_set_progression = _authoritative_classify_set_progression
+get_effective_progression_settings = _authoritative_get_effective_progression_settings
+invalidate_progression_settings_cache = _authoritative_invalidate_progression_settings_cache
+progression_clarity = _authoritative_progression_clarity
+simulate_progression = _authoritative_simulate_progression

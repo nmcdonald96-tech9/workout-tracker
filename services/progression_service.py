@@ -1,5 +1,8 @@
-"""Authoritative progression policy for IronCycle 1.9.1.
-Persistence remains available through database.get_db via lazy lookup, avoiding import cycles.
+"""Authoritative progression policy for IronCycle 1.74.
+
+The database layer owns persistence. This module owns progression settings,
+outcome classification, and next-target calculations. Lazy database access avoids
+import cycles while keeping the policy independently testable.
 """
 from constants import *
 
@@ -7,18 +10,148 @@ def get_db():
     from database import get_db as database_context
     return database_context()
 
-def get_next_dumbbell(weight):
-    from database import get_next_dumbbell as fn
-    return fn(weight)
+def get_next_dumbbell(current_weight):
+    db_rack = [2.5, 5.0, 7.5, 10.0, 12.5, 15.0] + [float(x) for x in range(20, 105, 5)]
+    for w in db_rack:
+        if w > current_weight:
+            return w
+    return current_weight # Maxed out!
+def get_prev_dumbbell(current_weight):
+    db_rack = [2.5, 5.0, 7.5, 10.0, 12.5, 15.0] + [float(x) for x in range(20, 105, 5)]
+    for w in reversed(db_rack):
+        if w < current_weight:
+            return w
+    return current_weight
+def calculate_progression(first_set_w, first_set_reps, first_set_rpe, tgt_r, mov_type, readiness_score=15, joint_score=5, equipment_type="Barbell", is_bodyweight=False, age=43, profile=0):
+    # Coerce None or non-numeric RPE to a neutral baseline value (8.0 = moderate effort)
+    # so the engine never crashes silently when a set was logged without RPE.
+    try:
+        first_set_rpe = float(first_set_rpe) if first_set_rpe is not None else 8.0
+    except (TypeError, ValueError):
+        first_set_rpe = 8.0
 
-def get_prev_dumbbell(weight):
-    from database import get_prev_dumbbell as fn
-    return fn(weight)
+    # Guard tgt_r (this week's target reps) the same way -- it flows into
+    # `tgt_r - first_set_reps` arithmetic further down with no prior check.
+    # A None/blank target_reps (e.g. an older row, or a data path that didn't
+    # set it) would otherwise throw TypeError and silently abort the whole
+    # week's progression with zero feedback to the user.
+    try:
+        tgt_r = int(tgt_r) if tgt_r is not None else 10
+    except (TypeError, ValueError):
+        tgt_r = 10
 
-def calculate_progression(*args, **kwargs):
-    from database import calculate_progression as fn
-    return fn(*args, **kwargs)
+    # Same defensive coercion for the actual logged performance values --
+    # these should always be numeric by the time they reach here, but the
+    # cost of guarding is negligible next to a silently aborted week.
+    try:
+        first_set_w = float(first_set_w) if first_set_w is not None else 0.0
+    except (TypeError, ValueError):
+        first_set_w = 0.0
+    try:
+        first_set_reps = int(first_set_reps) if first_set_reps is not None else tgt_r
+    except (TypeError, ValueError):
+        first_set_reps = tgt_r
 
+    is_heavy_compound = (mov_type == 'Compound' and first_set_w >= HEAVY_THRESHOLD_COMPOUND)
+    is_heavy_isolation = (mov_type == 'Isolation' and first_set_w >= HEAVY_THRESHOLD_ISOLATION)
+
+    standard_jump = COMPOUND_JUMP_STANDARD if mov_type == 'Compound' else ISOLATION_JUMP_STANDARD
+    heavy_jump = COMPOUND_JUMP_HEAVY if mov_type == 'Compound' else ISOLATION_JUMP_HEAVY
+
+    jump_size = heavy_jump if (is_heavy_compound or is_heavy_isolation) else standard_jump
+    
+    if is_bodyweight:
+        jump_size = 0.0
+
+    # --- PROGRESSION OVERRIDE LOGIC ---
+    # Determine the effective profile: 1 (Conservative), 2 (Balanced), 3 (Aggressive)
+    if profile == 0:  # Auto (Age-Based)
+        if age < 35: effective_profile = 3
+        elif age < 45: effective_profile = 2
+        else: effective_profile = 1
+    else:
+        effective_profile = profile
+
+    if effective_profile == 3: # Aggressive Profile
+        REP_CEILING = 12
+        FORCE_DOUBLE_PROG_WEIGHT = 9999 
+    elif effective_profile == 2: # Balanced Profile
+        REP_CEILING = 15
+        FORCE_DOUBLE_PROG_WEIGHT = 225  
+    else: # Conservative / Longevity Profile
+        REP_CEILING = 18
+        FORCE_DOUBLE_PROG_WEIGHT = 185  
+
+    # Determine if we should use Double Progression
+    use_double_progression = False
+    if equipment_type == "Dumbbell":
+        use_double_progression = True
+    elif effective_profile == 1 and first_set_w >= FORCE_DOUBLE_PROG_WEIGHT and not is_bodyweight:
+        use_double_progression = True
+
+    # --- 1. DOUBLE PROGRESSION (Volume Accumulation) ---
+    if use_double_progression:
+        REP_FLOOR = tgt_r if tgt_r else 8
+        
+        if joint_score <= 2:
+            lower_w = get_prev_dumbbell(first_set_w) if equipment_type == "Dumbbell" else max(first_set_w - standard_jump, 0.0)
+            return lower_w, tgt_r
+
+        if readiness_score <= 7 and first_set_rpe >= 9.0:
+            return first_set_w, tgt_r
+            
+        miss_margin = tgt_r - first_set_reps
+        
+        if miss_margin >= 5:
+            lower_w = get_prev_dumbbell(first_set_w) if equipment_type == "Dumbbell" else max(first_set_w - standard_jump, 0.0)
+            if first_set_rpe <= 8.5:
+                return lower_w, first_set_reps + 1
+            else:
+                return lower_w, tgt_r
+        
+        # The Graduation Check
+        if first_set_reps >= REP_CEILING and first_set_rpe <= 9.0:
+            next_w = get_next_dumbbell(first_set_w) if equipment_type == "Dumbbell" else first_set_w + standard_jump
+            return next_w, REP_FLOOR
+        else:
+            # Grind Phase: Hold weight, build reps
+            reps_to_add = 2 if first_set_rpe <= 8.0 else 1
+            return first_set_w, first_set_reps + reps_to_add
+
+
+    # --- 2. STANDARD PROGRESSION (Aggressive Load) ---
+    if joint_score <= 2:
+        return max(first_set_w - standard_jump, 0.0), tgt_r
+
+    if readiness_score <= 7:
+        jump_size = standard_jump if not is_bodyweight else 0.0
+        if first_set_rpe >= 9.0:
+            jump_size = 0.0
+
+    miss_margin = tgt_r - first_set_reps
+
+    if miss_margin >= 5:
+        if first_set_rpe <= 8.5:
+            return max(first_set_w - jump_size, 0.0), first_set_reps + 1
+        else:
+            return max(first_set_w - jump_size, 0.0), tgt_r
+
+    elif miss_margin > 0:
+        return first_set_w, tgt_r
+
+    else:
+        if first_set_rpe <= 8.5:
+            if first_set_reps >= tgt_r + 3:
+                return first_set_w + jump_size, tgt_r + (2 if is_bodyweight else 1)
+            else:
+                return first_set_w + jump_size, tgt_r + (1 if is_bodyweight else 0)
+        elif 8.5 < first_set_rpe <= 9.5:
+            if jump_size > 0:
+                return first_set_w + standard_jump, tgt_r
+            else:
+                return first_set_w, tgt_r + 1
+        else:
+            return first_set_w, tgt_r + 1
 _EFFECTIVE_SETTINGS_CACHE = {}
 
 def invalidate_progression_settings_cache(exercise_name=None):
@@ -140,3 +273,13 @@ def calculate_set_specific_progression(completed_sets, default_target_weight, de
         diagnostic.update(outcome); diagnostics.append(diagnostic); next_targets.append({"w":next_w,"r":next_r})
     return next_targets, diagnostics
 
+
+def progression_clarity(settings,cw,cr,nw,nr,reason_code=None):
+    cw=float(cw or 0);nw=float(nw or 0);cr=int(cr or 0);nr=int(nr or 0);cap=settings.get("max_progression_weight");return {"load":f"{'Load held' if nw==cw else 'Load increases' if nw>cw else 'Load reduces'}: {nw:g} lb","reps":f"{'Reps held' if nr==cr else 'Reps increase' if nr>cr else 'Reps reset'}: {nr}","at_cap":cap is not None and nw>=float(cap),"reason_code":reason_code}
+
+def simulate_progression(settings,w,r,equipment_type="Barbell"):
+    w=float(w or 0);r=int(r or 0);ceiling=int(settings["rep_ceiling"])
+    if r<ceiling:return {"next_weight":w,"next_reps":r+1,"summary":f"Build reps: {w:g} x {r+1}"}
+    n=get_next_dumbbell(w) if equipment_type=="Dumbbell" else w+float(settings["progression_step"]);cap=settings.get("max_progression_weight")
+    if cap is not None and n>float(cap):return {"next_weight":float(cap),"next_reps":ceiling,"summary":f"Load cap: hold {float(cap):g} lb and maintain up to {ceiling} reps"}
+    return {"next_weight":n,"next_reps":8,"summary":f"Graduate load: {n:g} lb, reps reset for the next climb"}

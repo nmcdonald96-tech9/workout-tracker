@@ -25,6 +25,14 @@ from constants import *
 from exercise_catalog import BUILTIN_EXERCISE_CATALOG as CANONICAL_EXERCISES
 from onboarding_catalog import STARTER_TEMPLATES, EQUIPMENT as ONBOARDING_EQUIPMENT, EXPERIENCE_LEVELS, GOALS as ONBOARDING_GOALS, recommend_starter_template
 from database import *
+from services.progression_service import (
+    calculate_set_specific_progression,
+    classify_set_progression,
+    get_effective_progression_settings,
+    invalidate_progression_settings_cache,
+    progression_clarity,
+    simulate_progression,
+)
 from app.compatibility import compatible_checkbox
 from components.session_context_panel import build_tag_controls
 from app.application import ApplicationFoundation
