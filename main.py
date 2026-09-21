@@ -152,10 +152,10 @@ class ExerciseCard(ft.Card):
             self.app.rebuild_entire_display()
 
         swap_dialog = ft.AlertDialog(
-            title=ft.Text(f"Swap: {self.exercise}", size=16, color="cyan300"),
+            title=ft.Text(f"Swap: {exercise_display_name(self.exercise)}", size=16, color="cyan300"),
             content=ft.Container(
                 content=ft.Column(
-                    [ft.ListTile(title=ft.Text(alt, size=14), on_click=lambda e, a=alt: on_swap_select(a)) for alt in alts],
+                    [ft.ListTile(title=ft.Text(exercise_display_name(alt), size=14), subtitle=ft.Text(f"Canonical: {alt}", size=9, color="white38") if exercise_display_name(alt)!=alt else None, on_click=lambda e, a=alt: on_swap_select(a)) for alt in alts],
                     scroll="auto", tight=True
                 ),
                 width=300, height=400
@@ -441,7 +441,7 @@ class ExerciseCard(ft.Card):
             if weights: bits.insert(1, f"{weights[0]} lb")
             if rpes: bits.append(f"Avg RPE {sum(rpes)/len(rpes):.1f}")
             self.content = ft.Container(content=ft.Column([
-                ft.Row([ft.Text("✓",size=16,color="green300",weight="bold"),ft.Column([ft.Text(self.exercise,size=13,weight="bold"),ft.Text(" • ".join(bits),size=10,color="white54")],spacing=2,expand=True)],spacing=8),
+                ft.Row([ft.Text("✓",size=16,color="green300",weight="bold"),ft.Column([ft.Text(exercise_display_name(self.exercise),size=13,weight="bold"),ft.Text(" • ".join(bits),size=10,color="white54")],spacing=2,expand=True)],spacing=8),
                 ft.Row([ft.TextButton("History",on_click=self.open_progression_history),ft.TextButton("Revise Logged Sets",on_click=self.confirm_revise_completed),ft.TextButton("Return to Pending",on_click=self.confirm_reopen_completed)],spacing=2,wrap=True)
             ],spacing=3),bgcolor="green900",border_radius=8,padding=10)
             self.margin=4
@@ -891,7 +891,7 @@ class ExerciseCard(ft.Card):
             lines.append("No readiness reduction is active. Normal progression targets are shown.")
 
         dialog = ft.AlertDialog(
-            title=ft.Text(f"Why this target? {self.exercise}", size=15, weight="bold"),
+            title=ft.Text(f"Why this target? {exercise_display_name(self.exercise)}", size=15, weight="bold"),
             content=ft.Container(width=360, content=ft.Text("\n".join(lines), size=11, selectable=True)),
             actions=[ft.TextButton("Close", on_click=lambda ev: self.app.safe_close(dialog))],
         )
@@ -899,7 +899,7 @@ class ExerciseCard(ft.Card):
 
     def open_exercise_actions(self, e=None):
         dialog = ft.AlertDialog(
-            title=ft.Text(self.exercise, size=15, weight="bold"),
+            title=ft.Text(exercise_display_name(self.exercise), size=15, weight="bold"),
             content=ft.Column([
                 ft.TextButton("Setup notes", on_click=lambda ev: [self.app.safe_close(dialog), self.open_setup_notes_dialog()]),
                 ft.TextButton("Why this target?", on_click=lambda ev: [self.app.safe_close(dialog), self.open_target_explanation()]),
@@ -2572,7 +2572,7 @@ class WorkoutTrackerApp:
             for cat, exercises in ex_dict.items():
                 options.append(ft.dropdown.Option(text=f"─── {cat.upper()} ───"))
                 for ex in exercises:
-                    options.append(ft.dropdown.Option(key=ex, text=ex))
+                    options.append(ft.dropdown.Option(key=ex, text=exercise_display_name(ex) if exercise_display_name(ex)==ex else f"{exercise_display_name(ex)} • canonical: {ex}"))
                     self.current_dict_mapping[ex] = cat
                     
             self.dict_dropdown = ft.Dropdown(
@@ -2600,7 +2600,7 @@ class WorkoutTrackerApp:
             self.dict_progression_preview = ft.Text("Select an exercise to view effective settings.", size=10, color="cyan200")
             self.dict_progression_simulation = ft.Text("", size=11, color="green300", weight="bold")
             self.dict_rename_field = ft.TextField(
-                label="Rename to...",
+                label="Personal display name",
                 text_size=12,
                 hint_text="New exercise name",
                 expand=True,
@@ -2625,7 +2625,7 @@ class WorkoutTrackerApp:
                     self.dict_max_rpe, self.dict_max_progression_weight, self.dict_progression_preview, self.dict_progression_simulation,
                     ft.Row([ft.TextButton("Reset Defaults", on_click=self.reset_dictionary_progression), ft.ElevatedButton("Open Progression Editor", on_click=lambda ev: self.open_exercise_progression_editor(self.dict_dropdown.value) if self.dict_dropdown.value else self.show_snackbar("Select an exercise first.", "red300"), style=ft.ButtonStyle(bgcolor="purple700", color="white"))], alignment="spaceBetween"),
                     ft.Divider(height=6, color="white10"), self.dict_rename_field,
-                    ft.ElevatedButton("Rename Exercise", style=ft.ButtonStyle(bgcolor="teal700", color="white"), on_click=self.rename_dictionary_exercise, width=float('inf')),
+                    ft.Row([ft.TextButton("Restore Canonical Name", on_click=self.restore_dictionary_display_name), ft.ElevatedButton("Change Display Name", style=ft.ButtonStyle(bgcolor="teal700", color="white"), on_click=self.rename_dictionary_exercise, expand=True)], spacing=6),
                     ft.Divider(height=6, color="white10"),
                     ft.Row([ft.TextButton("Cancel", on_click=self.close_dict_dialog), ft.TextButton("Delete", icon="delete", icon_color="red400", on_click=self.delete_from_dictionary)], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
                 ], tight=True, spacing=6, scroll="auto")), content_padding=16, inset_padding=12)
@@ -2677,7 +2677,7 @@ class WorkoutTrackerApp:
                 try: control.update()
                 except: pass
         if hasattr(self, 'dict_rename_field'):
-            self.dict_rename_field.value = selected_ex or ""
+            self.dict_rename_field.value = exercise_display_name(selected_ex) if selected_ex else ""
             self.dict_rename_field.visible = bool(selected_ex)
             try:
                 self.dict_rename_field.update()
@@ -2750,6 +2750,14 @@ class WorkoutTrackerApp:
         except Exception as ex:self.show_snackbar(str(ex),"red300");return
         self.close_dict_dialog()
         self.show_snackbar("Display name updated. Completed history and plan identities were not rewritten.","green300")
+        self.build_ui_shell();self.rebuild_navigation_headers();self.rebuild_entire_display()
+
+    def restore_dictionary_display_name(self, e=None):
+        exercise_name=self.dict_dropdown.value if hasattr(self,'dict_dropdown') else None
+        if not exercise_name:self.show_snackbar("Select an exercise first.","red300");return
+        try:restore_canonical_display_name(exercise_name)
+        except Exception as ex:self.show_snackbar(str(ex),"red300");return
+        self.close_dict_dialog();self.show_snackbar("Canonical display name restored. Stable history and plans were unchanged.","green300")
         self.build_ui_shell();self.rebuild_navigation_headers();self.rebuild_entire_display()
 
     def close_dict_dialog(self, e=None):
@@ -6213,7 +6221,7 @@ class WorkoutTrackerApp:
         for cat, exercises in ex_dict.items():
             options.append(ft.dropdown.Option(text=f"─── {cat.upper()} ───", disabled=True))
             for ex in exercises:
-                options.append(ft.dropdown.Option(key=ex, text=ex))
+                options.append(ft.dropdown.Option(key=ex, text=exercise_display_name(ex) if exercise_display_name(ex)==ex else f"{exercise_display_name(ex)} • canonical: {ex}"))
 
         self.bp_dropdown = ft.Dropdown(label="Select Movement", options=options, expand=True, text_size=12)
         
@@ -6262,7 +6270,7 @@ class WorkoutTrackerApp:
         for cat, exercises in ex_dict.items():
             options.append(ft.dropdown.Option(text=f"─── {cat.upper()} ───", disabled=True))
             for ex in exercises:
-                options.append(ft.dropdown.Option(key=ex, text=ex))
+                options.append(ft.dropdown.Option(key=ex, text=exercise_display_name(ex) if exercise_display_name(ex)==ex else f"{exercise_display_name(ex)} • canonical: {ex}"))
 
         self.bp_edit_dropdown = ft.Dropdown(label="Select Replacement", value=current_ex, options=options, expand=True, text_size=12)
         

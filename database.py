@@ -1659,6 +1659,24 @@ def set_exercise_display_name(exercise_name,display_name):
   c.execute("UPDATE exercise_dict SET display_name=?,identity_status=? WHERE name=?",(value,status,exercise_name));c.commit()
  record_audit("exercise_display_name_changed",f"exercise={exercise_name}; display_name={value}")
  return value
+def exercise_display_name(exercise_name):
+ """Resolve a personal label without changing the stable exercise key."""
+ stable=str(exercise_name or '').strip()
+ if not stable:return stable
+ with get_db() as c:
+  row=c.execute("SELECT COALESCE(NULLIF(TRIM(display_name),''),name) FROM exercise_dict WHERE name=?",(stable,)).fetchone()
+ return row[0] if row and row[0] else stable
+def exercise_display_name_map():
+ with get_db() as c:return {name:(display or name) for name,display in c.execute("SELECT name,COALESCE(NULLIF(TRIM(display_name),''),name) FROM exercise_dict")}
+def restore_canonical_display_name(exercise_name):
+ stable=str(exercise_name or '').strip()
+ with get_db() as c:
+  row=c.execute("SELECT catalog_id FROM exercise_dict WHERE name=?",(stable,)).fetchone()
+  if not row:raise ValueError("Exercise was not found.")
+  status='canonical' if row[0] else 'intentional_custom'
+  c.execute("UPDATE exercise_dict SET display_name=name,identity_status=? WHERE name=?",(status,stable));c.commit()
+ record_audit("exercise_display_name_restored",f"exercise={stable}")
+ return stable
 
 def apply_uniform_exercise_link(exercise_name,catalog_id):
  item=CATALOG_BY_ID.get(catalog_id)
