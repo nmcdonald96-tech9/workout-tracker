@@ -5,8 +5,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def test_version_and_schema():
     constants = (ROOT / "constants.py").read_text(encoding="utf-8")
-    assert 'APP_VERSION = "1.76.1"' in constants
-    assert 'DATABASE_SCHEMA_VERSION = 18' in constants
+    assert 'APP_VERSION = "1.77.0"' in constants
+    assert 'DATABASE_SCHEMA_VERSION = 19' in constants
 
 
 def test_revision_skip_is_guarded_and_never_uses_rows_to_save():
