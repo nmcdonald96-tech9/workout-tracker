@@ -1131,13 +1131,17 @@ class ExerciseCard(ft.Card):
         self.app.safe_open(self.app.delete_dialog)
 
     def on_skip(self, ev):
+        # A completed-exercise revision owns an exact rollback snapshot. Do not
+        # allow a stale actions-menu callback to convert that revision into a
+        # skipped exercise or discard the snapshot. The visible revision UI
+        # already hides Skip; this guard protects every remaining call path.
+        if self.db_id in self.app.completed_revision_sessions:
+            self.app.show_snackbar("Save or cancel the completed-exercise revision before skipping.", "amber300")
+            return
         with get_db() as conn:
             cursor = conn.cursor()
             cursor.execute(f"UPDATE workout_sessions SET status = '{STATUS_SKIPPED}' WHERE id = ?", (self.db_id,))
             conn.commit()
-        revision_snapshot=self.app.completed_revision_sessions.pop(self.db_id,None)
-        if revision_snapshot is not None:
-            summary=revision_change_summary(revision_snapshot,[(x[0],x[1],x[2]) for x in rows_to_save]);record_audit("completed_exercise_revision_saved",f"session_id={self.db_id}; exercise={self.exercise}; {summary}");record_audit("progression_targets_recalculated",f"session_id={self.db_id}; exercise={self.exercise}; authority=services.progression_service")
         if self.db_id in self.app.sets:
             del self.app.sets[self.db_id]
 
@@ -1272,6 +1276,18 @@ class ExerciseCard(ft.Card):
             cursor.execute(f"UPDATE workout_sessions SET status = '{STATUS_COMPLETED}', date = ?, bodyweight_snapshot = ? WHERE id = ?", (true_completion_date, current_bw, self.db_id))
             conn.commit()
 
+        revision_snapshot = self.app.completed_revision_sessions.pop(self.db_id, None)
+        if revision_snapshot is not None:
+            revised_values = [(row[0], row[1], row[2]) for row in rows_to_save]
+            summary = revision_change_summary(revision_snapshot, revised_values)
+            record_audit(
+                "completed_exercise_revision_saved",
+                f"session_id={self.db_id}; exercise={self.exercise}; {summary}",
+            )
+            record_audit(
+                "progression_targets_recalculated",
+                f"session_id={self.db_id}; exercise={self.exercise}; authority=services.progression_service",
+            )
         if self.db_id in self.app.sets:
             del self.app.sets[self.db_id]
         self.app.schedule_automatic_cloud_backup("automatic: exercise completed")
@@ -3365,8 +3381,11 @@ class WorkoutTrackerApp:
             current=uniform_exercise_review();items.controls.clear()
             for row in current:
                 suggestions=row.get("candidates") or []
-                options=[ft.dropdown.Option(key=x["id"],text=f"{x['name']} • score {x['score']}") for x in suggestions]
-                choice=ft.Dropdown(label="Canonical match",options=options,value=row.get("exact_catalog_id") or (suggestions[0]["id"] if suggestions else None),expand=True)
+                options=[ft.dropdown.Option(key=x["id"],text=f"{x['name']} • score {x['score']}{' • safe' if x.get('safe') else ' • review'}") for x in suggestions]
+                safe_suggestions=[x for x in suggestions if x.get("safe")]
+                selected=row.get("exact_catalog_id") or (safe_suggestions[0]["id"] if safe_suggestions else None)
+                match_label="Canonical match" if selected else "No safe canonical match"
+                choice=ft.Dropdown(label=match_label,options=options,value=selected,expand=True)
                 def link(ev,name=row["name"],dd=choice):
                     if not dd.value:self.show_snackbar("Choose a canonical exercise or keep this entry custom.","amber300");return
                     apply_uniform_exercise_link(name,dd.value);self.show_snackbar(f"Linked {name} without renaming history.","green300");refresh()

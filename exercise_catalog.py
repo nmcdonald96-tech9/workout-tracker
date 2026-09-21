@@ -27,7 +27,7 @@ def rank_catalog_candidates(name,category=None,family=None,equipment=None,angle=
 
 
 # --- 1.71 CANONICAL RUNTIME METADATA ---
-CATALOG_VERSION=4
+CATALOG_VERSION=5
 CATALOG_REVISION=1
 _EQUIPMENT_DEFAULTS={
  "Bodyweight":dict(min_weight=0.0,max_weight=500.0,default_weight=0.0,weight_step=1.0),
@@ -52,6 +52,15 @@ def _runtime_item(item):
 BUILTIN_EXERCISE_CATALOG.extend([
  {"id":"front_plank","name":"Front Plank","aliases":["Plank"],"category":"Abs","family":"trunk_flexion","pattern":"Core Stability","movement_type":"Isolation","equipment":"Bodyweight","angle":ANGLE_NOT_SPECIFIED},
  {"id":"pallof_press","name":"Pallof Press","aliases":["Cable Pallof Press"],"category":"Abs","family":"trunk_flexion","pattern":"Anti-Rotation","movement_type":"Isolation","equipment":"Cable","angle":ANGLE_NOT_SPECIFIED},
+ # Catalog v5 promotes six valid legacy movements to stable canonical identities.
+ # Their stored names remain unchanged, so existing history and blueprints retain
+ # the exact labels already used by the database.
+ {"id":"arnold_press","name":"Arnold Press","aliases":["Arnold Shoulder Press","Dumbbell Arnold Press"],"category":"Shoulders","family":"vertical_press","pattern":"Vertical Press","movement_type":"Compound","equipment":"Dumbbell","angle":"Upright"},
+ {"id":"dumbbell_leaning_lateral_raise","name":"Dumbbell Leaning Lateral Raise","aliases":["Leaning Dumbbell Lateral Raise"],"category":"Shoulders","family":"lateral_raise","pattern":"Lateral Isolation","movement_type":"Isolation","equipment":"Dumbbell","angle":ANGLE_NOT_SPECIFIED},
+ {"id":"hip_abduction_machine","name":"Hip Abduction Machine","aliases":["Machine Hip Abduction"],"category":"Glutes","family":"hip_abduction","pattern":"Hip Abduction","movement_type":"Isolation","equipment":"Machine","angle":ANGLE_NOT_SPECIFIED},
+ {"id":"hip_adduction_machine","name":"Hip Squeeze Adduction Machine","aliases":["Hip Adduction Machine","Machine Hip Adduction"],"category":"Quads","family":"hip_adduction","pattern":"Hip Adduction","movement_type":"Isolation","equipment":"Machine","angle":ANGLE_NOT_SPECIFIED},
+ {"id":"overhand_ez_bar_curl","name":"Overhand EZ Bar Curl","aliases":["EZ Bar Reverse Curl","Reverse EZ Bar Curl"],"category":"Biceps","family":"elbow_flexion","pattern":"Elbow Flexion","movement_type":"Isolation","equipment":"Barbell","angle":ANGLE_NOT_SPECIFIED,"plate_loaded":True,"bar_weight":15.0},
+ {"id":"single_arm_dumbbell_row","name":"Single Arm Dumbbell Row","aliases":["One Arm Dumbbell Row","One-Arm Dumbbell Row"],"category":"Back","family":"horizontal_row","pattern":"Horizontal Row","movement_type":"Compound","equipment":"Dumbbell","angle":ANGLE_NOT_SPECIFIED},
 ])
 BUILTIN_EXERCISE_CATALOG=[_runtime_item(x) for x in BUILTIN_EXERCISE_CATALOG]
 CATALOG_BY_ID={x["id"]:x for x in BUILTIN_EXERCISE_CATALOG};CATALOG_BY_NAME={x["name"]:x for x in BUILTIN_EXERCISE_CATALOG}

@@ -1604,7 +1604,18 @@ def uniform_exercise_review(limit=200):
   if catalog_id:continue
   candidates=rank_catalog_candidates(name,category,family,equipment,ANGLE_NOT_SPECIFIED,3)
   exact=resolve_catalog_exercise(name)
-  out.append({"name":name,"category":category,"is_custom":bool(is_custom),"exact_catalog_id":exact.get("id") if exact else None,"candidates":[{"id":x["item"]["id"],"name":x["item"]["name"],"score":x["score"]} for x in candidates]})
+  candidate_rows=[]
+  for candidate in candidates:
+   item=candidate["item"]
+   # A ranked suggestion is not automatically a safe identity match. When the
+   # legacy row has classified family/equipment data, both must agree. Category
+   # must always agree, and weak name-only guesses are never preselected.
+   family_ok=not family or family in ("General","Legacy") or item["family"]==family
+   equipment_ok=not equipment or equipment in ("Other","Legacy") or item["equipment"]==equipment
+   category_ok=not category or category in ("General","Custom") or item["category"]==category
+   safe=bool(category_ok and family_ok and equipment_ok and candidate["score"]>=35)
+   candidate_rows.append({"id":item["id"],"name":item["name"],"score":candidate["score"],"safe":safe})
+  out.append({"name":name,"category":category,"is_custom":bool(is_custom),"exact_catalog_id":exact.get("id") if exact else None,"candidates":candidate_rows})
   if len(out)>=limit:break
  return out
 
