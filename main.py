@@ -442,7 +442,7 @@ class ExerciseCard(ft.Card):
             if rpes: bits.append(f"Avg RPE {sum(rpes)/len(rpes):.1f}")
             self.content = ft.Container(content=ft.Column([
                 ft.Row([ft.Text("✓",size=16,color="green300",weight="bold"),ft.Column([ft.Text(self.exercise,size=13,weight="bold"),ft.Text(" • ".join(bits),size=10,color="white54")],spacing=2,expand=True)],spacing=8),
-                ft.Row([ft.TextButton("History",on_click=self.open_progression_history),ft.TextButton("Revise Logged Sets",on_click=self.confirm_revise_completed),ft.TextButton("Reopen",on_click=self.confirm_reopen_completed)],spacing=2,wrap=True)
+                ft.Row([ft.TextButton("History",on_click=self.open_progression_history),ft.TextButton("Revise Logged Sets",on_click=self.confirm_revise_completed),ft.TextButton("Return to Pending",on_click=self.confirm_reopen_completed)],spacing=2,wrap=True)
             ],spacing=3),bgcolor="green900",border_radius=8,padding=10)
             self.margin=4
             return
@@ -708,6 +708,8 @@ class ExerciseCard(ft.Card):
         
         if regulation_msg:
             chips_row.controls.append(make_helper_chip(regulation_msg, "red900", "red100"))
+        if self.db_id in self.app.completed_revision_sessions:
+            chips_row.controls.append(make_helper_chip("REVISING COMPLETED EXERCISE", "amber900", "amber100"))
         if any(x.get("r_source") == "weight_derived" for x in self.app.sets.get(self.db_id, [])):
             chips_row.controls.append(make_helper_chip("REPS AUTO-ADJUSTED FROM WEIGHT", "teal900", "teal100"))
         effective_settings = get_effective_progression_settings(self.exercise, self.mov_type, eq_type, get_user_age(), get_user_progression_profile())
@@ -754,10 +756,12 @@ class ExerciseCard(ft.Card):
         # Premium primary action button
         log_btn=ft.TextButton(content=ft.Text("Log Sets",size=11,color="cyan300",weight="bold"),on_click=self.on_save,height=32,style=ft.ButtonStyle(padding=5))
 
+        revision_active = self.db_id in self.app.completed_revision_sessions
+        if revision_active: log_btn.content=ft.Text("Save Revision",size=11,color="cyan300",weight="bold")
         action_zone = ft.Row([
-            ft.Row([delete_btn, skip_btn], spacing=0, visible=not self.app.workout_focus_mode),
+            ft.Row([delete_btn, skip_btn], spacing=0, visible=(not self.app.workout_focus_mode and not revision_active)),
             ft.Row([minus_btn, plus_btn], spacing=2, visible=not self.app.workout_focus_mode),
-            log_btn
+            ft.TextButton("Cancel Revision",on_click=self.cancel_completed_revision,visible=revision_active),log_btn
         ], alignment="spaceBetween")
 
         density_scale = 0.78 if self.app.ui_density == "compact" else 1.0
@@ -784,16 +788,25 @@ class ExerciseCard(ft.Card):
         )
         self.margin = 4
 
-    def _reopen_completed(self,action):
-        with get_db() as conn:
-            conn.execute("UPDATE workout_sessions SET status=? WHERE id=?",(STATUS_PENDING,self.db_id));conn.commit()
-        record_audit(action,f"session_id={self.db_id}; exercise={self.exercise}")
+    def _reopen_completed(self, action, revision_mode=False):
+        if revision_mode:
+            self.app.completed_revision_sessions[self.db_id]=completed_exercise_revision_snapshot(self.db_id)
+            record_audit("completed_exercise_revision_started",f"session_id={self.db_id}; exercise={self.exercise}")
+        else:
+            self.app.completed_revision_sessions.pop(self.db_id,None)
+            record_audit("completed_exercise_returned_to_pending",f"session_id={self.db_id}; exercise={self.exercise}")
+        with get_db() as conn:conn.execute("UPDATE workout_sessions SET status=? WHERE id=?",(STATUS_PENDING,self.db_id));conn.commit()
         self.app.sets.pop(self.db_id,None);self.app.view_mode="workout";self.app.pending_scroll_key=self.app.exercise_anchor_key(self.db_id)
-        self.app.rebuild_navigation_headers();self.app.rebuild_entire_display();self.app.show_snackbar("Logged sets reopened with existing values preserved.","cyan300")
+        self.app.rebuild_navigation_headers();self.app.rebuild_entire_display();self.app.show_snackbar("Revision mode opened with logged values preserved." if revision_mode else "Exercise returned to Pending with existing values preserved.","cyan300")
     def confirm_revise_completed(self,e=None):
-        dialog=ft.AlertDialog(title=ft.Text("Revise Logged Sets",weight="bold"),content=ft.Text("Reopen this completed exercise with all logged values preserved? Logging it again recalculates progression, e1RM, reports, and next targets."),actions=[ft.TextButton("Cancel",on_click=lambda ev:self.app.safe_close(dialog)),ft.ElevatedButton("Revise",on_click=lambda ev:[self.app.safe_close(dialog),self._reopen_completed("completed_exercise_revised")])]);self.app.safe_open(dialog)
+        dialog=ft.AlertDialog(title=ft.Text("Revise Logged Sets",weight="bold"),content=ft.Text("Correct logged weight, reps, RPE, or set count. Save Revision keeps the exercise completed and refreshes progression from the corrected result."),actions=[ft.TextButton("Cancel",on_click=lambda ev:self.app.safe_close(dialog)),ft.ElevatedButton("Begin Revision",on_click=lambda ev:[self.app.safe_close(dialog),self._reopen_completed("completed_exercise_revision_started",True)])]);self.app.safe_open(dialog)
     def confirm_reopen_completed(self,e=None):
-        dialog=ft.AlertDialog(title=ft.Text("Reopen Exercise",weight="bold"),content=ft.Text("Move this exercise back to Pending? Existing set values remain available and workout completion may change."),actions=[ft.TextButton("Cancel",on_click=lambda ev:self.app.safe_close(dialog)),ft.ElevatedButton("Reopen",on_click=lambda ev:[self.app.safe_close(dialog),self._reopen_completed("completed_exercise_reopened")])]);self.app.safe_open(dialog)
+        dialog=ft.AlertDialog(title=ft.Text("Return Exercise to Pending",weight="bold"),content=ft.Text("Move this exercise back to Pending? Existing set values remain available, but it will not count as completed until logged again."),actions=[ft.TextButton("Cancel",on_click=lambda ev:self.app.safe_close(dialog)),ft.ElevatedButton("Return to Pending",on_click=lambda ev:[self.app.safe_close(dialog),self._reopen_completed("completed_exercise_returned_to_pending",False)])]);self.app.safe_open(dialog)
+    def cancel_completed_revision(self,e=None):
+        try:
+            restore_completed_exercise_revision(self.db_id,self.app.completed_revision_sessions.get(self.db_id));record_audit("completed_exercise_revision_canceled",f"session_id={self.db_id}; exercise={self.exercise}");self.app.completed_revision_sessions.pop(self.db_id,None);self.app.sets.pop(self.db_id,None);self.app.rebuild_navigation_headers();self.app.rebuild_entire_display();self.app.show_snackbar("Revision canceled. Original completed result restored.","green300")
+        except Exception as err:self.app.show_snackbar(f"Could not cancel revision: {err}","red300")
+
     def open_setup_notes_dialog(self,e=None):
         with get_db() as c:r=c.execute("SELECT setup_notes FROM exercise_dict WHERE name=?",(self.exercise,)).fetchone()
         field=ft.TextField(label="Setup notes",value=r[0] if r and r[0] else "",multiline=True,min_lines=3,max_lines=6)
@@ -1116,6 +1129,9 @@ class ExerciseCard(ft.Card):
             cursor = conn.cursor()
             cursor.execute(f"UPDATE workout_sessions SET status = '{STATUS_SKIPPED}' WHERE id = ?", (self.db_id,))
             conn.commit()
+        revision_snapshot=self.app.completed_revision_sessions.pop(self.db_id,None)
+        if revision_snapshot is not None:
+            summary=revision_change_summary(revision_snapshot,[(x[0],x[1],x[2]) for x in rows_to_save]);record_audit("completed_exercise_revision_saved",f"session_id={self.db_id}; exercise={self.exercise}; {summary}");record_audit("progression_targets_recalculated",f"session_id={self.db_id}; exercise={self.exercise}; authority=services.progression_service")
         if self.db_id in self.app.sets:
             del self.app.sets[self.db_id]
 
@@ -1304,6 +1320,7 @@ class WorkoutTrackerApp:
         self.show_survey = False
         self.pr_celebrations = {}
         self.strength_badges = {}
+        self.completed_revision_sessions = {}
         self.meso_just_completed = False
         self.summary_replay_mode = False
         self.summary_return_position = None
@@ -1824,7 +1841,6 @@ class WorkoutTrackerApp:
                     ft.ElevatedButton("🧬 Uniform Exercise Review", on_click=lambda ev:[self.safe_close(self.actions_menu_dialog),self.open_uniform_exercise_review()], width=float('inf'), style=btn_style),
                     ft.ElevatedButton("🧭 Guided Architect", on_click=lambda ev:[self.safe_close(self.actions_menu_dialog),self.open_guided_architect()], width=float('inf'), style=btn_style),
                     ft.ElevatedButton("📚 Exercise Library", on_click=self.menu_manage_dict, width=float('inf'), style=btn_style),
-                    ft.ElevatedButton("🧪 Closed Testing Guide", on_click=lambda ev:[self.safe_close(self.actions_menu_dialog),self.open_closed_testing_guide()], width=float('inf'), style=btn_style),
                     ft.ElevatedButton("🛠 Diagnostics & Support", on_click=self.open_diagnostics_dialog, width=float('inf'), style=btn_style),
                     ft.ElevatedButton("📊 Export History to CSV", on_click=self.export_to_csv, width=float('inf'), style=btn_style),
 
@@ -2884,8 +2900,9 @@ class WorkoutTrackerApp:
             f"Billing last result: {self.entitlement.billing_diagnostics().get('last_result') or 'never'}",
             f"Billing transient error: {self.entitlement.billing_diagnostics().get('last_error') or 'None'}",
             "Billing tokens exposed to app diagnostics: No",
-            "Release channel intent: Closed Alpha candidate",
-            "Closed-test support guide: enabled",
+            "Release channel: Google Play testing",
+            "Privacy-safe support diagnostics: enabled",
+            "Support reports exclude purchase tokens, payment details, backup contents, and Microsoft account information.",
             f"Onboarding completed: {'Yes' if self.get_bool_setting('onboarding_completed',False) else 'No'}",
             f"Automatic First Setup eligible: {'No - existing onboarding state is preserved' if self.get_bool_setting('onboarding_completed',False) else 'Yes if no completed workout history'}",
             f"Canonical exercise catalog: {len(CANONICAL_EXERCISES)} entries / v{CATALOG_VERSION}",

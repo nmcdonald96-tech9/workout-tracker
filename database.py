@@ -1621,3 +1621,34 @@ get_effective_progression_settings = _authoritative_get_effective_progression_se
 invalidate_progression_settings_cache = _authoritative_invalidate_progression_settings_cache
 progression_clarity = _authoritative_progression_clarity
 simulate_progression = _authoritative_simulate_progression
+
+
+# --- 1.75 COMPLETED EXERCISE REVISION SUPPORT ---
+def completed_exercise_revision_snapshot(session_id):
+    with get_db() as conn:
+        session=conn.execute("SELECT status,date,bodyweight_snapshot FROM workout_sessions WHERE id=?",(int(session_id),)).fetchone()
+        sets=conn.execute("""SELECT set_number,weight,reps,rpe,rest_seconds,target_weight,target_reps,normal_target_weight,normal_target_reps,completed_at,is_complete,progression_decision,progression_reason_code,progression_reason,progression_settings_snapshot FROM workout_sets WHERE session_id=? ORDER BY set_number""",(int(session_id),)).fetchall()
+    return {"session":session,"sets":sets}
+
+def restore_completed_exercise_revision(session_id,snapshot):
+    if not snapshot or not snapshot.get("session"):raise ValueError("The original completed exercise snapshot is unavailable.")
+    with get_db() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            status,date,bodyweight_snapshot=snapshot["session"]
+            conn.execute("UPDATE workout_sessions SET status=?,date=?,bodyweight_snapshot=? WHERE id=?",(status,date,bodyweight_snapshot,int(session_id)))
+            conn.execute("DELETE FROM workout_sets WHERE session_id=?",(int(session_id),))
+            conn.executemany("""INSERT INTO workout_sets(session_id,set_number,weight,reps,rpe,rest_seconds,target_weight,target_reps,normal_target_weight,normal_target_reps,completed_at,is_complete,progression_decision,progression_reason_code,progression_reason,progression_settings_snapshot) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",[(int(session_id),*row) for row in snapshot.get("sets",[])])
+            conn.commit()
+        except Exception:
+            conn.rollback();raise
+
+def revision_change_summary(snapshot,revised_rows):
+    original=list((snapshot or {}).get("sets",[]));changes=[];maximum=max(len(original),len(revised_rows or []))
+    for index in range(maximum):
+        before=original[index] if index<len(original) else None;after=revised_rows[index] if index<len(revised_rows or []) else None
+        if before is None:changes.append(f"set {index+1} added");continue
+        if after is None:changes.append(f"set {index+1} removed");continue
+        old=(before[1],before[2],before[3]);new=(after[0],after[1],after[2])
+        if old!=new:changes.append(f"set {index+1}: {old[0]}x{old[1]}@{old[2]}->{new[0]}x{new[1]}@{new[2]}")
+    return "; ".join(changes) if changes else "no value changes"
