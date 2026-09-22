@@ -676,7 +676,7 @@ class ExerciseCard(ft.Card):
             # Top Floor: Title, Swap Button, Status Chip
             ft.Row([
                 ft.Row([
-                    ft.Text(f"{self.exercise}", size=14, weight="bold", color="white"),
+                    ft.Text(database.exercise_display_name(self.exercise), size=14, weight="bold", color="white"),
                     ft.TextButton(content=ft.Text("⋯", size=18, color="cyan300"), style=ft.ButtonStyle(padding=2), on_click=self.open_exercise_actions)
                 ], spacing=2, expand=True),
                 ft.Row([
@@ -1556,7 +1556,7 @@ class WorkoutTrackerApp:
             dropdown_options_list.append(ft.dropdown.Option(text=f"─── {category.upper()} ───", disabled=True))
             for ex in exercises:
                 if not self.first_valid_exercise: self.first_valid_exercise = ex
-                dropdown_options_list.append(ft.dropdown.Option(key=ex, text=ex))
+                dropdown_options_list.append(ft.dropdown.Option(key=ex, text=database.exercise_display_name(ex)))
 
         dropdown_options_list.append(ft.dropdown.Option(text="─── END OF LIST ───", disabled=True))
         for i in range(4):
@@ -2572,7 +2572,7 @@ class WorkoutTrackerApp:
             for cat, exercises in ex_dict.items():
                 options.append(ft.dropdown.Option(text=f"─── {cat.upper()} ───"))
                 for ex in exercises:
-                    options.append(ft.dropdown.Option(key=ex, text=exercise_display_name(ex) if exercise_display_name(ex)==ex else f"{exercise_display_name(ex)} • canonical: {ex}"))
+                    options.append(ft.dropdown.Option(key=ex, text=database.exercise_identity_label(ex)))
                     self.current_dict_mapping[ex] = cat
                     
             self.dict_dropdown = ft.Dropdown(
@@ -2625,7 +2625,7 @@ class WorkoutTrackerApp:
                     self.dict_max_rpe, self.dict_max_progression_weight, self.dict_progression_preview, self.dict_progression_simulation,
                     ft.Row([ft.TextButton("Reset Defaults", on_click=self.reset_dictionary_progression), ft.ElevatedButton("Open Progression Editor", on_click=lambda ev: self.open_exercise_progression_editor(self.dict_dropdown.value) if self.dict_dropdown.value else self.show_snackbar("Select an exercise first.", "red300"), style=ft.ButtonStyle(bgcolor="purple700", color="white"))], alignment="spaceBetween"),
                     ft.Divider(height=6, color="white10"), self.dict_rename_field,
-                    ft.Row([ft.TextButton("Restore Canonical Name", on_click=self.restore_dictionary_display_name), ft.ElevatedButton("Change Display Name", style=ft.ButtonStyle(bgcolor="teal700", color="white"), on_click=self.rename_dictionary_exercise, expand=True)], spacing=6),
+                    ft.Row([ft.TextButton(database.exercise_restore_name_label(selected_ex), on_click=self.restore_dictionary_display_name), ft.ElevatedButton("Change Display Name", style=ft.ButtonStyle(bgcolor="teal700", color="white"), on_click=self.rename_dictionary_exercise, expand=True)], spacing=6),
                     ft.Divider(height=6, color="white10"),
                     ft.Row([ft.TextButton("Cancel", on_click=self.close_dict_dialog), ft.TextButton("Delete", icon="delete", icon_color="red400", on_click=self.delete_from_dictionary)], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
                 ], tight=True, spacing=6, scroll="auto")), content_padding=16, inset_padding=12)
@@ -6221,7 +6221,7 @@ class WorkoutTrackerApp:
         for cat, exercises in ex_dict.items():
             options.append(ft.dropdown.Option(text=f"─── {cat.upper()} ───", disabled=True))
             for ex in exercises:
-                options.append(ft.dropdown.Option(key=ex, text=exercise_display_name(ex) if exercise_display_name(ex)==ex else f"{exercise_display_name(ex)} • canonical: {ex}"))
+                options.append(ft.dropdown.Option(key=ex, text=database.exercise_identity_label(ex)))
 
         self.bp_dropdown = ft.Dropdown(label="Select Movement", options=options, expand=True, text_size=12)
         
@@ -6270,7 +6270,7 @@ class WorkoutTrackerApp:
         for cat, exercises in ex_dict.items():
             options.append(ft.dropdown.Option(text=f"─── {cat.upper()} ───", disabled=True))
             for ex in exercises:
-                options.append(ft.dropdown.Option(key=ex, text=exercise_display_name(ex) if exercise_display_name(ex)==ex else f"{exercise_display_name(ex)} • canonical: {ex}"))
+                options.append(ft.dropdown.Option(key=ex, text=database.exercise_identity_label(ex)))
 
         self.bp_edit_dropdown = ft.Dropdown(label="Select Replacement", value=current_ex, options=options, expand=True, text_size=12)
         

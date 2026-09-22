@@ -1666,6 +1666,22 @@ def exercise_display_name(exercise_name):
  with get_db() as c:
   row=c.execute("SELECT COALESCE(NULLIF(TRIM(display_name),''),name) FROM exercise_dict WHERE name=?",(stable,)).fetchone()
  return row[0] if row and row[0] else stable
+def exercise_identity_info(exercise_name):
+ stable=str(exercise_name or '').strip()
+ with get_db() as c:
+  row=c.execute("SELECT name,catalog_id,identity_status,display_name FROM exercise_dict WHERE name=?",(stable,)).fetchone()
+ if not row:return {"name":stable,"catalog_id":None,"identity_status":None,"display_name":stable}
+ return {"name":row[0],"catalog_id":row[1],"identity_status":row[2],"display_name":row[3] or row[0]}
+
+def exercise_identity_label(exercise_name):
+ stable=str(exercise_name or '').strip(); display=exercise_display_name(stable); info=exercise_identity_info(stable)
+ if info.get("identity_status") == "intentional_custom":
+  return f"{display} • original: {stable}" if display != stable else display
+ return f"{display} • canonical: {stable}" if display != stable else display
+
+def exercise_restore_name_label(exercise_name):
+ return "Restore Original Name" if exercise_identity_info(exercise_name).get("identity_status") == "intentional_custom" else "Restore Canonical Name"
+
 def exercise_display_name_map():
  with get_db() as c:return {name:(display or name) for name,display in c.execute("SELECT name,COALESCE(NULLIF(TRIM(display_name),''),name) FROM exercise_dict")}
 def restore_canonical_display_name(exercise_name):
