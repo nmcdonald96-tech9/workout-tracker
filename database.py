@@ -1763,15 +1763,47 @@ def revision_change_summary(snapshot,revised_rows):
         if old!=new:changes.append(f"set {index+1}: {old[0]}x{old[1]}@{old[2]}->{new[0]}x{new[1]}@{new[2]}")
     return "; ".join(changes) if changes else "no value changes"
 
+# --- 1.81 UNIFIED CATALOG BROWSING ---
+def exercise_catalog_browser_entries():
+    """Return built-in definitions plus user-created unlinked exercises.
+
+    Stable exercise keys remain authoritative. Personalized display names are
+    presentation-only, and custom rows are never promoted to canonical items.
+    """
+    entries=[]
+    for item in BUILTIN_EXERCISE_CATALOG:
+        entries.append({
+            "key":item["name"], "name":item["name"], "stable_name":item["name"],
+            "category":item.get("category") or "General",
+            "family":item.get("family") or "general",
+            "family_label":movement_family_label(item.get("family") or "general"),
+            "equipment":item.get("equipment") or "Other",
+            "angle":item.get("angle") or ANGLE_NOT_SPECIFIED,
+            "source":"built_in", "catalog_id":item.get("id"),
+        })
+    with get_db() as conn:
+        rows=conn.execute("""SELECT name,COALESCE(NULLIF(TRIM(display_name),''),name),
+                            COALESCE(category,'General'),COALESCE(movement_family,movement_pattern,'General'),
+                            COALESCE(equipment,'Other'),COALESCE(angle,'Not specified'),identity_status
+                     FROM exercise_dict WHERE catalog_id IS NULL ORDER BY COALESCE(NULLIF(TRIM(display_name),''),name),name""").fetchall()
+    for stable,display,category,family,equipment,angle,status in rows:
+        entries.append({
+            "key":stable, "name":display, "stable_name":stable,
+            "category":category, "family":family,
+            "family_label":movement_family_label(family), "equipment":equipment,
+            "angle":angle, "source":"custom", "catalog_id":None,
+            "identity_status":status or "intentional_custom",
+        })
+    return entries
+
 # --- 1.80 STARTUP AND LIFECYCLE DIAGNOSTICS ---
 def startup_diagnostics():
     """Return privacy-safe startup health without exposing workout contents."""
-    report = {"app_version": APP_VERSION, "schema_expected": DATABASE_SCHEMA_VERSION, "database_path_present": bool(DB_PATH), "integrity": "unavailable", "schema_stored": None, "error": None}
+    report={"app_version":APP_VERSION,"schema_expected":DATABASE_SCHEMA_VERSION,"database_path_present":bool(DB_PATH),"integrity":"unavailable","schema_stored":None,"error":None}
     try:
         with get_db() as conn:
-            report["integrity"] = conn.execute("PRAGMA integrity_check").fetchone()[0]
-            row = conn.execute("SELECT setting_value FROM user_settings WHERE setting_key='schema_version'").fetchone()
-            report["schema_stored"] = int(row[0]) if row and str(row[0]).isdigit() else (row[0] if row else None)
-    except Exception as exc:
-        report["error"] = f"{type(exc).__name__}: {str(exc)[:160]}"
+            report["integrity"]=conn.execute("PRAGMA integrity_check").fetchone()[0]
+            row=conn.execute("SELECT setting_value FROM user_settings WHERE setting_key='schema_version'").fetchone()
+            report["schema_stored"]=int(row[0]) if row and str(row[0]).isdigit() else (row[0] if row else None)
+    except Exception as exc:report["error"]=f"{type(exc).__name__}: {str(exc)[:160]}"
     return report

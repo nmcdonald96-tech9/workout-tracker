@@ -6379,16 +6379,26 @@ class WorkoutTrackerApp:
         except Exception: pass
         search=ft.TextField(label="Search catalog",hint_text="Name, category, family, or equipment",text_size=12)
         results=ft.Column(scroll="auto",spacing=5)
-        coverage=get_catalog_coverage()
+        entries=database.exercise_catalog_browser_entries()
+        built_in_count=sum(x["source"]=="built_in" for x in entries)
+        custom_count=sum(x["source"]=="custom" for x in entries)
+        summary=ft.Text(f"{built_in_count} built-in definitions • {custom_count} custom exercises",size=9,color="cyan200")
         def render(ev=None):
             q=str(search.value or "").strip().lower();results.controls.clear()
-            items=[x for x in BUILTIN_EXERCISE_CATALOG if not q or q in (x["name"]+" "+x["category"]+" "+movement_family_label(x["family"])+" "+x["equipment"]).lower()]
+            items=[]
+            for x in entries:
+                searchable=" ".join(str(x.get(k) or "") for k in ("name","stable_name","category","family_label","equipment")).lower()
+                if not q or q in searchable:items.append(x)
+            items.sort(key=lambda x:(x["source"]!="custom",str(x["name"]).lower()) if q else (x["source"]=="custom",str(x["name"]).lower()))
             for x in items[:80]:
-                results.controls.append(ft.Container(content=ft.Column([ft.Text(x["name"],size=11,weight="bold"),ft.Text(f"{x['category']} • {movement_family_label(x['family'])} • {x['equipment']} • {x.get('angle','Not specified')}",size=9,color="white54")],spacing=2),bgcolor="white10",padding=7,border_radius=7))
+                source_label="My Exercise" if x["source"]=="custom" else "Built-in"
+                identity=(f" • original: {x['stable_name']}" if x["source"]=="custom" and x["name"]!=x["stable_name"] else "")
+                results.controls.append(ft.Container(content=ft.Column([ft.Row([ft.Text(x["name"],size=11,weight="bold",expand=True),ft.Text(source_label,size=8,color="amber200" if x["source"]=="custom" else "cyan200")]),ft.Text(f"{x['category']} • {x['family_label']} • {x['equipment']} • {x.get('angle','Not specified')}{identity}",size=9,color="white54")],spacing=2),bgcolor="amber900" if x["source"]=="custom" else "white10",padding=7,border_radius=7))
+            if not items:results.controls.append(ft.Text("No matching built-in or custom exercises.",size=10,color="white54"))
             try: results.update()
             except Exception: pass
         search.on_change=render;render()
-        dialog=ft.AlertDialog(title=ft.Text("Exercise Catalog",weight="bold"),content=ft.Container(width=390,height=500,content=ft.Column([ft.Text(f"{len(BUILTIN_EXERCISE_CATALOG)} built-in definitions • {coverage['linked']} linked • {coverage['unlinked']} unlinked dictionary entries",size=9,color="cyan200"),search,results],expand=True)),actions=[ft.TextButton("Close",on_click=lambda ev:self.safe_close(dialog))])
+        dialog=ft.AlertDialog(title=ft.Text("Exercise Catalog",weight="bold"),content=ft.Container(width=390,height=500,content=ft.Column([summary,search,results],expand=True)),actions=[ft.TextButton("Close",on_click=lambda ev:self.safe_close(dialog))])
         self.safe_open(dialog)
 
     def open_guided_exercise_creation(self,name,category,movement_type,on_created):
