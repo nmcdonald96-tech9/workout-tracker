@@ -1,21 +1,29 @@
-# Privacy Policy for IronCycle
-**Effective Date:** June 23, 2026
+# IronCycle Privacy Policy
 
-This privacy policy applies to the **IronCycle** application for mobile devices. 
+**Effective date:** September 22, 2026
 
-## 1. Data Collection and Storage
-**IronCycle** is designed with strict data privacy in mind. The application operates entirely offline. All data you enter into the app—including but not limited to bodyweight, age, sex, workout logs, custom exercises, and daily readiness surveys—is stored locally on your device in a secure SQLite database. 
+IronCycle stores workout plans, completed sets, readiness entries, exercise settings, and related fitness data locally on the user's device by default.
 
-We do not collect, transmit, harvest, or store any of your personal data on external servers. 
+## Optional OneDrive backup
 
-## 2. Data Transfers and Backups
-The application includes features that allow you to create local backups or transfer your database to another device via a local WiFi network connection. These transfers occur strictly point-to-point on your local Area Network (LAN). No data is routed through, stored on, or accessible by any third-party servers or the developer during this process.
+OneDrive backup is optional and user-directed. When OneDrive is connected, IronCycle uses Microsoft device-code authentication and Microsoft Graph to access the application's OneDrive App Folder for backup and restore operations selected by the user. IronCycle does not receive the user's Microsoft password.
 
-## 3. Third-Party Access and Analytics
-The application does not use third-party analytics (e.g., Google Analytics), crash tracking software, or advertisement SDKs. We do not share, sell, or rent your data to any third parties because we do not collect your data in the first place.
+## Google Play Billing
 
-## 4. Changes to This Privacy Policy
-We may update our Privacy Policy from time to time. We will notify you of any changes by posting the new Privacy Policy on this page. You are advised to review this Privacy Policy periodically for any changes.
+Google Play processes the optional IronCycle Lifetime Unlock purchase. IronCycle stores entitlement state separately from workout backups. Purchase tokens, payment-card details, and Google account credentials are not included in app diagnostics or workout backup files.
 
-## 5. Contact Us
-If you have any questions or suggestions about this Privacy Policy, do not hesitate to contact us at **jeremyconnor885@yahoo.com**.
+## Developer-operated services
+
+IronCycle does not operate a developer-controlled server for collecting or hosting workout data. IronCycle does not include advertising. If analytics or crash-reporting services are added later, this policy will be updated before those services are enabled.
+
+## Diagnostics and support
+
+Privacy-safe diagnostics may include app version, database schema, integrity status, package availability, feature flags, backup metadata, and billing status. Diagnostics exclude workout-backup contents, purchase tokens, payment details, Microsoft account information, and Microsoft access tokens.
+
+## Data control
+
+Users can create, export, restore, and delete local workout backups using Backup Manager. Users can manage OneDrive recovery files through IronCycle or their Microsoft account storage. Uninstalling the application may remove local app data unless it was exported or backed up first.
+
+## Contact
+
+Use the support contact listed in the IronCycle Google Play listing for privacy or data questions.

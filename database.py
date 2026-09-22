@@ -1762,3 +1762,16 @@ def revision_change_summary(snapshot,revised_rows):
         old=(before[1],before[2],before[3]);new=(after[0],after[1],after[2])
         if old!=new:changes.append(f"set {index+1}: {old[0]}x{old[1]}@{old[2]}->{new[0]}x{new[1]}@{new[2]}")
     return "; ".join(changes) if changes else "no value changes"
+
+# --- 1.80 STARTUP AND LIFECYCLE DIAGNOSTICS ---
+def startup_diagnostics():
+    """Return privacy-safe startup health without exposing workout contents."""
+    report = {"app_version": APP_VERSION, "schema_expected": DATABASE_SCHEMA_VERSION, "database_path_present": bool(DB_PATH), "integrity": "unavailable", "schema_stored": None, "error": None}
+    try:
+        with get_db() as conn:
+            report["integrity"] = conn.execute("PRAGMA integrity_check").fetchone()[0]
+            row = conn.execute("SELECT setting_value FROM user_settings WHERE setting_key='schema_version'").fetchone()
+            report["schema_stored"] = int(row[0]) if row and str(row[0]).isdigit() else (row[0] if row else None)
+    except Exception as exc:
+        report["error"] = f"{type(exc).__name__}: {str(exc)[:160]}"
+    return report

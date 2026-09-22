@@ -2,6 +2,7 @@ import flet as ft
 from ironcycle_billing import IronCycleBilling
 import os
 import sqlite3
+import database
 import traceback
 import json
 import time
@@ -18,7 +19,6 @@ import threading
 import socket
 import urllib.parse
 import secrets
-import inspect
 import sys
 
 from constants import *
@@ -2581,6 +2581,7 @@ class WorkoutTrackerApp:
                 options=options
             )
             self.dict_dropdown.on_select = self.on_dict_ex_change
+            self.dict_restore_name_button = ft.TextButton("Restore Exercise Name", disabled=True, on_click=self.restore_dictionary_display_name)
             
             cat_options = [ft.dropdown.Option(key=c, text=c) for c in ["Chest", "Back", "Shoulders", "Quads", "Hamstrings", "Glutes", "Calves", "Biceps", "Triceps", "Forearms", "Abs", "General", "Custom"]]
             
@@ -2625,7 +2626,7 @@ class WorkoutTrackerApp:
                     self.dict_max_rpe, self.dict_max_progression_weight, self.dict_progression_preview, self.dict_progression_simulation,
                     ft.Row([ft.TextButton("Reset Defaults", on_click=self.reset_dictionary_progression), ft.ElevatedButton("Open Progression Editor", on_click=lambda ev: self.open_exercise_progression_editor(self.dict_dropdown.value) if self.dict_dropdown.value else self.show_snackbar("Select an exercise first.", "red300"), style=ft.ButtonStyle(bgcolor="purple700", color="white"))], alignment="spaceBetween"),
                     ft.Divider(height=6, color="white10"), self.dict_rename_field,
-                    ft.Row([ft.TextButton(database.exercise_restore_name_label(selected_ex), on_click=self.restore_dictionary_display_name), ft.ElevatedButton("Change Display Name", style=ft.ButtonStyle(bgcolor="teal700", color="white"), on_click=self.rename_dictionary_exercise, expand=True)], spacing=6),
+                    ft.Row([self.dict_restore_name_button, ft.ElevatedButton("Change Display Name", style=ft.ButtonStyle(bgcolor="teal700", color="white"), on_click=self.rename_dictionary_exercise, expand=True)], spacing=6),
                     ft.Divider(height=6, color="white10"),
                     ft.Row([ft.TextButton("Cancel", on_click=self.close_dict_dialog), ft.TextButton("Delete", icon="delete", icon_color="red400", on_click=self.delete_from_dictionary)], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
                 ], tight=True, spacing=6, scroll="auto")), content_padding=16, inset_padding=12)
@@ -2641,6 +2642,10 @@ class WorkoutTrackerApp:
             self.page.update()
 
     def on_dict_ex_change(self, e):
+        selected_ex = self.dict_dropdown.value
+        if hasattr(self, "dict_restore_name_button"):
+            self.dict_restore_name_button.text = database.exercise_restore_name_label(selected_ex) if selected_ex else "Restore Exercise Name"
+            self.dict_restore_name_button.disabled = not bool(selected_ex)
         selected_ex = self.dict_dropdown.value
         if selected_ex in self.current_dict_mapping:
             self.dict_cat_dropdown.value = self.current_dict_mapping[selected_ex]
@@ -6961,5 +6966,5 @@ async def main(page:ft.Page):
  try:
   page.add(build_startup_splash());page.update();await asyncio.sleep(1.44);page.clean();page.padding=6;app=WorkoutTrackerApp(page);page.update()
  except Exception:
-  err=traceback.format_exc();page.clean();page.padding=6;page.add(ft.Text(f"CRASH:\n\n{err}",color="red",size=10));page.update()
+  err=traceback.format_exc();diag=database.startup_diagnostics();page.clean();page.padding=6;page.add(ft.Text(f"CRASH:\n\n{err}\n\nSTARTUP DIAGNOSTICS:\n{json.dumps(diag, sort_keys=True)}",color="red",size=10));page.update()
 ft.app(target=main,assets_dir="assets")
