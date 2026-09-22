@@ -880,6 +880,22 @@ class ExerciseCard(ft.Card):
         else:
             lines.append("No prior completed set data was available, so the stored session target is being used.")
 
+        # Explain the visible target owner before daily readiness detail.
+        draft_sets = self.app.sets.get(self.db_id, [])
+        for index, draft in enumerate(draft_sets[:6], start=1):
+            weight_source = str(draft.get("w_source", "target"))
+            reps_source = str(draft.get("r_source", "target"))
+            normal = self.normal_set_targets[index-1] if index-1 < len(self.normal_set_targets) else {"w": self.tgt_w, "r": self.tgt_r}
+            today = self.set_targets[index-1] if index-1 < len(self.set_targets) else normal
+            if weight_source == "user" or reps_source == "user":
+                lines.append(f"Set {index} ownership: User override. Manual weight or reps are preserved until changed or cleared.")
+            elif reps_source == "weight_derived":
+                lines.append(f"Set {index} ownership: Weight-derived reps. Entering a weight adjusted reps to preserve approximately the same target effort.")
+            elif today != normal:
+                lines.append(f"Set {index} ownership: Readiness-adjusted target. Today {today['w']:g} x {today['r']}; normal trajectory {normal['w']:g} x {normal['r']}.")
+            else:
+                lines.append(f"Set {index} ownership: Normal progression target {normal['w']:g} x {normal['r']}.")
+
         if self.context and self.context.get("readiness_logged") and self.status == STATUS_PENDING and self.app.current_week != "Deload":
             normal = self.normal_set_targets[0] if self.normal_set_targets else {"w": self.tgt_w, "r": self.tgt_r}
             today = self.set_targets[0] if self.set_targets else normal
@@ -2628,7 +2644,7 @@ class WorkoutTrackerApp:
                     ft.Divider(height=6, color="white10"), self.dict_rename_field,
                     ft.Row([self.dict_restore_name_button, ft.ElevatedButton("Change Display Name", style=ft.ButtonStyle(bgcolor="teal700", color="white"), on_click=self.rename_dictionary_exercise, expand=True)], spacing=6),
                     ft.Divider(height=6, color="white10"),
-                    ft.Row([ft.TextButton("Cancel", on_click=self.close_dict_dialog), ft.TextButton("Delete", icon="delete", icon_color="red400", on_click=self.delete_from_dictionary)], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+                    ft.Row([ft.TextButton("Cancel", on_click=self.close_dict_dialog), ft.TextButton("Delete", icon="delete", icon_color="red400", on_click=self.confirm_delete_dictionary_exercise)], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
                 ], tight=True, spacing=6, scroll="auto")), content_padding=16, inset_padding=12)
             self.safe_open(self.dict_dialog)
 
@@ -3369,23 +3385,42 @@ class WorkoutTrackerApp:
         self.safe_open(dialog)
 
     def open_canonical_exercise_browser(self,e=None):
+        entries=database.exercise_catalog_browser_entries()
         query=ft.TextField(label='Search name, category, or movement',prefix_icon=ft.Icons.SEARCH)
-        equipment=ft.Dropdown(label='Equipment',value='All',options=[ft.dropdown.Option('All')]+[ft.dropdown.Option(x) for x in sorted({x.get('equipment','Other') for x in BUILTIN_EXERCISE_CATALOG})])
+        equipment_values=sorted({str(x.get('equipment') or 'Other') for x in entries})
+        equipment=ft.Dropdown(label='Equipment',value='All',options=[ft.dropdown.Option('All')]+[ft.dropdown.Option(x) for x in equipment_values])
         favorites_only=ft.Switch(label='Favorites only',value=False)
-        results=ft.Column(scroll='auto',expand=True,spacing=4)
+        results=ft.ListView(expand=True,spacing=4,padding=0)
+        summary=ft.Text(database.exercise_catalog_summary(entries),size=9,color='cyan200')
         def refresh(ev=None):
-            fav=favorite_exercise_ids();q=(query.value or '').lower();eq=equipment.value
-            rows=[x for x in BUILTIN_EXERCISE_CATALOG if (eq=='All' or x.get('equipment')==eq) and (not q or q in (x['name']+' '+x['category']+' '+x['pattern']).lower()) and (not favorites_only.value or x['id'] in fav)]
-            rows.sort(key=lambda x:(x['id'] not in fav,x['category'],x['name']));results.controls.clear()
-            for x in rows:
-                starred=x['id'] in fav
-                def toggle(event,cid=x['id'],state=starred):set_exercise_favorite(cid,not state);refresh(True)
-                results.controls.append(ft.Container(content=ft.Row([ft.IconButton(ft.Icons.STAR if starred else ft.Icons.STAR_BORDER,on_click=toggle,tooltip='Remove favorite' if starred else 'Add favorite'),ft.Column([ft.Text(x['name'],weight='bold',size=11),ft.Text(f"{x['category']} • {x['pattern']} • {x['equipment']}",size=9,color='white54')],expand=True,spacing=0)],spacing=3),bgcolor='white10',padding=4,border_radius=6))
+            fav=favorite_exercise_ids();q=(query.value or '').strip().lower();eq=equipment.value
+            rows=[]
+            for x in entries:
+                searchable=' '.join(str(x.get(k) or '') for k in ('name','stable_name','category','family_label','pattern','equipment')).lower()
+                favorite=x.get('catalog_id') in fav if x.get('catalog_id') else False
+                if eq!='All' and x.get('equipment')!=eq:continue
+                if q and q not in searchable:continue
+                if favorites_only.value and not favorite:continue
+                rows.append((x,favorite))
+            rows.sort(key=lambda pair:(not pair[1],pair[0]['category'],pair[0]['name'].lower()))
+            results.controls.clear()
+            for x,starred in rows:
+                if x['source']=='built_in':
+                    def toggle(event,cid=x['catalog_id'],state=starred):set_exercise_favorite(cid,not state);refresh(True)
+                    leading=ft.IconButton(ft.Icons.STAR if starred else ft.Icons.STAR_BORDER,on_click=toggle,tooltip='Remove favorite' if starred else 'Add favorite')
+                else:
+                    leading=ft.Icon(ft.Icons.PERSON_OUTLINE,color='amber200',size=22)
+                source='My Exercise' if x['source']=='custom' else 'Built-in'
+                results.controls.append(ft.Container(content=ft.Row([leading,ft.Column([ft.Row([ft.Text(x['name'],weight='bold',size=11,expand=True),ft.Text(source,size=8,color='amber200' if x['source']=='custom' else 'cyan200')]),ft.Text(f"{x['category']} • {x['family_label']} • {x['equipment']}",size=9,color='white54')],expand=True,spacing=0)],spacing=3),bgcolor='amber900' if x['source']=='custom' else 'white10',padding=4,border_radius=6))
+            if not rows:results.controls.append(ft.Text('No matching built-in or custom exercises.',size=10,color='white54'))
             if ev:
                 try:results.update()
-                except:pass
+                except Exception:pass
         query.on_change=refresh;equipment.on_select=refresh;favorites_only.on_change=refresh;refresh()
-        dialog=ft.AlertDialog(title=ft.Text('Standard Exercise Catalog'),content=ft.Container(width=430,height=560,content=ft.Column([query,ft.Row([equipment,favorites_only]),ft.Text('Favorites appear first in this catalog and are saved for future Architect, add, and replacement workflows.',size=9,color='cyan200'),results],expand=True)),actions=[ft.TextButton('Close',on_click=lambda ev:self.safe_close(dialog))],inset_padding=10)
+        page_height=float(getattr(self.page,'height',0) or 720)
+        content_height=max(320,min(560,page_height-170))
+        body=ft.Column([summary,query,ft.Row([equipment,favorites_only]),ft.Text('Built-in favorites remain available for Architect, add, and replacement workflows. My Exercises use the same searchable catalog source.',size=9,color='cyan200'),ft.Container(content=results,expand=True,clip_behavior=ft.ClipBehavior.HARD_EDGE)],expand=True,spacing=6)
+        dialog=ft.AlertDialog(title=ft.Text('Standard Exercise Catalog'),content=ft.Container(width=430,height=content_height,content=body,clip_behavior=ft.ClipBehavior.HARD_EDGE),actions=[ft.TextButton('Close',on_click=lambda ev:self.safe_close(dialog))],inset_padding=10)
         self.safe_open(dialog)
 
     def open_guided_architect(self,e=None,preselected_template=None):
@@ -3570,17 +3605,47 @@ class WorkoutTrackerApp:
         self.close_actions_menu()
         if not self.show_add_form: self.toggle_add_exercise_form(None)
         
-    def delete_from_dictionary(self, e):
+    def confirm_delete_dictionary_exercise(self, e=None):
         target = self.dict_dropdown.value
-        if not target: return
-        with get_db() as conn:
-            cursor = conn.cursor()
-            cursor.execute("DELETE FROM exercise_dict WHERE name = ?", (target,))
-            conn.commit()
-            
+        if not target:
+            self.show_snackbar("Select an exercise first.", "red300")
+            return
+        usage = database.exercise_usage_summary(target)
+        visible = database.exercise_display_name(target)
+        if usage.get("catalog_id") or usage.get("identity_status") != "intentional_custom":
+            self.show_snackbar("Canonical exercises cannot be deleted. Restore the canonical name or change only the display name.", "amber300")
+            return
+        blocking = []
+        if usage.get("pending_sessions"):
+            blocking.append(f"{usage['pending_sessions']} pending workout placement(s)")
+        if usage.get("blueprint_references"):
+            blocking.append(f"{usage['blueprint_references']} future-plan reference(s)")
+        if blocking:
+            body = "Deletion is blocked until these uses are removed:\n\n• " + "\n• ".join(blocking)
+            dialog = ft.AlertDialog(title=ft.Text("Cannot remove exercise", weight="bold"), content=ft.Text(body), actions=[ft.TextButton("Close", on_click=lambda ev:self.safe_close(dialog))])
+            self.safe_open(dialog)
+            return
+        history_note = f"\n\nCompleted workout history preserved: {usage.get('completed_sessions',0)} session(s)." if usage.get("completed_sessions") else ""
+        dialog = ft.AlertDialog(
+            title=ft.Text(f"Remove {visible}?", weight="bold"),
+            content=ft.Text("This removes the exercise from My Exercises and new-workout selectors. Completed history is not deleted." + history_note),
+            actions=[ft.TextButton("Cancel", on_click=lambda ev:self.safe_close(dialog)), ft.ElevatedButton("Remove from My Exercises", on_click=lambda ev:self.delete_from_dictionary(ev, dialog), style=ft.ButtonStyle(bgcolor="red700", color="white"))],
+        )
+        self.safe_open(dialog)
+
+    def delete_from_dictionary(self, e=None, dialog=None):
+        target = self.dict_dropdown.value
+        if not target:
+            return
+        try:
+            usage = database.delete_custom_exercise_definition(target)
+        except Exception as error:
+            self.show_snackbar(str(error), "red300")
+            return
+        if dialog is not None:
+            self.safe_close(dialog)
         self.close_dict_dialog()
-        self.show_snackbar(f"{target} removed from dictionary.", "green300")
-        
+        self.show_snackbar(f"{database.exercise_display_name(target)} removed from My Exercises. Completed history preserved: {usage.get('completed_sessions',0)}.", "green300")
         self.build_ui_shell()
         self.rebuild_navigation_headers()
         self.rebuild_entire_display()
@@ -6375,30 +6440,28 @@ class WorkoutTrackerApp:
         self.show_snackbar(f"Custom Meso {new_meso_num} Stamped Successfully!", "green300")
 
     def open_catalog_browser(self, e=None):
-        try: self.close_actions_menu()
-        except Exception: pass
-        search=ft.TextField(label="Search catalog",hint_text="Name, category, family, or equipment",text_size=12)
-        results=ft.Column(scroll="auto",spacing=5)
+        try:self.close_actions_menu()
+        except Exception:pass
         entries=database.exercise_catalog_browser_entries()
-        built_in_count=sum(x["source"]=="built_in" for x in entries)
-        custom_count=sum(x["source"]=="custom" for x in entries)
-        summary=ft.Text(f"{built_in_count} built-in definitions • {custom_count} custom exercises",size=9,color="cyan200")
+        search=ft.TextField(label='Search catalog',hint_text='Name, category, family, or equipment',text_size=12)
+        results=ft.ListView(expand=True,spacing=5,padding=0)
+        summary=ft.Text(database.exercise_catalog_summary(entries),size=9,color='cyan200')
         def render(ev=None):
-            q=str(search.value or "").strip().lower();results.controls.clear()
-            items=[]
+            q=str(search.value or '').strip().lower();results.controls.clear();items=[]
             for x in entries:
-                searchable=" ".join(str(x.get(k) or "") for k in ("name","stable_name","category","family_label","equipment")).lower()
+                searchable=' '.join(str(x.get(k) or '') for k in ('name','stable_name','category','family_label','pattern','equipment')).lower()
                 if not q or q in searchable:items.append(x)
-            items.sort(key=lambda x:(x["source"]!="custom",str(x["name"]).lower()) if q else (x["source"]=="custom",str(x["name"]).lower()))
-            for x in items[:80]:
-                source_label="My Exercise" if x["source"]=="custom" else "Built-in"
-                identity=(f" • original: {x['stable_name']}" if x["source"]=="custom" and x["name"]!=x["stable_name"] else "")
-                results.controls.append(ft.Container(content=ft.Column([ft.Row([ft.Text(x["name"],size=11,weight="bold",expand=True),ft.Text(source_label,size=8,color="amber200" if x["source"]=="custom" else "cyan200")]),ft.Text(f"{x['category']} • {x['family_label']} • {x['equipment']} • {x.get('angle','Not specified')}{identity}",size=9,color="white54")],spacing=2),bgcolor="amber900" if x["source"]=="custom" else "white10",padding=7,border_radius=7))
-            if not items:results.controls.append(ft.Text("No matching built-in or custom exercises.",size=10,color="white54"))
-            try: results.update()
-            except Exception: pass
+            items.sort(key=lambda x:(x['source']!='custom',x['name'].lower()) if q else (x['source']=='custom',x['name'].lower()))
+            for x in items:
+                source='My Exercise' if x['source']=='custom' else 'Built-in'
+                results.controls.append(ft.Container(content=ft.Column([ft.Row([ft.Text(x['name'],size=11,weight='bold',expand=True),ft.Text(source,size=8,color='amber200' if x['source']=='custom' else 'cyan200')]),ft.Text(f"{x['category']} • {x['family_label']} • {x['equipment']} • {x['angle']}",size=9,color='white54')],spacing=2),bgcolor='amber900' if x['source']=='custom' else 'white10',padding=7,border_radius=7))
+            if not items:results.controls.append(ft.Text('No matching built-in or custom exercises.',size=10,color='white54'))
+            if ev:
+                try:results.update()
+                except Exception:pass
         search.on_change=render;render()
-        dialog=ft.AlertDialog(title=ft.Text("Exercise Catalog",weight="bold"),content=ft.Container(width=390,height=500,content=ft.Column([summary,search,results],expand=True)),actions=[ft.TextButton("Close",on_click=lambda ev:self.safe_close(dialog))])
+        page_height=float(getattr(self.page,'height',0) or 720);content_height=max(300,min(520,page_height-170))
+        dialog=ft.AlertDialog(title=ft.Text('Exercise Catalog',weight='bold'),content=ft.Container(width=390,height=content_height,clip_behavior=ft.ClipBehavior.HARD_EDGE,content=ft.Column([summary,search,ft.Container(content=results,expand=True,clip_behavior=ft.ClipBehavior.HARD_EDGE)],expand=True)),actions=[ft.TextButton('Close',on_click=lambda ev:self.safe_close(dialog))],inset_padding=10)
         self.safe_open(dialog)
 
     def open_guided_exercise_creation(self,name,category,movement_type,on_created):
@@ -6976,5 +7039,5 @@ async def main(page:ft.Page):
  try:
   page.add(build_startup_splash());page.update();await asyncio.sleep(1.44);page.clean();page.padding=6;app=WorkoutTrackerApp(page);page.update()
  except Exception:
-  err=traceback.format_exc();diag=database.startup_diagnostics();page.clean();page.padding=6;page.add(ft.Text(f"CRASH:\n\n{err}\n\nSTARTUP DIAGNOSTICS:\n{json.dumps(diag, sort_keys=True)}",color="red",size=10));page.update()
+  err=traceback.format_exc();page.clean();page.padding=6;page.add(ft.Text(f"CRASH:\n\n{err}",color="red",size=10));page.update()
 ft.app(target=main,assets_dir="assets")

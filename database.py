@@ -1763,47 +1763,85 @@ def revision_change_summary(snapshot,revised_rows):
         if old!=new:changes.append(f"set {index+1}: {old[0]}x{old[1]}@{old[2]}->{new[0]}x{new[1]}@{new[2]}")
     return "; ".join(changes) if changes else "no value changes"
 
-# --- 1.81 UNIFIED CATALOG BROWSING ---
+# --- 1.81.1 UNIFIED EXERCISE CATALOG SOURCE ---
 def exercise_catalog_browser_entries():
-    """Return built-in definitions plus user-created unlinked exercises.
-
-    Stable exercise keys remain authoritative. Personalized display names are
-    presentation-only, and custom rows are never promoted to canonical items.
-    """
+    """One read model for every catalog browser; canonical and custom stay distinct."""
     entries=[]
-    for item in BUILTIN_EXERCISE_CATALOG:
-        entries.append({
-            "key":item["name"], "name":item["name"], "stable_name":item["name"],
-            "category":item.get("category") or "General",
-            "family":item.get("family") or "general",
-            "family_label":movement_family_label(item.get("family") or "general"),
-            "equipment":item.get("equipment") or "Other",
-            "angle":item.get("angle") or ANGLE_NOT_SPECIFIED,
-            "source":"built_in", "catalog_id":item.get("id"),
-        })
-    with get_db() as conn:
-        rows=conn.execute("""SELECT name,COALESCE(NULLIF(TRIM(display_name),''),name),
-                            COALESCE(category,'General'),COALESCE(movement_family,movement_pattern,'General'),
-                            COALESCE(equipment,'Other'),COALESCE(angle,'Not specified'),identity_status
-                     FROM exercise_dict WHERE catalog_id IS NULL ORDER BY COALESCE(NULLIF(TRIM(display_name),''),name),name""").fetchall()
-    for stable,display,category,family,equipment,angle,status in rows:
-        entries.append({
-            "key":stable, "name":display, "stable_name":stable,
-            "category":category, "family":family,
-            "family_label":movement_family_label(family), "equipment":equipment,
-            "angle":angle, "source":"custom", "catalog_id":None,
-            "identity_status":status or "intentional_custom",
-        })
+    for x in BUILTIN_EXERCISE_CATALOG:
+        entries.append({"key":x["name"],"name":x["name"],"stable_name":x["name"],"category":x.get("category") or "General","family_label":movement_family_label(x.get("family") or x.get("pattern") or "General"),"pattern":x.get("pattern") or movement_family_label(x.get("family") or "General"),"equipment":x.get("equipment") or "Other","angle":x.get("angle") or ANGLE_NOT_SPECIFIED,"source":"built_in","catalog_id":x.get("id")})
+    with get_db() as c:
+        rows=c.execute("""SELECT name,COALESCE(NULLIF(TRIM(display_name),''),name),COALESCE(category,'General'),COALESCE(movement_family,movement_pattern,'General'),COALESCE(equipment,'Other'),COALESCE(angle,'Not specified') FROM exercise_dict WHERE catalog_id IS NULL ORDER BY COALESCE(NULLIF(TRIM(display_name),''),name),name""").fetchall()
+    for stable,display,category,family,equipment,angle in rows:
+        entries.append({"key":stable,"name":display,"stable_name":stable,"category":category,"family_label":movement_family_label(family),"pattern":movement_family_label(family),"equipment":equipment,"angle":angle,"source":"custom","catalog_id":None})
     return entries
 
-# --- 1.80 STARTUP AND LIFECYCLE DIAGNOSTICS ---
-def startup_diagnostics():
-    """Return privacy-safe startup health without exposing workout contents."""
-    report={"app_version":APP_VERSION,"schema_expected":DATABASE_SCHEMA_VERSION,"database_path_present":bool(DB_PATH),"integrity":"unavailable","schema_stored":None,"error":None}
-    try:
-        with get_db() as conn:
-            report["integrity"]=conn.execute("PRAGMA integrity_check").fetchone()[0]
-            row=conn.execute("SELECT setting_value FROM user_settings WHERE setting_key='schema_version'").fetchone()
-            report["schema_stored"]=int(row[0]) if row and str(row[0]).isdigit() else (row[0] if row else None)
-    except Exception as exc:report["error"]=f"{type(exc).__name__}: {str(exc)[:160]}"
-    return report
+def exercise_catalog_summary(entries=None):
+    entries=entries if entries is not None else exercise_catalog_browser_entries()
+    builtins=sum(x.get("source")=="built_in" for x in entries);custom=sum(x.get("source")=="custom" for x in entries)
+    return f"{builtins} built-in definitions • {custom} custom exercise{'s' if custom != 1 else ''}"
+
+
+# --- 1.82 EXERCISE MANAGEMENT SAFETY ---
+def exercise_usage_summary(exercise_name):
+    """Return privacy-safe usage counts without changing stable identity."""
+    stable = str(exercise_name or "").strip()
+    if not stable:
+        return {"exists": False, "catalog_id": None, "identity_status": None,
+                "completed_sessions": 0, "pending_sessions": 0,
+                "other_sessions": 0, "blueprint_references": 0, "can_delete": False}
+    with get_db() as c:
+        identity = c.execute(
+            "SELECT catalog_id, identity_status FROM exercise_dict WHERE name=?",
+            (stable,),
+        ).fetchone()
+        counts = c.execute(
+            """SELECT
+                   SUM(CASE WHEN status='Completed' THEN 1 ELSE 0 END),
+                   SUM(CASE WHEN status='Pending' THEN 1 ELSE 0 END),
+                   SUM(CASE WHEN status NOT IN ('Completed','Pending') THEN 1 ELSE 0 END)
+               FROM workout_sessions WHERE exercise=?""",
+            (stable,),
+        ).fetchone()
+        blueprint_rows = c.execute(
+            "SELECT blueprint_json FROM meso_configs WHERE blueprint_json IS NOT NULL AND blueprint_json<>''"
+        ).fetchall()
+    blueprint_references = 0
+    for (payload,) in blueprint_rows:
+        try:
+            data = json.loads(payload)
+            def count_value(value):
+                if isinstance(value, dict):
+                    return sum((1 if key in ('exercise','name') and item == stable else 0) + count_value(item) for key,item in value.items())
+                if isinstance(value, list):
+                    return sum(count_value(item) for item in value)
+                return 0
+            blueprint_references += count_value(data)
+        except Exception:
+            if stable in str(payload):
+                blueprint_references += 1
+    catalog_id, identity_status = identity if identity else (None, None)
+    completed, pending, other = (int(value or 0) for value in (counts or (0,0,0)))
+    can_delete = bool(identity and not catalog_id and identity_status == 'intentional_custom' and pending == 0 and blueprint_references == 0)
+    return {"exists": bool(identity), "catalog_id": catalog_id,
+            "identity_status": identity_status, "completed_sessions": completed,
+            "pending_sessions": pending, "other_sessions": other,
+            "blueprint_references": blueprint_references, "can_delete": can_delete}
+
+
+def delete_custom_exercise_definition(exercise_name):
+    """Remove only an intentional custom definition; preserve completed history."""
+    stable = str(exercise_name or "").strip()
+    usage = exercise_usage_summary(stable)
+    if not usage["exists"]:
+        raise ValueError("Exercise definition not found.")
+    if usage["catalog_id"] or usage["identity_status"] != "intentional_custom":
+        raise ValueError("Only intentional custom exercises can be removed from My Exercises.")
+    if usage["pending_sessions"] or usage["blueprint_references"]:
+        raise ValueError("Remove pending workouts and future plan references before deleting this exercise.")
+    with get_db() as c:
+        c.execute("BEGIN IMMEDIATE")
+        c.execute("DELETE FROM exercise_aliases WHERE exercise_name=?", (stable,))
+        c.execute("DELETE FROM exercise_dict WHERE name=?", (stable,))
+        c.commit()
+    record_audit("custom_exercise_deleted", f"exercise={stable};completed_history_preserved={usage['completed_sessions']}")
+    return usage
