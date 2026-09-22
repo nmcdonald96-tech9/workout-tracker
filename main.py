@@ -409,9 +409,13 @@ class ExerciseCard(ft.Card):
                     w_str = str(sw) if sw is not None and str(sw) != "None" else ""
                     r_str = str(sr) if sr is not None and str(sr) != "None" else ""
                     rpe_str = str(srpe) if srpe is not None and str(srpe) != "None" else ""
-                    if stw is not None and strp is not None and idx < len(self.set_targets):
+                    # Completed sets keep the targets they were performed against.
+                    # Pending sets intentionally keep the freshly calculated targets
+                    # above so readiness changes cannot be replaced by stale draft
+                    # target snapshots loaded from workout_sets.
+                    if bool(is_complete) and stw is not None and strp is not None and idx < len(self.set_targets):
                         self.set_targets[idx] = {"w": float(stw), "r": int(strp)}
-                    if normal_tw is not None and normal_tr is not None and idx < len(self.normal_set_targets):
+                    if bool(is_complete) and normal_tw is not None and normal_tr is not None and idx < len(self.normal_set_targets):
                         self.normal_set_targets[idx] = {"w": float(normal_tw), "r": int(normal_tr)}
                     self.app.sets[self.db_id].append({
                         "w": w_str, "r": r_str, "rpe": rpe_str, "rest": s_rest,
@@ -427,6 +431,21 @@ class ExerciseCard(ft.Card):
                         "w": str(target["w"]), "r": str(target["r"]), "rpe": "", "rest": None,
                         "completed_at": None, "done": False, "w_source": "target", "r_source": "target"
                     })
+
+        # Explicit field ownership resolves readiness versus set-specific
+        # progression without comparing numbers. Target-owned pending fields
+        # follow today's current target; user-owned and weight-derived fields
+        # remain exactly as entered. This also runs for cached in-memory drafts,
+        # not only drafts freshly loaded from the database.
+        if self.status == STATUS_PENDING:
+            for idx, draft in enumerate(self.app.sets.get(self.db_id, [])):
+                if bool(draft.get("done")) or idx >= len(self.set_targets):
+                    continue
+                current_target = self.set_targets[idx]
+                if str(draft.get("w_source", "target")) == "target":
+                    draft["w"] = str(current_target["w"])
+                if str(draft.get("r_source", "target")) == "target":
+                    draft["r"] = str(current_target["r"])
 
         # --- UI CONSTRUCTION ---
         if self.status == STATUS_COMPLETED:
