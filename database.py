@@ -210,6 +210,8 @@ def init_and_seed_db():
             "progression_reason_code": "TEXT",
             "progression_reason": "TEXT",
             "progression_settings_snapshot": "TEXT",
+            "weight_source": "TEXT DEFAULT 'target'",
+            "reps_source": "TEXT DEFAULT 'target'",
         }
         for column_name, column_type in snapshot_columns.items():
             if column_name not in ws_cols:

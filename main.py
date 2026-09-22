@@ -272,7 +272,7 @@ class ExerciseCard(ft.Card):
                 """, (self.exercise, self.app.current_meso))
                 past_records = cursor.fetchall()
                 
-                cursor.execute("SELECT weight, reps, rpe, rest_seconds, target_weight, target_reps, normal_target_weight, normal_target_reps, completed_at, is_complete FROM workout_sets WHERE session_id = ? ORDER BY set_number ASC", (self.db_id,))
+                cursor.execute("SELECT weight, reps, rpe, rest_seconds, target_weight, target_reps, normal_target_weight, normal_target_reps, completed_at, is_complete, COALESCE(weight_source,'target'), COALESCE(reps_source,'target') FROM workout_sets WHERE session_id = ? ORDER BY set_number ASC", (self.db_id,))
                 saved_sets = cursor.fetchall()
                 
                 cursor.execute("SELECT setup_notes FROM exercise_dict WHERE name = ?", (self.exercise,))
@@ -405,7 +405,7 @@ class ExerciseCard(ft.Card):
         if self.db_id not in self.app.sets:
             self.app.sets[self.db_id] = []
             if saved_sets:
-                for idx, (sw, sr, srpe, s_rest, stw, strp, normal_tw, normal_tr, completed_at, is_complete) in enumerate(saved_sets):
+                for idx, (sw, sr, srpe, s_rest, stw, strp, normal_tw, normal_tr, completed_at, is_complete, weight_source, reps_source) in enumerate(saved_sets):
                     w_str = str(sw) if sw is not None and str(sw) != "None" else ""
                     r_str = str(sr) if sr is not None and str(sr) != "None" else ""
                     rpe_str = str(srpe) if srpe is not None and str(srpe) != "None" else ""
@@ -415,7 +415,8 @@ class ExerciseCard(ft.Card):
                         self.normal_set_targets[idx] = {"w": float(normal_tw), "r": int(normal_tr)}
                     self.app.sets[self.db_id].append({
                         "w": w_str, "r": r_str, "rpe": rpe_str, "rest": s_rest,
-                        "completed_at": completed_at, "done": bool(is_complete)
+                        "completed_at": completed_at, "done": bool(is_complete),
+                        "w_source": weight_source or "target", "r_source": reps_source or "target"
                     })
             else:
                 num_sets = len(recent_session_sets) if recent_session_sets else default_sets
@@ -424,7 +425,7 @@ class ExerciseCard(ft.Card):
                     target = self.set_targets[idx]
                     self.app.sets[self.db_id].append({
                         "w": str(target["w"]), "r": str(target["r"]), "rpe": "", "rest": None,
-                        "completed_at": None, "done": False
+                        "completed_at": None, "done": False, "w_source": "target", "r_source": "target"
                     })
 
         # --- UI CONSTRUCTION ---
@@ -1107,10 +1108,11 @@ class ExerciseCard(ft.Card):
                     rest_secs = global_set_gap(self.app.current_meso,self.app.current_week,self.app.current_day,completed_at,self.db_id,i) if done and completed_at else None
                     cursor.execute("""
                         INSERT INTO workout_sets
-                            (session_id, set_number, weight, reps, rpe, rest_seconds, target_weight, target_reps, normal_target_weight, normal_target_reps, completed_at, is_complete)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            (session_id, set_number, weight, reps, rpe, rest_seconds, target_weight, target_reps, normal_target_weight, normal_target_reps, completed_at, is_complete, weight_source, reps_source)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, (self.db_id, i, w_val, r_val, rpe_val, rest_secs,
-                          float(target["w"]), int(target["r"]), float(normal_target["w"]), int(normal_target["r"]), completed_at, done))
+                          float(target["w"]), int(target["r"]), float(normal_target["w"]), int(normal_target["r"]), completed_at, done,
+                          str(s_data.get("w_source", "target")), str(s_data.get("r_source", "target"))))
                 conn.commit()
         except Exception as e:
             print(f"Error autosaving pending sets: {e}")
@@ -1121,7 +1123,7 @@ class ExerciseCard(ft.Card):
         if self.db_id not in self.app.sets: return
         new_idx = len(self.app.sets[self.db_id])
         target = self.set_targets[new_idx] if new_idx < len(self.set_targets) else {"w": self.tgt_w, "r": self.tgt_r}
-        self.app.sets[self.db_id].append({"w": str(target["w"]), "r": str(target["r"]), "rpe": "", "rest": None, "completed_at": None, "done": False})
+        self.app.sets[self.db_id].append({"w": str(target["w"]), "r": str(target["r"]), "rpe": "", "rest": None, "completed_at": None, "done": False, "w_source": "target", "r_source": "target"})
         self.autosave_pending_sets() # Force save draft
         self.app.rebuild_entire_display()
 
