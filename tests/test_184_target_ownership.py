@@ -13,14 +13,14 @@ def valid_rpe(value):
 
 
 def test_184_version_and_release_notes():
-    assert 'APP_VERSION = "1.84.0"' in (ROOT / "constants.py").read_text(encoding="utf-8")
+    assert 'APP_VERSION = "1.85.0"' in (ROOT / "constants.py").read_text(encoding="utf-8")
     assert (ROOT / "docs/releases/RELEASE_1.84.0.md").exists()
 
 
 def test_pending_target_ownership_is_explicit():
     text = (ROOT / "main.py").read_text(encoding="utf-8")
-    assert 'str(draft.get("w_source", "target")) == "target"' in text
-    assert 'str(draft.get("r_source", "target")) == "target"' in text
+    assert 'reconcile_pending_draft' in text
+    assert 'services.target_ownership_service' in text
     assert 'if bool(draft.get("done"))' in text
     assert 'if bool(is_complete) and stw is not None' in text
 
