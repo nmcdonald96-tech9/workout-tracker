@@ -25,6 +25,11 @@ from constants import *
 from exercise_catalog import BUILTIN_EXERCISE_CATALOG as CANONICAL_EXERCISES
 from onboarding_catalog import STARTER_TEMPLATES, EQUIPMENT as ONBOARDING_EQUIPMENT, EXPERIENCE_LEVELS, GOALS as ONBOARDING_GOALS, recommend_starter_template
 from database import *
+from services.target_ownership_service import (
+    apply_direct_edit, apply_weight_derived_reps, clear_override,
+    normalize_reps_source, normalize_weight_source, ownership_summary,
+    reconcile_pending_draft,
+)
 from services.progression_service import (
     calculate_set_specific_progression,
     classify_set_progression,
@@ -174,8 +179,16 @@ class ExerciseCard(ft.Card):
         def blur_handler(e):
             self.autosave_pending_sets()
 
+            if key_type == "rpe":
+                drafts = self.app.sets.get(self.db_id, [])
+                draft = drafts[set_idx] if set_idx < len(drafts) else {}
+                raw_rpe = str(draft.get("rpe", "")).strip()
+                if raw_rpe and self.normalize_rpe(raw_rpe) is None:
+                    self.app.show_snackbar("RPE must be 1 to 10 in 0.5 steps, such as 8 or 8.5.", "red300")
+                return
+
             if key_type != "w":
-                return  # reps/RPE blur: nothing downstream needs recomputing
+                return  # reps blur: nothing downstream needs recomputing
 
             if not hasattr(self, "set_targets") or set_idx >= len(self.set_targets):
                 return
@@ -202,9 +215,10 @@ class ExerciseCard(ft.Card):
                 return
 
             if raw_val in ("", ".", "-", "-."):
-                set_data["r"] = str(orig_r)
-                set_data["r_source"] = "target"
-                set_data.pop("derived_from_weight", None)
+                current_target = self.set_targets[set_idx]
+                updated = clear_override(set_data, "w", current_target)
+                updated = clear_override(updated, "r", current_target)
+                set_data.clear(); set_data.update(updated)
                 self.set_targets[set_idx]["r"] = orig_r
                 self.autosave_pending_sets()
                 self.app.pending_scroll_key = self.app.exercise_anchor_key(self.db_id)
@@ -231,9 +245,8 @@ class ExerciseCard(ft.Card):
                     int(resolved_meta.get("min_reps", 1)),
                     min(int(resolved_meta.get("max_reps", 50)), new_target_r),
                 )
-                set_data["r"] = str(new_target_r)
-                set_data["r_source"] = "weight_derived"
-                set_data["derived_from_weight"] = str(new_w)
+                updated = apply_weight_derived_reps(set_data, new_w, new_target_r)
+                set_data.clear(); set_data.update(updated)
                 self.set_targets[set_idx]["r"] = new_target_r
 
             # Rebuild regardless of whether the reps branch above fired --
@@ -420,7 +433,7 @@ class ExerciseCard(ft.Card):
                     self.app.sets[self.db_id].append({
                         "w": w_str, "r": r_str, "rpe": rpe_str, "rest": s_rest,
                         "completed_at": completed_at, "done": bool(is_complete),
-                        "w_source": weight_source or "target", "r_source": reps_source or "target"
+                        "w_source": normalize_weight_source(weight_source), "r_source": normalize_reps_source(reps_source)
                     })
             else:
                 num_sets = len(recent_session_sets) if recent_session_sets else default_sets
@@ -442,10 +455,9 @@ class ExerciseCard(ft.Card):
                 if bool(draft.get("done")) or idx >= len(self.set_targets):
                     continue
                 current_target = self.set_targets[idx]
-                if str(draft.get("w_source", "target")) == "target":
-                    draft["w"] = str(current_target["w"])
-                if str(draft.get("r_source", "target")) == "target":
-                    draft["r"] = str(current_target["r"])
+                self.app.sets[self.db_id][idx] = reconcile_pending_draft(
+                    draft, current_target, is_complete=False
+                )
 
         # --- UI CONSTRUCTION ---
         if self.status == STATUS_COMPLETED:
@@ -520,10 +532,9 @@ class ExerciseCard(ft.Card):
             if self.status == STATUS_PENDING and not bool(set_data.get("done")):
                 # Explicit ownership replaces numeric-value inference. Legacy pending
                 # drafts are target-owned unless this runtime recorded a user edit.
-                if set_data.get("w_source", "target") == "target":
-                    set_data["w"] = str(target["w"])
-                if set_data.get("r_source", "target") == "target":
-                    set_data["r"] = str(target["r"])
+                resolved_draft = reconcile_pending_draft(set_data, target, is_complete=False)
+                set_data.clear()
+                set_data.update(resolved_draft)
                 set_data["_display_target_w"] = target["w"]
                 set_data["_display_target_r"] = target["r"]
             w_hint = str(target["w"])
@@ -572,7 +583,7 @@ class ExerciseCard(ft.Card):
 
             rpe_f = ft.TextField(
                 value=set_data["rpe"],
-                label="RPE 1-10",
+                label="RPE 1-10 • 0.5 steps",
                 hint_text=str(rpe_hint),
                 hint_style=ft.TextStyle(color="white54", size=12),
                 label_style=ft.TextStyle(color="cyan200", size=10, weight="bold"),
@@ -1101,9 +1112,11 @@ class ExerciseCard(ft.Card):
             raw_val = ev.control.value
             if self.db_id in self.app.sets and set_idx < len(self.app.sets[self.db_id]):
                 set_data = self.app.sets[self.db_id][set_idx]
-                set_data[key_type] = raw_val
                 if key_type in ("w", "r"):
-                    set_data[f"{key_type}_source"] = "user" if str(raw_val).strip() else "target"
+                    updated = apply_direct_edit(set_data, key_type, raw_val)
+                    set_data.clear(); set_data.update(updated)
+                else:
+                    set_data[key_type] = raw_val
                 self.autosave_pending_sets()
         return live_update_event
 
