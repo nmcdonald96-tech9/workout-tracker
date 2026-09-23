@@ -421,10 +421,8 @@ class ExerciseCard(ft.Card):
             loaded_drafts = []
             if saved_sets:
                 for idx, saved_row in enumerate(saved_sets):
-                    if len(saved_row) == 10:
-                        saved_row = (*saved_row, "target", "target")
-                    if len(saved_row) != 12:
-                        raise ValueError(f"Unexpected saved set row width: {len(saved_row)}")
+                    if len(saved_row) == 10: saved_row = (*saved_row, "target", "target")
+                    if len(saved_row) != 12: raise ValueError(f"Unexpected saved set row width: {len(saved_row)}")
                     sw, sr, srpe, s_rest, stw, strp, normal_tw, normal_tr, completed_at, is_complete, weight_source, reps_source = saved_row
                     w_str = str(sw) if sw is not None and str(sw) != "None" else ""
                     r_str = str(sr) if sr is not None and str(sr) != "None" else ""
@@ -591,7 +589,7 @@ class ExerciseCard(ft.Card):
 
             rpe_f = ft.TextField(
                 value=set_data["rpe"],
-                label="RPE 1-10 • 0.5 steps",
+                label="RPE",
                 hint_text=str(rpe_hint),
                 hint_style=ft.TextStyle(color="white54", size=12),
                 label_style=ft.TextStyle(color="cyan200", size=10, weight="bold"),
@@ -6881,18 +6879,11 @@ class WorkoutTrackerApp:
                 ], spacing=8), padding=8))
                 self.main_canvas.controls.append(wizard_card)
 
-            # One connection and one stable snapshot feed the entire workout render.
-            # Exercise cards no longer coordinate their own normal-path queries.
             with get_db() as conn:
-                workout_snapshot = load_workout_state(
-                    conn,
-                    meso_number=self.current_meso,
-                    week=self.current_week,
-                    day_of_week=self.current_day,
-                )
-            current_rows = list(workout_snapshot.current_rows)
-            self.last_workout_batch_ms = workout_snapshot.load_ms
-            self.last_workout_batch_queries = workout_snapshot.query_count
+                workout_snapshot = load_workout_state(conn,meso_number=self.current_meso,week=self.current_week,day_of_week=self.current_day)
+            current_rows=list(workout_snapshot.current_rows)
+            self.last_workout_batch_ms=workout_snapshot.load_ms
+            self.last_workout_batch_queries=workout_snapshot.query_count
 
             if not current_rows and pending_week_count > 0:
                 self.main_canvas.controls.append(
@@ -6965,12 +6956,7 @@ class WorkoutTrackerApp:
                     db_id, exercise, tgt_w, tgt_r, status, mov_type, db_cat, workout_order = row
                     
                     # Pack the batched data for this specific card
-                    ctx = workout_snapshot.card_context(
-                        db_id,
-                        exercise,
-                        db_cat,
-                        previous_week_order.get((db_cat, exercise)),
-                    )
+                    ctx = workout_snapshot.card_context(db_id,exercise,db_cat,previous_week_order.get((db_cat,exercise)))
                     
                     card = ExerciseCard(db_id, exercise, tgt_w, tgt_r, status, mov_type, self, context=ctx)
                     card.key = self.exercise_anchor_key(db_id)
