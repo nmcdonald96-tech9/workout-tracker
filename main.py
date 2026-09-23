@@ -26,6 +26,7 @@ from exercise_catalog import BUILTIN_EXERCISE_CATALOG as CANONICAL_EXERCISES
 from onboarding_catalog import STARTER_TEMPLATES, EQUIPMENT as ONBOARDING_EQUIPMENT, EXPERIENCE_LEVELS, GOALS as ONBOARDING_GOALS, recommend_starter_template
 from database import *
 from services.rpe_service import RPE_ERROR, normalize_rpe
+from services.workout_state_service import load_workout_state
 from services.target_ownership_service import (
     apply_direct_edit, apply_weight_derived_reps, clear_override,
     normalize_reps_source, normalize_weight_source, ownership_summary,
@@ -420,8 +421,6 @@ class ExerciseCard(ft.Card):
             loaded_drafts = []
             if saved_sets:
                 for idx, saved_row in enumerate(saved_sets):
-                    # Normal batched rows have 12 values. Legacy contexts with
-                    # 10 values safely default both fields to target ownership.
                     if len(saved_row) == 10:
                         saved_row = (*saved_row, "target", "target")
                     if len(saved_row) != 12:
@@ -452,8 +451,6 @@ class ExerciseCard(ft.Card):
                         "w": str(target["w"]), "r": str(target["r"]), "rpe": "", "rest": None,
                         "completed_at": None, "done": False, "w_source": "target", "r_source": "target"
                     })
-            # Publish only after all rows load. A failed rebuild cannot cache a
-            # misleading zero-set exercise card.
             self.app.sets[self.db_id] = loaded_drafts
 
         # Explicit field ownership resolves readiness versus set-specific
@@ -1418,6 +1415,8 @@ class WorkoutTrackerApp:
         self.context_collapsed = self.get_bool_setting("context_collapsed", False)
         self.nav_collapsed = self.get_bool_setting("nav_collapsed", True)
         self.last_rebuild_ms = None
+        self.last_workout_batch_ms = None
+        self.last_workout_batch_queries = None
         
         with get_db() as conn:
             cursor = conn.cursor()
@@ -2950,6 +2949,9 @@ class WorkoutTrackerApp:
             f"Lifetime product: {LIFETIME_PRODUCT_ID}",
             "Entitlement storage: separate from workout backups",
             f"Last workout rebuild: {self.last_rebuild_ms if self.last_rebuild_ms is not None else 'not measured'} ms",
+            f"Last workout batch load: {self.last_workout_batch_ms if self.last_workout_batch_ms is not None else 'not measured'} ms",
+            f"Last workout batch queries: {self.last_workout_batch_queries if self.last_workout_batch_queries is not None else 'not measured'}",
+            "Workout snapshot loader: one connection / stable render contract",
             "Next Week source: recurring blueprint/origin day",
             "Temporary schedule exceptions copied forward: no",
             "Rollover refresh: synchronized",
@@ -6879,69 +6881,18 @@ class WorkoutTrackerApp:
                 ], spacing=8), padding=8))
                 self.main_canvas.controls.append(wizard_card)
 
+            # One connection and one stable snapshot feed the entire workout render.
+            # Exercise cards no longer coordinate their own normal-path queries.
             with get_db() as conn:
-                cursor = conn.cursor()
-                cursor.execute(
-                    "SELECT id, exercise, target_weight, target_reps, status, movement_type, category, COALESCE(workout_order,id) "
-                    "FROM workout_sessions WHERE day_of_week = ? AND week = ? AND meso_number = ? "
-                    "ORDER BY category, CASE WHEN status = 'Pending' THEN 0 ELSE 1 END, COALESCE(workout_order,id), id",
-                    (self.current_day, self.current_week, self.current_meso)
+                workout_snapshot = load_workout_state(
+                    conn,
+                    meso_number=self.current_meso,
+                    week=self.current_week,
+                    day_of_week=self.current_day,
                 )
-                current_rows = cursor.fetchall()
-
-            # --- START DATA BATCHING ENGINE ---
-            with get_db() as conn:
-                cursor = conn.cursor()
-                
-                # Preserve list order for UI consistency
-                session_ids = [row[0] for row in current_rows]
-                exercises = list(dict.fromkeys([row[1] for row in current_rows]))
-                
-                pre_saved_sets = {sid: [] for sid in session_ids}
-                pre_past_records = {ex: [] for ex in exercises}
-                pre_notes = {ex: "" for ex in exercises}
-                pre_snap_bw = {sid: None for sid in session_ids}
-                readiness_logged = False
-                j_score, r_score = 5, 15
-                
-                if session_ids or exercises:
-                    cursor.execute("SELECT sleep, joints, drive FROM readiness_logs WHERE meso_number=? AND week=? AND day_of_week=?", (self.current_meso, self.current_week, self.current_day))
-                    r_row = cursor.fetchone()
-                    if r_row:
-                        readiness_logged = True
-                        j_score = r_row[1] if r_row[1] is not None else 5
-                        r_score = sum(v if v is not None else 5 for v in r_row[:3])
-                        
-                    if session_ids:
-                        placeholders = ",".join("?" for _ in session_ids)
-                        cursor.execute(f"SELECT session_id, weight, reps, rpe, rest_seconds, target_weight, target_reps, normal_target_weight, normal_target_reps, completed_at, is_complete, COALESCE(weight_source,'target'), COALESCE(reps_source,'target') FROM workout_sets WHERE session_id IN ({placeholders}) ORDER BY set_number ASC", session_ids)
-                        for sid, w, r, rpe, rest_secs, target_w, target_r, normal_w, normal_r, completed_at, is_complete, weight_source, reps_source in cursor.fetchall():
-                            pre_saved_sets[sid].append((w, r, rpe, rest_secs, target_w, target_r, normal_w, normal_r, completed_at, is_complete, weight_source, reps_source))
-                            
-                        cursor.execute(f"SELECT id, bodyweight_snapshot FROM workout_sessions WHERE id IN ({placeholders})", session_ids)
-                        for sid, snap in cursor.fetchall():
-                            pre_snap_bw[sid] = snap
-                            
-                    if exercises:
-                        placeholders = ",".join("?" for _ in exercises)
-                        cursor.execute(f"SELECT name, setup_notes FROM exercise_dict WHERE name IN ({placeholders})", exercises)
-                        for name, note in cursor.fetchall():
-                            pre_notes[name] = note if note else ""
-                            
-                        # ONE single optimized query for all past exercise records
-                        cursor.execute(f"""
-                            SELECT ws.exercise, ws.id, s.set_number, s.weight, s.reps, s.rpe, s.target_weight, s.target_reps, s.normal_target_weight, s.normal_target_reps 
-                            FROM workout_sets s 
-                            JOIN workout_sessions ws ON s.session_id = ws.id 
-                            WHERE ws.exercise IN ({placeholders}) 
-                              AND ws.meso_number = ? 
-                              AND ws.status = 'Completed'
-                            ORDER BY ws.date DESC, ws.id DESC, s.set_number ASC
-                        """, (*exercises, self.current_meso))
-                        
-                        for ex_name, sid, set_number, hw, hr, hrpe, target_w, target_r, normal_w, normal_r in cursor.fetchall():
-                            pre_past_records[ex_name].append((sid, set_number, hw, hr, hrpe, target_w, target_r, normal_w, normal_r))
-            # --- END DATA BATCHING ENGINE ---
+            current_rows = list(workout_snapshot.current_rows)
+            self.last_workout_batch_ms = workout_snapshot.load_ms
+            self.last_workout_batch_queries = workout_snapshot.query_count
 
             if not current_rows and pending_week_count > 0:
                 self.main_canvas.controls.append(
@@ -7014,17 +6965,12 @@ class WorkoutTrackerApp:
                     db_id, exercise, tgt_w, tgt_r, status, mov_type, db_cat, workout_order = row
                     
                     # Pack the batched data for this specific card
-                    ctx = {
-                        "readiness_logged": readiness_logged,
-                        "j_score": j_score,
-                        "r_score": r_score,
-                        "saved_sets": pre_saved_sets.get(db_id, []),
-                        "past_records": pre_past_records.get(exercise, []),
-                        "saved_note": pre_notes.get(exercise, ""),
-                        "snap_bw": pre_snap_bw.get(db_id, None),
-                        "category": db_cat,
-                        "previous_week_order": previous_week_order.get((db_cat, exercise)),
-                    }
+                    ctx = workout_snapshot.card_context(
+                        db_id,
+                        exercise,
+                        db_cat,
+                        previous_week_order.get((db_cat, exercise)),
+                    )
                     
                     card = ExerciseCard(db_id, exercise, tgt_w, tgt_r, status, mov_type, self, context=ctx)
                     card.key = self.exercise_anchor_key(db_id)
