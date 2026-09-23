@@ -417,9 +417,16 @@ class ExerciseCard(ft.Card):
         
         # --- INITIALIZE DICT ---
         if self.db_id not in self.app.sets:
-            self.app.sets[self.db_id] = []
+            loaded_drafts = []
             if saved_sets:
-                for idx, (sw, sr, srpe, s_rest, stw, strp, normal_tw, normal_tr, completed_at, is_complete, weight_source, reps_source) in enumerate(saved_sets):
+                for idx, saved_row in enumerate(saved_sets):
+                    # Normal batched rows have 12 values. Legacy contexts with
+                    # 10 values safely default both fields to target ownership.
+                    if len(saved_row) == 10:
+                        saved_row = (*saved_row, "target", "target")
+                    if len(saved_row) != 12:
+                        raise ValueError(f"Unexpected saved set row width: {len(saved_row)}")
+                    sw, sr, srpe, s_rest, stw, strp, normal_tw, normal_tr, completed_at, is_complete, weight_source, reps_source = saved_row
                     w_str = str(sw) if sw is not None and str(sw) != "None" else ""
                     r_str = str(sr) if sr is not None and str(sr) != "None" else ""
                     rpe_str = str(srpe) if srpe is not None and str(srpe) != "None" else ""
@@ -431,7 +438,7 @@ class ExerciseCard(ft.Card):
                         self.set_targets[idx] = {"w": float(stw), "r": int(strp)}
                     if bool(is_complete) and normal_tw is not None and normal_tr is not None and idx < len(self.normal_set_targets):
                         self.normal_set_targets[idx] = {"w": float(normal_tw), "r": int(normal_tr)}
-                    self.app.sets[self.db_id].append({
+                    loaded_drafts.append({
                         "w": w_str, "r": r_str, "rpe": rpe_str, "rest": s_rest,
                         "completed_at": completed_at, "done": bool(is_complete),
                         "w_source": normalize_weight_source(weight_source), "r_source": normalize_reps_source(reps_source)
@@ -441,10 +448,13 @@ class ExerciseCard(ft.Card):
                 num_sets = max(1, num_sets)
                 for idx in range(num_sets):
                     target = self.set_targets[idx]
-                    self.app.sets[self.db_id].append({
+                    loaded_drafts.append({
                         "w": str(target["w"]), "r": str(target["r"]), "rpe": "", "rest": None,
                         "completed_at": None, "done": False, "w_source": "target", "r_source": "target"
                     })
+            # Publish only after all rows load. A failed rebuild cannot cache a
+            # misleading zero-set exercise card.
+            self.app.sets[self.db_id] = loaded_drafts
 
         # Explicit field ownership resolves readiness versus set-specific
         # progression without comparing numbers. Target-owned pending fields
@@ -1018,8 +1028,6 @@ class ExerciseCard(ft.Card):
 
     @staticmethod
     def normalize_rpe(value):
-        # Compatibility wrapper for existing handlers. The contract itself is
-        # centralized so blur, completion, autosave, and final save cannot drift.
         return normalize_rpe(value)
 
     def make_set_done_handler(self, set_idx):
@@ -6906,9 +6914,9 @@ class WorkoutTrackerApp:
                         
                     if session_ids:
                         placeholders = ",".join("?" for _ in session_ids)
-                        cursor.execute(f"SELECT session_id, weight, reps, rpe, rest_seconds, target_weight, target_reps, normal_target_weight, normal_target_reps, completed_at, is_complete FROM workout_sets WHERE session_id IN ({placeholders}) ORDER BY set_number ASC", session_ids)
-                        for sid, w, r, rpe, rest_secs, target_w, target_r, normal_w, normal_r, completed_at, is_complete in cursor.fetchall():
-                            pre_saved_sets[sid].append((w, r, rpe, rest_secs, target_w, target_r, normal_w, normal_r, completed_at, is_complete))
+                        cursor.execute(f"SELECT session_id, weight, reps, rpe, rest_seconds, target_weight, target_reps, normal_target_weight, normal_target_reps, completed_at, is_complete, COALESCE(weight_source,'target'), COALESCE(reps_source,'target') FROM workout_sets WHERE session_id IN ({placeholders}) ORDER BY set_number ASC", session_ids)
+                        for sid, w, r, rpe, rest_secs, target_w, target_r, normal_w, normal_r, completed_at, is_complete, weight_source, reps_source in cursor.fetchall():
+                            pre_saved_sets[sid].append((w, r, rpe, rest_secs, target_w, target_r, normal_w, normal_r, completed_at, is_complete, weight_source, reps_source))
                             
                         cursor.execute(f"SELECT id, bodyweight_snapshot FROM workout_sessions WHERE id IN ({placeholders})", session_ids)
                         for sid, snap in cursor.fetchall():
