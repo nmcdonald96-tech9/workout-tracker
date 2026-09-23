@@ -25,6 +25,7 @@ from constants import *
 from exercise_catalog import BUILTIN_EXERCISE_CATALOG as CANONICAL_EXERCISES
 from onboarding_catalog import STARTER_TEMPLATES, EQUIPMENT as ONBOARDING_EQUIPMENT, EXPERIENCE_LEVELS, GOALS as ONBOARDING_GOALS, recommend_starter_template
 from database import *
+from services.rpe_service import RPE_ERROR, normalize_rpe
 from services.target_ownership_service import (
     apply_direct_edit, apply_weight_derived_reps, clear_override,
     normalize_reps_source, normalize_weight_source, ownership_summary,
@@ -184,7 +185,7 @@ class ExerciseCard(ft.Card):
                 draft = drafts[set_idx] if set_idx < len(drafts) else {}
                 raw_rpe = str(draft.get("rpe", "")).strip()
                 if raw_rpe and self.normalize_rpe(raw_rpe) is None:
-                    self.app.show_snackbar("RPE must be 1 to 10 in 0.5 steps, such as 8 or 8.5.", "red300")
+                    self.app.show_snackbar(RPE_ERROR, "red300")
                 return
 
             if key_type != "w":
@@ -914,18 +915,9 @@ class ExerciseCard(ft.Card):
         # Explain the visible target owner before daily readiness detail.
         draft_sets = self.app.sets.get(self.db_id, [])
         for index, draft in enumerate(draft_sets[:6], start=1):
-            weight_source = str(draft.get("w_source", "target"))
-            reps_source = str(draft.get("r_source", "target"))
             normal = self.normal_set_targets[index-1] if index-1 < len(self.normal_set_targets) else {"w": self.tgt_w, "r": self.tgt_r}
             today = self.set_targets[index-1] if index-1 < len(self.set_targets) else normal
-            if weight_source == "user" or reps_source == "user":
-                lines.append(f"Set {index} ownership: User override. Manual weight or reps are preserved until changed or cleared.")
-            elif reps_source == "weight_derived":
-                lines.append(f"Set {index} ownership: Weight-derived reps. Entering a weight adjusted reps to preserve approximately the same target effort.")
-            elif today != normal:
-                lines.append(f"Set {index} ownership: Readiness-adjusted target. Today {today['w']:g} x {today['r']}; normal trajectory {normal['w']:g} x {normal['r']}.")
-            else:
-                lines.append(f"Set {index} ownership: Normal progression target {normal['w']:g} x {normal['r']}.")
+            lines.append(f"Set {index} ownership: {ownership_summary(draft, today, normal)}")
 
         if self.context and self.context.get("readiness_logged") and self.status == STATUS_PENDING and self.app.current_week != "Deload":
             normal = self.normal_set_targets[0] if self.normal_set_targets else {"w": self.tgt_w, "r": self.tgt_r}
@@ -1026,12 +1018,9 @@ class ExerciseCard(ft.Card):
 
     @staticmethod
     def normalize_rpe(value):
-        raw = str(value if value is not None else "").strip()
-        if not raw:return None
-        try:number = float(raw)
-        except (TypeError, ValueError):return None
-        if number < 1.0 or number > 10.0 or abs(number * 2 - round(number * 2)) > 0.000001:return None
-        return f"{number:g}"
+        # Compatibility wrapper for existing handlers. The contract itself is
+        # centralized so blur, completion, autosave, and final save cannot drift.
+        return normalize_rpe(value)
 
     def make_set_done_handler(self, set_idx):
         def set_done_changed(ev):
@@ -1077,7 +1066,7 @@ class ExerciseCard(ft.Card):
                     return
                 normalized_rpe = self.normalize_rpe(rpe_raw)
                 if normalized_rpe is None:
-                    self.app.show_snackbar("Enter RPE from 1 to 10 in 0.5 steps, such as 8 or 8.5.", "red300")
+                    self.app.show_snackbar(RPE_ERROR, "red300")
                     self.app.rebuild_entire_display()
                     return
                 set_data["rpe"] = normalized_rpe
