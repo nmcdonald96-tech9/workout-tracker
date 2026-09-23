@@ -28,12 +28,13 @@ def test_canonical_test_documentation_exists():
 
 
 def test_rpe_portrait_label_is_compact_but_validation_remains():
+    from services.rpe_service import RPE_ERROR
+
     main = (ROOT / "main.py").read_text(encoding="utf-8")
-    service = (ROOT / "services/rpe_service.py").read_text(encoding="utf-8")
     assert 'label="RPE"' in main
     assert 'label="RPE 1-10 • 0.5 steps"' not in main
-    assert 'RPE means Rate of Perceived Exertion' in main
-    assert 'RPE_ERROR="RPE must be 1 to 10 in 0.5 steps' in service
+    assert "RPE means Rate of Perceived Exertion" in main
+    assert RPE_ERROR.startswith("RPE must be 1 to 10 in 0.5 steps")
 
 
 def test_187_snapshot_loader_is_retained():

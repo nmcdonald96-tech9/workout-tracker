@@ -3,7 +3,7 @@ from pathlib import Path
 from services.rpe_service import RPE_ERROR, normalize_rpe
 from services.target_ownership_service import TARGET, USER, WEIGHT_DERIVED, ownership_summary, reconcile_pending_draft
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_186_release_contract():

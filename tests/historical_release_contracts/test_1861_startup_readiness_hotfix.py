@@ -1,5 +1,5 @@
 from pathlib import Path
-ROOT=Path(__file__).resolve().parents[1]
+ROOT=Path(__file__).resolve().parents[2]
 
 def test_version_and_schema():
  c=(ROOT/'constants.py').read_text(); assert 'APP_VERSION = "1.86.1"' in c; assert 'DATABASE_SCHEMA_VERSION = 20' in c
