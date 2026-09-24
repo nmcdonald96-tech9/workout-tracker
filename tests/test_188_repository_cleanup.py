@@ -3,9 +3,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_188_release_contract():
+def test_188_repository_cleanup_contract_is_retained():
     constants = (ROOT / "constants.py").read_text(encoding="utf-8")
-    assert 'APP_VERSION = "1.88.0"' in constants
     assert 'DATABASE_SCHEMA_VERSION = 20' in constants
     assert (ROOT / "docs/releases/RELEASE_1.88.0.md").exists()
 
