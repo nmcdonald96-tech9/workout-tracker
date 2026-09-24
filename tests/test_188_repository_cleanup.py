@@ -5,10 +5,10 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def test_current_release_contract():
     constants = (ROOT / "constants.py").read_text(encoding="utf-8")
-    assert 'APP_VERSION = "1.89.2"' in constants
+    assert 'APP_VERSION = "1.90.0"' in constants
     assert 'DATABASE_SCHEMA_VERSION = 20' in constants
     assert (ROOT / "docs/releases/RELEASE_1.88.0.md").exists()
-    assert (ROOT / "docs/releases/RELEASE_1.89.2.md").exists()
+    assert (ROOT / "docs/releases/RELEASE_1.90.0.md").exists()
 
 
 def test_duplicate_test_tree_removed():

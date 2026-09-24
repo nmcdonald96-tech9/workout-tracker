@@ -51,6 +51,7 @@ from onedrive_service import OneDriveService, OneDriveError, onedrive_dependency
 from services.workout_service import WorkoutStateService, workout_progress
 from app.navigation import category_anchor_key, exercise_anchor_key, ordered_day_names
 from components.exercise_card import format_target_weight
+from services.workout_navigation_service import find_control_offset, jump_to_category_state
 
 # --- WIFI TRANSFER HARDENING ---
 # Threaded server prevents browser side-requests (favicon/retries) from blocking the
@@ -4470,12 +4471,7 @@ class WorkoutTrackerApp:
             return 64.0
 
         def numeric_target_offset():
-            offset = 0.0
-            for control in self.main_canvas.controls:
-                if control_contains_key(control, key):
-                    return max(0.0, offset - 8.0)
-                offset += estimated_height(control) + 6.0
-            return None
+            return find_control_offset(self.main_canvas.controls, key, height_estimator=estimated_height)
 
         def do_scroll():
             # duration below 500 is documented (flet-dev/flet#1659) to work
@@ -4489,10 +4485,7 @@ class WorkoutTrackerApp:
                     self.main_canvas.scroll_to(key=key, duration=500)
                     return True
                 except TypeError:
-                    if str(key).startswith("category-"):
-                        target_offset = self.promoted_workout_offset()
-                    else:
-                        target_offset = numeric_target_offset()
+                    target_offset = numeric_target_offset()
                     if target_offset is None:
                         print(f"[scroll_to_workout_key] target not found: {key}")
                         return False
@@ -4518,7 +4511,12 @@ class WorkoutTrackerApp:
 
         def delayed_scroll():
             time.sleep(0.18)
-            do_scroll()
+            target_offset = numeric_target_offset()
+            if target_offset is not None:
+                try: self.main_canvas.scroll_to(offset=target_offset, duration=500)
+                except TypeError: self.main_canvas.scroll_to(target_offset, duration=500)
+                except Exception as ex: print(f"[scroll_to_workout_key delayed numeric] {ex}")
+            else: do_scroll()
 
         try:
             self.page.run_thread(delayed_scroll)
@@ -4538,10 +4536,9 @@ class WorkoutTrackerApp:
             """, (self.current_meso, self.current_week, self.current_day))
             day_categories = [row[0] for row in cursor.fetchall() if row[0]]
 
-        for day_category in day_categories:
-            self.collapsed_categories[self.category_key(day_category)] = (day_category != category_name)
-
-        self.pending_scroll_key = category_anchor_key(category_name)
+        self.collapsed_categories, request = jump_to_category_state(self.collapsed_categories, day_categories, category_name)
+        self.pending_scroll_key = request.key
+        self.remount_main_canvas_on_rebuild = request.remount
         self.rebuild_entire_display()
 
     def advance_group_flow(self,session_id,completed_set):
