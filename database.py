@@ -1346,21 +1346,43 @@ def whole_exercise_progression_summary(session_id):
     reason=metrics.get('reason','Whole-exercise performance evaluated.')
     return {'exercise':exercise,'decision':metrics['decision'],'next_weight':nw,'next_reps':nr,'reason':reason,'set_count':metrics['set_count'],'completion':metrics['rep_completion_ratio'],'lowest_set':metrics['lowest_set_ratio'],'average_rpe':metrics['average_rpe'],'peak_rpe':metrics['peak_rpe'],'settings':settings}
 
+REST_ANALYTICS_MIN_EFFECTIVE_SECONDS = 60
+
+def rest_analytics_sample(rest_seconds):
+    """Preserve raw rest while supplying the guarded analytics value."""
+    if rest_seconds is None:
+        return None
+    try:
+        raw = max(0, int(round(float(rest_seconds))))
+    except (TypeError, ValueError, OverflowError):
+        return None
+    effective = max(raw, REST_ANALYTICS_MIN_EFFECTIVE_SECONDS)
+    return {"raw_seconds": raw, "effective_seconds": effective,
+            "adjusted": effective != raw,
+            "adjustment_reason": "minimum_effective_rest" if effective != raw else None}
+
+def effective_rest_seconds(rest_seconds):
+    sample = rest_analytics_sample(rest_seconds)
+    return sample["effective_seconds"] if sample else None
+
 def week_comparison(meso,first_week,second_week,category=None):
     q="""SELECT ws.week,ws.exercise,ws.category,ws.bodyweight_snapshot,s.weight,s.reps,s.rpe,s.rest_seconds,ws.exercise_group_id,s.completed_at FROM workout_sessions ws JOIN workout_sets s ON s.session_id=ws.id WHERE ws.meso_number=? AND ws.week IN (?,?) AND ws.status=? AND s.is_complete=1"""
     args=[meso,str(first_week),str(second_week),STATUS_COMPLETED]
     if category:q+=' AND ws.category=?';args.append(category)
     with get_db() as c:rows=c.execute(q,args).fetchall()
-    out={str(first_week):{'volume':0,'sets':0,'rpe':[],'rest':[],'duration':0},str(second_week):{'volume':0,'sets':0,'rpe':[],'rest':[],'duration':0}}
+    out={str(first_week):{'volume':0,'sets':0,'rpe':[],'rest':[],'raw_rest':[],'rest_adjusted_count':0,'duration':0},str(second_week):{'volume':0,'sets':0,'rpe':[],'rest':[],'raw_rest':[],'rest_adjusted_count':0,'duration':0}}
     stamps={str(first_week):[],str(second_week):[]}
     for wk,ex,cat,bw,w,r,rpe,rest,gid,stamp in rows:
         k=str(wk);is_bw=EXERCISE_METADATA.get(ex,{}).get('equipment')=='Bodyweight';out[k]['volume']+=((float(w or 0)+float(bw or get_user_bodyweight())) if is_bw else float(w or 0))*int(r or 0);out[k]['sets']+=1
         if rpe is not None:out[k]['rpe'].append(float(rpe))
-        if rest is not None:out[k]['rest'].append(float(rest))
+        if rest is not None:
+            sample=rest_analytics_sample(rest)
+            if sample:
+                out[k]['raw_rest'].append(sample['raw_seconds']);out[k]['rest'].append(sample['effective_seconds']);out[k]['rest_adjusted_count']+=int(sample['adjusted'])
         try:stamps[k].append(datetime.fromisoformat(stamp))
         except Exception:pass
     for k,v in out.items():
-        v['average_rpe']=round(sum(v['rpe'])/len(v['rpe']),2) if v['rpe'] else None;v['average_rest']=round(sum(v['rest'])/len(v['rest'])) if v['rest'] else None;v['duration']=int((max(stamps[k])-min(stamps[k])).total_seconds()) if len(stamps[k])>1 else 0;del v['rpe'];del v['rest']
+        v['average_rpe']=round(sum(v['rpe'])/len(v['rpe']),2) if v['rpe'] else None;v['average_rest']=round(sum(v['rest'])/len(v['rest'])) if v['rest'] else None;v['average_rest_raw']=round(sum(v['raw_rest'])/len(v['raw_rest'])) if v['raw_rest'] else None;v['rest_adjusted']=v['rest_adjusted_count']>0;v['duration']=int((max(stamps[k])-min(stamps[k])).total_seconds()) if len(stamps[k])>1 else 0;del v['rpe'];del v['rest'];del v['raw_rest']
     return out
 
 def superset_timing_analytics(meso,week,day):

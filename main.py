@@ -4771,7 +4771,7 @@ class WorkoutTrackerApp:
         self.safe_open(dialog)
 
     def get_previous_workout_comparison(self):
-        q = "SELECT COALESCE(SUM(s.weight*s.reps),0), COUNT(s.id), AVG(NULLIF(s.rpe,0)), AVG(s.rest_seconds) FROM workout_sessions ws JOIN workout_sets s ON s.session_id=ws.id WHERE ws.meso_number=? AND ws.week=? AND ws.day_of_week=? AND ws.status='Completed' AND s.is_complete=1"
+        q = "SELECT COALESCE(SUM(s.weight*s.reps),0), COUNT(s.id), AVG(NULLIF(s.rpe,0)), AVG(CASE WHEN s.rest_seconds IS NULL THEN NULL WHEN s.rest_seconds < 60 THEN 60 ELSE s.rest_seconds END) FROM workout_sessions ws JOIN workout_sets s ON s.session_id=ws.id WHERE ws.meso_number=? AND ws.week=? AND ws.day_of_week=? AND ws.status='Completed' AND s.is_complete=1"
         with get_db() as conn:
             current = conn.execute(q, (self.current_meso, self.current_week, self.current_day)).fetchone()
             slot = conn.execute("SELECT meso_number, week, day_of_week FROM workout_sessions WHERE status='Completed' AND day_of_week=? AND NOT (meso_number=? AND week=? AND day_of_week=?) GROUP BY meso_number, week, day_of_week ORDER BY MAX(date) DESC, MAX(id) DESC LIMIT 1", (self.current_day, self.current_meso, self.current_week, self.current_day)).fetchone()
@@ -5258,7 +5258,7 @@ class WorkoutTrackerApp:
             # with the other meso-level stats above, since deload rest
             # patterns are intentionally different and would skew this.
             cursor.execute("""
-                SELECT s.rest_seconds FROM workout_sessions ws
+                SELECT CASE WHEN s.rest_seconds < 60 THEN 60 ELSE s.rest_seconds END FROM workout_sessions ws
                 JOIN workout_sets s ON s.session_id = ws.id
                 WHERE ws.meso_number = ? AND ws.status = 'Completed'
                   AND COALESCE(ws.week, '') != 'Deload' AND s.rest_seconds IS NOT NULL
@@ -5751,7 +5751,7 @@ class WorkoutTrackerApp:
             if rest_secs is not None:
                 if w not in week_rest_data:
                     week_rest_data[w] = [0, 0]
-                week_rest_data[w][0] += rest_secs
+                week_rest_data[w][0] += max(60, rest_secs)
                 week_rest_data[w][1] += 1
             
         def week_sort_key(wk):
