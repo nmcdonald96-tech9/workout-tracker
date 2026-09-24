@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def test_189_release_contract_and_schema_stability():
     constants = (ROOT / "constants.py").read_text(encoding="utf-8")
-    assert 'APP_VERSION = "1.89.0"' in constants
+    assert 'APP_VERSION = "1.89.2"' in constants
     assert 'DATABASE_SCHEMA_VERSION = 20' in constants
     assert (ROOT / "docs/releases/RELEASE_1.89.0.md").exists()
 

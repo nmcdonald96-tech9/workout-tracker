@@ -49,6 +49,8 @@ from services.entitlement_service import (EntitlementService, TRIAL_ACTIVE, TRIA
 from onedrive_service import OneDriveService, OneDriveError, onedrive_dependency_diagnostics
 
 from services.workout_service import WorkoutStateService, workout_progress
+from app.navigation import category_anchor_key, exercise_anchor_key, ordered_day_names
+from components.exercise_card import format_target_weight
 
 # --- WIFI TRANSFER HARDENING ---
 # Threaded server prevents browser side-requests (favicon/retries) from blocking the
@@ -90,14 +92,6 @@ class ExerciseCard(ft.Card):
         self.rpe_fields = []
         self.build_card()
 
-    def format_target_weight(self, is_bw, weight_value):
-        try:
-            w_val = float(weight_value)
-            if is_bw:
-                return "BW" if w_val == 0 else f"BW + {w_val:g} lbs"
-            return f"{w_val:g} lbs"
-        except:
-            return "BW" if is_bw else f"{weight_value} lbs"
 
     def make_rpe_updater(self, set_idx):
         def rpe_handler(ev):
@@ -1461,7 +1455,7 @@ class WorkoutTrackerApp:
             pass
 
     def set_active_position(self, force_week=None):
-        day_order = {day: idx for idx, day in enumerate(self.ordered_day_names(), start=1)}
+        day_order = {day: idx for idx, day in enumerate(ordered_day_names(), start=1)}
         selected_days = self.get_selected_days_for_meso()
 
         with get_db() as conn:
@@ -1921,7 +1915,7 @@ class WorkoutTrackerApp:
     def open_structure_editor(self,e=None,source_session_id=None):
         weeks=[x for x in self.get_existing_weeks() if str(x).isdigit()]
         week=ft.Dropdown(label='Week',value=str(self.current_week) if str(self.current_week).isdigit() else weeks[-1],options=[ft.dropdown.Option(x) for x in weeks],width=96)
-        day=ft.Dropdown(label='Day',value=self.current_day,options=[ft.dropdown.Option(x) for x in self.ordered_day_names()],expand=True)
+        day=ft.Dropdown(label='Day',value=self.current_day,options=[ft.dropdown.Option(x) for x in ordered_day_names()],expand=True)
         selected=set([int(source_session_id)]) if source_session_id else set()
         items=ft.Column(scroll='auto',expand=True,spacing=5)
         compact=float(getattr(self.page,'width',0) or 0)<700
@@ -3036,12 +3030,10 @@ class WorkoutTrackerApp:
             row = cursor.fetchone()
         return row[0] if row else f"Meso {self.current_meso}"
 
-    def ordered_day_names(self):
-        return ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 
     def get_selected_days_for_meso(self, meso_num=None):
         target_meso = self.current_meso if meso_num is None else meso_num
-        day_order = self.ordered_day_names()
+        day_order = ordered_day_names()
 
         with get_db() as conn:
             cursor = conn.cursor()
@@ -4406,12 +4398,6 @@ class WorkoutTrackerApp:
 
     # -----------------------------------------------
 
-    def category_anchor_key(self, category_name):
-        safe = "".join(ch.lower() if ch.isalnum() else "-" for ch in str(category_name)).strip("-")
-        return f"category-{safe}"
-
-    def exercise_anchor_key(self, session_id):
-        return f"exercise-{session_id}"
 
     def remount_main_canvas(self):
         """Replace the main ListView so Android creates a new zeroed viewport."""
@@ -4555,7 +4541,7 @@ class WorkoutTrackerApp:
         for day_category in day_categories:
             self.collapsed_categories[self.category_key(day_category)] = (day_category != category_name)
 
-        self.pending_scroll_key = self.category_anchor_key(category_name)
+        self.pending_scroll_key = category_anchor_key(category_name)
         self.rebuild_entire_display()
 
     def advance_group_flow(self,session_id,completed_set):
@@ -4564,7 +4550,7 @@ class WorkoutTrackerApp:
         with get_db() as conn:
             cats=[r[0] for r in conn.execute("SELECT DISTINCT category FROM workout_sessions WHERE meso_number=? AND week=? AND day_of_week=?",(self.current_meso,self.current_week,self.current_day)).fetchall() if r[0]]
         for dcat in cats:self.collapsed_categories[self.category_key(dcat)]=(dcat!=nxt['category'])
-        self.collapsed_categories[self.category_key(nxt['category'])]=False;self.active_exercise_by_category[self.category_key(nxt['category'])]=nxt['session_id'];self.pending_scroll_key=self.exercise_anchor_key(nxt['session_id']);self.remount_main_canvas_on_rebuild=True
+        self.collapsed_categories[self.category_key(nxt['category'])]=False;self.active_exercise_by_category[self.category_key(nxt['category'])]=nxt['session_id'];self.pending_scroll_key=exercise_anchor_key(nxt['session_id']);self.remount_main_canvas_on_rebuild=True
         record_audit('superset_advance',f"{session_id} set {completed_set} -> {nxt['session_id']} set {nxt['pending_set']}; round_complete={int(bool(nxt.get('round_complete')))}; remaining={nxt.get('remaining_members')}");self.rebuild_entire_display();return True
 
     def activate_exercise(self, category_name, session_id):
@@ -4682,7 +4668,7 @@ class WorkoutTrackerApp:
                         self.collapsed_categories[self.category_key(row[0])] = (row[0] != category_name)
         else:
             self.collapsed_categories[key] = True
-        self.pending_scroll_key = self.category_anchor_key(category_name) if opening else None
+        self.pending_scroll_key = category_anchor_key(category_name) if opening else None
         self.rebuild_entire_display()
 
     def make_category_header(self, category_name, rows_in_cat):
@@ -4712,7 +4698,7 @@ class WorkoutTrackerApp:
         status_element = ft.Text(status_text, size=11, weight="w600", color=text_color)
 
         header_container = ft.Container(
-            key=self.category_anchor_key(category_name),
+            key=category_anchor_key(category_name),
             content=ft.Row([title_row, status_element], alignment="spaceBetween"),
             bgcolor=bg_color,
             border_radius=8,
@@ -5569,7 +5555,7 @@ class WorkoutTrackerApp:
         current_bw = get_user_bodyweight()
 
         selected_days = self.get_selected_days_for_meso(self.current_meso)
-        day_order = {day: idx for idx, day in enumerate(self.ordered_day_names(), start=1)}
+        day_order = {day: idx for idx, day in enumerate(ordered_day_names(), start=1)}
         current_day_order = day_order.get(self.current_day, 99)
 
         with get_db() as conn:
@@ -6590,7 +6576,7 @@ class WorkoutTrackerApp:
             
         # 3. Sleek Day Tabs
         self.day_nav_row.controls.clear()
-        for d in self.ordered_day_names():
+        for d in ordered_day_names():
             is_done = day_completions.get(d, False)
             is_active = (d == self.current_day)
             check_str = "✓" if is_done else ""
@@ -6941,7 +6927,7 @@ class WorkoutTrackerApp:
                     ctx = workout_snapshot.card_context(db_id,exercise,db_cat,previous_week_order.get((db_cat,exercise)))
                     
                     card = ExerciseCard(db_id, exercise, tgt_w, tgt_r, status, mov_type, self, context=ctx)
-                    card.key = self.exercise_anchor_key(db_id)
+                    card.key = exercise_anchor_key(db_id)
                     self.main_canvas.controls.append(card)
 
             if pending_week_count == 0 and len(self.engine_button_container.controls) > 0:
