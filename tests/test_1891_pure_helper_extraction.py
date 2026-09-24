@@ -19,7 +19,7 @@ def test_workout_progress_contract():
  assert workout_progress(rows,drafts)=={"completed_exercises":1,"skipped_exercises":1,"total_exercises":3,"completed_sets":3,"total_sets":4,"completed_categories":1,"total_categories":2}
 def test_release_contract_and_no_duplicate_main_definitions():
  constants=(ROOT/"constants.py").read_text(); main=(ROOT/"main.py").read_text()
- assert 'APP_VERSION = "1.90.0"' in constants and 'DATABASE_SCHEMA_VERSION = 20' in constants
+ assert 'APP_VERSION = "1.90.1"' in constants and 'DATABASE_SCHEMA_VERSION = 20' in constants
  assert 'from services.workout_service import WorkoutStateService, workout_progress' in main
  assert 'class WorkoutStateService:' not in main and 'def workout_progress(' not in main
  assert (ROOT/'docs/releases/RELEASE_1.90.0.md').exists()

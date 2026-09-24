@@ -1,0 +1,2 @@
+# IronCycle 1.12.1
+Adds Exercise Insights to the exercise actions menu, trend evidence, elevated-effort observation, readiness association when sufficiently supported, and rest change context. Schema remains 10.
