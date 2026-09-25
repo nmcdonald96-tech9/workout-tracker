@@ -204,7 +204,7 @@ class ExerciseCard(ft.Card):
                 set_data.clear(); set_data.update(updated)
                 self.set_targets[set_idx]["r"] = orig_r
                 self.autosave_pending_sets()
-                self.app.pending_scroll_key = self.app.exercise_anchor_key(self.db_id)
+                self.app.pending_scroll_key = exercise_anchor_key(self.db_id)
                 self.app.rebuild_entire_display()
                 return
 
@@ -236,7 +236,7 @@ class ExerciseCard(ft.Card):
             # this is also what refreshes plate feedback, which is
             # recomputed fresh from state on every build_card() call.
             self.autosave_pending_sets()
-            self.app.pending_scroll_key = self.app.exercise_anchor_key(self.db_id)
+            self.app.pending_scroll_key = exercise_anchor_key(self.db_id)
             self.app.rebuild_entire_display()
         return blur_handler
 
@@ -822,7 +822,7 @@ class ExerciseCard(ft.Card):
             self.app.completed_revision_sessions.pop(self.db_id,None)
             record_audit("completed_exercise_returned_to_pending",f"session_id={self.db_id}; exercise={self.exercise}")
         with get_db() as conn:conn.execute("UPDATE workout_sessions SET status=? WHERE id=?",(STATUS_PENDING,self.db_id));conn.commit()
-        self.app.sets.pop(self.db_id,None);self.app.view_mode="workout";self.app.pending_scroll_key=self.app.exercise_anchor_key(self.db_id)
+        self.app.sets.pop(self.db_id,None);self.app.view_mode="workout";self.app.pending_scroll_key=exercise_anchor_key(self.db_id)
         self.app.rebuild_navigation_headers();self.app.rebuild_entire_display();self.app.show_snackbar("Revision mode opened with logged values preserved." if revision_mode else "Exercise returned to Pending with existing values preserved.","cyan300")
     def confirm_revise_completed(self,e=None):
         dialog=ft.AlertDialog(title=ft.Text("Revise Logged Sets",weight="bold"),content=ft.Text("Correct logged weight, reps, RPE, or set count. Save Revision keeps the exercise completed and refreshes progression from the corrected result."),actions=[ft.TextButton("Cancel",on_click=lambda ev:self.app.safe_close(dialog)),ft.ElevatedButton("Begin Revision",on_click=lambda ev:[self.app.safe_close(dialog),self._reopen_completed("completed_exercise_revision_started",True)])]);self.app.safe_open(dialog)
