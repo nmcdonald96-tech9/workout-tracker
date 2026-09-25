@@ -49,6 +49,10 @@ from services.entitlement_service import (EntitlementService, TRIAL_ACTIVE, TRIA
 from onedrive_service import OneDriveService, OneDriveError, onedrive_dependency_diagnostics
 
 from services.workout_service import WorkoutStateService, workout_progress
+from services.pending_set_service import (
+    PendingSetContext, add_set, copy_previous_set, remove_last_set,
+    restore_drafts, save_pending_sets_atomic,
+)
 from app.navigation import category_anchor_key, exercise_anchor_key, ordered_day_names
 from components.exercise_card import format_target_weight
 from services.workout_navigation_service import find_control_offset, jump_to_category_state
@@ -412,11 +416,9 @@ class ExerciseCard(ft.Card):
                         self.set_targets[idx] = {"w": float(stw), "r": int(strp)}
                     if bool(is_complete) and normal_tw is not None and normal_tr is not None and idx < len(self.normal_set_targets):
                         self.normal_set_targets[idx] = {"w": float(normal_tw), "r": int(normal_tr)}
-                    loaded_drafts.append({
-                        "w": w_str, "r": r_str, "rpe": rpe_str, "rest": s_rest,
-                        "completed_at": completed_at, "done": bool(is_complete),
-                        "w_source": normalize_weight_source(weight_source), "r_source": normalize_reps_source(reps_source)
-                    })
+                    loaded_drafts.extend(restore_drafts([(
+                        sw, sr, srpe, s_rest, completed_at, is_complete, weight_source, reps_source
+                    )]))
             else:
                 num_sets = len(recent_session_sets) if recent_session_sets else default_sets
                 num_sets = max(1, num_sets)
@@ -427,6 +429,10 @@ class ExerciseCard(ft.Card):
                         "completed_at": None, "done": False, "w_source": "target", "r_source": "target"
                     })
             self.app.sets[self.db_id] = loaded_drafts
+            self.app.pending_set_contexts[self.db_id] = PendingSetContext(
+                self.db_id, tuple(dict(x) for x in self.set_targets),
+                tuple(dict(x) for x in self.normal_set_targets),
+            )
 
         # Explicit field ownership resolves readiness versus set-specific
         # progression without comparing numbers. Target-owned pending fields
@@ -946,12 +952,11 @@ class ExerciseCard(ft.Card):
         if destination is None or destination == 0:
             self.app.show_snackbar("Complete at least one set before repeating it.", "amber300")
             return
-        source = sets[destination - 1]
-        sets[destination]["w"] = str(source.get("w", ""))
-        sets[destination]["r"] = str(source.get("r", ""))
-        sets[destination]["rpe"] = ""
-        sets[destination]["done"] = False
-        sets[destination]["completed_at"] = None
+        copied, destination = copy_previous_set(sets)
+        if destination is None:
+            self.app.show_snackbar("Complete at least one set before repeating it.", "amber300")
+            return
+        self.app.sets[self.db_id] = copied
         self.autosave_pending_sets()
         self.app.show_snackbar(f"Set {destination + 1} copied from Set {destination}. RPE left blank.", "cyan300")
         self.app.rebuild_entire_display()
@@ -1090,33 +1095,26 @@ class ExerciseCard(ft.Card):
         return live_update_event
 
     def autosave_pending_sets(self):
-        # Quietly saves the current draft to the database without finalizing the workout
-        if self.db_id not in self.app.sets: return
+        if self.db_id not in self.app.sets:
+            return False
+        context = PendingSetContext(
+            self.db_id, tuple(dict(x) for x in self.set_targets),
+            tuple(dict(x) for x in self.normal_set_targets),
+        )
+        self.app.pending_set_contexts[self.db_id] = context
         try:
             with get_db() as conn:
-                cursor = conn.cursor()
-                cursor.execute("DELETE FROM workout_sets WHERE session_id = ?", (self.db_id,))
-                for i, s_data in enumerate(self.app.sets[self.db_id], start=1):
-                    w_val = float(s_data["w"]) if str(s_data.get("w", "")).strip() else None
-                    r_val = int(s_data["r"]) if str(s_data.get("r", "")).strip() else None
-                    rpe_normalized = self.normalize_rpe(s_data.get("rpe", ""))
-                    rpe_val = float(rpe_normalized) if rpe_normalized is not None else None
-                    
-                    target = self.set_targets[i - 1] if i - 1 < len(self.set_targets) else {"w": self.tgt_w, "r": self.tgt_r}
-                    normal_target = self.normal_set_targets[i - 1] if i - 1 < len(self.normal_set_targets) else target
-                    completed_at = s_data.get("completed_at")
-                    done = 1 if s_data.get("done") else 0
-                    rest_secs = global_set_gap(self.app.current_meso,self.app.current_week,self.app.current_day,completed_at,self.db_id,i) if done and completed_at else None
-                    cursor.execute("""
-                        INSERT INTO workout_sets
-                            (session_id, set_number, weight, reps, rpe, rest_seconds, target_weight, target_reps, normal_target_weight, normal_target_reps, completed_at, is_complete, weight_source, reps_source)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (self.db_id, i, w_val, r_val, rpe_val, rest_secs,
-                          float(target["w"]), int(target["r"]), float(normal_target["w"]), int(normal_target["r"]), completed_at, done,
-                          str(s_data.get("w_source", "target")), str(s_data.get("r_source", "target"))))
-                conn.commit()
-        except Exception as e:
-            print(f"Error autosaving pending sets: {e}")
+                return save_pending_sets_atomic(
+                    conn, context, self.app.sets[self.db_id],
+                    normalize_rpe=self.normalize_rpe,
+                    rest_seconds_for=lambda completed_at, sid, number: global_set_gap(
+                        self.app.current_meso, self.app.current_week, self.app.current_day,
+                        completed_at, sid, number,
+                    ),
+                )
+        except Exception as exc:
+            print(f"Error autosaving pending sets: {exc}")
+            return False
 
     def on_add_set(self, ev):
         if not self.app.require_premium("editing workout prescriptions"):
@@ -1124,8 +1122,8 @@ class ExerciseCard(ft.Card):
         if self.db_id not in self.app.sets: return
         new_idx = len(self.app.sets[self.db_id])
         target = self.set_targets[new_idx] if new_idx < len(self.set_targets) else {"w": self.tgt_w, "r": self.tgt_r}
-        self.app.sets[self.db_id].append({"w": str(target["w"]), "r": str(target["r"]), "rpe": "", "rest": None, "completed_at": None, "done": False, "w_source": "target", "r_source": "target"})
-        self.autosave_pending_sets() # Force save draft
+        self.app.sets[self.db_id] = add_set(self.app.sets[self.db_id], target)
+        self.autosave_pending_sets() # Force atomic save
         self.app.rebuild_entire_display()
 
     def on_remove_set(self, ev):
@@ -1133,8 +1131,8 @@ class ExerciseCard(ft.Card):
             return
         if self.db_id not in self.app.sets or len(self.app.sets[self.db_id]) <= 1:
             return
-        self.app.sets[self.db_id] = self.app.sets[self.db_id][:-1]
-        self.autosave_pending_sets() # Force save draft
+        self.app.sets[self.db_id] = remove_last_set(self.app.sets[self.db_id])
+        self.autosave_pending_sets() # Force atomic save
         self.app.rebuild_entire_display()
 
     def trigger_delete_warning(self, ev):
@@ -1357,6 +1355,7 @@ class WorkoutTrackerApp:
             pass
 
         self.sets = {}
+        self.pending_set_contexts = {}
         self.show_add_form = False
         self.show_survey = False
         self.pr_celebrations = {}
@@ -3667,8 +3666,28 @@ class WorkoutTrackerApp:
             result=self.page.launch_url(target)
             if inspect.isawaitable(result):await result
         except Exception as err:self.show_snackbar(f"Could not open browser: {err}. Use {target}","amber300")
+    def flush_pending_set_drafts(self):
+        """Durably flush every registered pending session during lifecycle changes."""
+        for session_id, context in list(self.pending_set_contexts.items()):
+            drafts = self.sets.get(session_id)
+            if drafts is None:
+                continue
+            try:
+                with get_db() as conn:
+                    save_pending_sets_atomic(
+                        conn, context, drafts,
+                        normalize_rpe=normalize_rpe,
+                        rest_seconds_for=lambda completed_at, sid, number: global_set_gap(
+                            self.current_meso, self.current_week, self.current_day,
+                            completed_at, sid, number,
+                        ),
+                    )
+            except Exception as exc:
+                print(f"[flush_pending_set_drafts] session={session_id}: {exc}")
+
     def on_app_lifecycle_state_change(self,e):
         state=str(getattr(getattr(e,'state',None),'name',getattr(e,'state',''))).upper()
+        self.flush_pending_set_drafts()
         if state in ('SHOW','RESTART','RESUME'):
             # Never start Microsoft authentication or Graph network traffic from
             # an Android lifecycle callback. Offline resume must remain local-only.
