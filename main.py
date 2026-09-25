@@ -6716,13 +6716,49 @@ class WorkoutTrackerApp:
         self.rebuild_entire_display();self.show_snackbar(f"Advanced to Week {next_w}: {report['sessions']} recurring exercise(s) generated from the plan.","green300")
 
     def _dispatch_structural_refresh(self, callback):
-        """Run a structural refresh after the active Flet callback yields."""
+        """Run structural work after the callback yields, with one bounded retry."""
         async def deferred_refresh():
             await asyncio.sleep(0)
+            is_recovery = bool(getattr(self, "_structural_refresh_retry_in_progress", False))
             try:
                 callback()
             except Exception:
-                print(f"[structural_refresh] FAILED:\n{traceback.format_exc()}")
+                coordinator = getattr(self, "_structural_refresh_coordinator", None)
+                reasons = getattr(coordinator, "pending_reasons", ()) if coordinator else ()
+                pending = bool(getattr(coordinator, "pending", False)) if coordinator else False
+                scheduled = bool(getattr(coordinator, "scheduled", False)) if coordinator else False
+                running = bool(getattr(coordinator, "running", False)) if coordinator else False
+                rebuild_navigation = bool(getattr(coordinator, "pending_rebuild_navigation", False)) if coordinator else False
+                remount_canvas = bool(getattr(coordinator, "pending_remount_canvas", False)) if coordinator else False
+                print(
+                    "[structural_refresh] FAILED: "
+                    f"reasons={reasons}; pending={pending}; scheduled={scheduled}; "
+                    f"running={running}; rebuild_navigation={rebuild_navigation}; "
+                    f"remount_canvas={remount_canvas}\n{traceback.format_exc()}"
+                )
+                if is_recovery:
+                    self._structural_refresh_retry_in_progress = False
+                    return
+                await asyncio.sleep(0)
+                if coordinator is None or getattr(self, "page", None) is None:
+                    return
+                self._structural_refresh_retry_in_progress = True
+                try:
+                    queued = coordinator.retry_pending()
+                except Exception:
+                    self._structural_refresh_retry_in_progress = False
+                    print(f"[structural_refresh] RETRY_DISPATCH_FAILED:\n{traceback.format_exc()}")
+                    return
+                if queued:
+                    print(
+                        "[structural_refresh] RETRY_QUEUED: "
+                        f"reasons={coordinator.pending_reasons}"
+                    )
+                else:
+                    self._structural_refresh_retry_in_progress = False
+            else:
+                if is_recovery:
+                    self._structural_refresh_retry_in_progress = False
         runner = getattr(self.page, "run_task", None)
         if callable(runner):
             runner(deferred_refresh)
