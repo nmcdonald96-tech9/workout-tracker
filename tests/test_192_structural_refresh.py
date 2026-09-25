@@ -22,5 +22,5 @@ def test_exercise_card_callbacks_use_coordinator():
  assert 'await asyncio.sleep(0)' in s
 def test_release_contract():
  c=(ROOT/'constants.py').read_text()
- assert 'APP_VERSION = "1.92.0"' in c and 'DATABASE_SCHEMA_VERSION = 20' in c
+ assert 'APP_VERSION = "1.92.1"' in c and 'DATABASE_SCHEMA_VERSION = 20' in c
  assert (ROOT/'docs/releases/RELEASE_1.92.0.md').exists()

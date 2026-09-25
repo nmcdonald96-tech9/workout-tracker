@@ -6719,10 +6719,15 @@ class WorkoutTrackerApp:
         """Run a structural refresh after the active Flet callback yields."""
         async def deferred_refresh():
             await asyncio.sleep(0)
-            callback()
+            try:
+                callback()
+            except Exception:
+                print(f"[structural_refresh] FAILED:\n{traceback.format_exc()}")
         runner = getattr(self.page, "run_task", None)
-        if callable(runner): runner(deferred_refresh)
-        else: callback()
+        if callable(runner):
+            runner(deferred_refresh)
+        else:
+            callback()
 
     def _apply_structural_refresh(self, request):
         if request.remount_canvas: self.remount_main_canvas_on_rebuild = True
