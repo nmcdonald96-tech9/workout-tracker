@@ -31,3 +31,8 @@ dist/
 # Operating-system fil*s
 .DS_Store
 Thumbs.db
+
+# Temporary source and Android build archives
+*.zip
+*.apk
+*.aab
