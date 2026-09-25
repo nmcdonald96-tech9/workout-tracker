@@ -49,6 +49,7 @@ from services.entitlement_service import (EntitlementService, TRIAL_ACTIVE, TRIA
 from onedrive_service import OneDriveService, OneDriveError, onedrive_dependency_diagnostics
 
 from services.workout_service import WorkoutStateService, workout_progress
+from services.structural_refresh_service import StructuralRefreshCoordinator
 from services.pending_set_service import (
     PendingSetContext, add_set, copy_previous_set, remove_last_set,
     restore_drafts, save_pending_sets_atomic,
@@ -137,7 +138,7 @@ class ExerciseCard(ft.Card):
                 del self.app.sets[self.db_id]
                 
             self.app.safe_close(swap_dialog)
-            self.app.rebuild_entire_display()
+            self.app.request_structural_refresh("exercise_card_structure", rebuild_navigation=True)
 
         swap_dialog = ft.AlertDialog(
             title=ft.Text(f"Swap: {exercise_display_name(self.exercise)}", size=16, color="cyan300"),
@@ -205,7 +206,7 @@ class ExerciseCard(ft.Card):
                 self.set_targets[set_idx]["r"] = orig_r
                 self.autosave_pending_sets()
                 self.app.pending_scroll_key = exercise_anchor_key(self.db_id)
-                self.app.rebuild_entire_display()
+                self.app.request_structural_refresh("exercise_card_structure", rebuild_navigation=True)
                 return
 
             try:
@@ -237,7 +238,7 @@ class ExerciseCard(ft.Card):
             # recomputed fresh from state on every build_card() call.
             self.autosave_pending_sets()
             self.app.pending_scroll_key = exercise_anchor_key(self.db_id)
-            self.app.rebuild_entire_display()
+            self.app.request_structural_refresh("exercise_card_structure", rebuild_navigation=True)
         return blur_handler
 
     def build_card(self):
@@ -823,14 +824,14 @@ class ExerciseCard(ft.Card):
             record_audit("completed_exercise_returned_to_pending",f"session_id={self.db_id}; exercise={self.exercise}")
         with get_db() as conn:conn.execute("UPDATE workout_sessions SET status=? WHERE id=?",(STATUS_PENDING,self.db_id));conn.commit()
         self.app.sets.pop(self.db_id,None);self.app.view_mode="workout";self.app.pending_scroll_key=exercise_anchor_key(self.db_id)
-        self.app.rebuild_navigation_headers();self.app.rebuild_entire_display();self.app.show_snackbar("Revision mode opened with logged values preserved." if revision_mode else "Exercise returned to Pending with existing values preserved.","cyan300")
+        self.app.rebuild_navigation_headers();self.app.request_structural_refresh("exercise_card_structure", rebuild_navigation=True);self.app.show_snackbar("Revision mode opened with logged values preserved." if revision_mode else "Exercise returned to Pending with existing values preserved.","cyan300")
     def confirm_revise_completed(self,e=None):
         dialog=ft.AlertDialog(title=ft.Text("Revise Logged Sets",weight="bold"),content=ft.Text("Correct logged weight, reps, RPE, or set count. Save Revision keeps the exercise completed and refreshes progression from the corrected result."),actions=[ft.TextButton("Cancel",on_click=lambda ev:self.app.safe_close(dialog)),ft.ElevatedButton("Begin Revision",on_click=lambda ev:[self.app.safe_close(dialog),self._reopen_completed("completed_exercise_revision_started",True)])]);self.app.safe_open(dialog)
     def confirm_reopen_completed(self,e=None):
         dialog=ft.AlertDialog(title=ft.Text("Return Exercise to Pending",weight="bold"),content=ft.Text("Move this exercise back to Pending? Existing set values remain available, but it will not count as completed until logged again."),actions=[ft.TextButton("Cancel",on_click=lambda ev:self.app.safe_close(dialog)),ft.ElevatedButton("Return to Pending",on_click=lambda ev:[self.app.safe_close(dialog),self._reopen_completed("completed_exercise_returned_to_pending",False)])]);self.app.safe_open(dialog)
     def cancel_completed_revision(self,e=None):
         try:
-            restore_completed_exercise_revision(self.db_id,self.app.completed_revision_sessions.get(self.db_id));record_audit("completed_exercise_revision_canceled",f"session_id={self.db_id}; exercise={self.exercise}");self.app.completed_revision_sessions.pop(self.db_id,None);self.app.sets.pop(self.db_id,None);self.app.rebuild_navigation_headers();self.app.rebuild_entire_display();self.app.show_snackbar("Revision canceled. Original completed result restored.","green300")
+            restore_completed_exercise_revision(self.db_id,self.app.completed_revision_sessions.get(self.db_id));record_audit("completed_exercise_revision_canceled",f"session_id={self.db_id}; exercise={self.exercise}");self.app.completed_revision_sessions.pop(self.db_id,None);self.app.sets.pop(self.db_id,None);self.app.rebuild_navigation_headers();self.app.request_structural_refresh("exercise_card_structure", rebuild_navigation=True);self.app.show_snackbar("Revision canceled. Original completed result restored.","green300")
         except Exception as err:self.app.show_snackbar(f"Could not cancel revision: {err}","red300")
 
     def open_setup_notes_dialog(self,e=None):
@@ -880,7 +881,7 @@ class ExerciseCard(ft.Card):
                 if step is not None and step<=0: raise ValueError("Weight increment must be positive.")
                 with get_db() as conn:
                     conn.execute("UPDATE exercise_dict SET min_reps=?,max_reps=?,default_reps=?,min_weight=?,max_weight=?,default_weight=?,weight_step=? WHERE name=?",(min_r,max_r,def_r,min_w,max_w,def_w,step,self.exercise));conn.commit()
-                self.app.safe_close(dialog);self.app.show_snackbar(f"Exercise limits saved for {self.exercise}.","green300");self.app.sets.clear();self.app.rebuild_entire_display()
+                self.app.safe_close(dialog);self.app.show_snackbar(f"Exercise limits saved for {self.exercise}.","green300");self.app.sets.clear();self.app.request_structural_refresh("exercise_card_structure", rebuild_navigation=True)
             except Exception as err:self.app.show_snackbar(str(err),"red300")
         dialog=ft.AlertDialog(title=ft.Text(f"Exercise Limits: {self.exercise}",weight="bold"),content=ft.Container(width=370,height=500,content=ft.Column([ft.Text("Valid entry limits are separate from progression preferences.",size=9,color="cyan200"),*fields],scroll="auto",spacing=6)),actions=[ft.TextButton("Cancel",on_click=lambda ev:self.app.safe_close(dialog)),ft.ElevatedButton("Save",on_click=save)])
         self.app.safe_open(dialog)
@@ -959,7 +960,7 @@ class ExerciseCard(ft.Card):
         self.app.sets[self.db_id] = copied
         self.autosave_pending_sets()
         self.app.show_snackbar(f"Set {destination + 1} copied from Set {destination}. RPE left blank.", "cyan300")
-        self.app.rebuild_entire_display()
+        self.app.request_structural_refresh("exercise_card_structure", rebuild_navigation=True)
 
     def open_progression_history(self, e=None):
         with get_db() as conn:
@@ -1026,7 +1027,7 @@ class ExerciseCard(ft.Card):
                     # Do not mutate the mounted checkbox. Rebuild from unchanged
                     # state so older Android Flet runtimes cannot freeze-crash.
                     self.app.show_snackbar(f"Enter weight, reps, and RPE before completing Set {set_idx + 1}.", "red300")
-                    self.app.rebuild_entire_display()
+                    self.app.request_structural_refresh("exercise_card_structure", rebuild_navigation=True)
                     return
                 # Same numeric check on_save already enforces -- catch it here too
                 # so "Done" can never go green on garbage data. Same rebuild-to-revert
@@ -1035,24 +1036,24 @@ class ExerciseCard(ft.Card):
                     float(w_raw)
                 except ValueError:
                     self.app.show_snackbar(f"Set {set_idx + 1} weight must be numeric.", "red300")
-                    self.app.rebuild_entire_display()
+                    self.app.request_structural_refresh("exercise_card_structure", rebuild_navigation=True)
                     return
                 try:
                     int(r_raw)
                 except ValueError:
                     self.app.show_snackbar(f"Set {set_idx + 1} reps must be a whole number.", "red300")
-                    self.app.rebuild_entire_display()
+                    self.app.request_structural_refresh("exercise_card_structure", rebuild_navigation=True)
                     return
                 try:
                     validate_exercise_values(self.exercise, float(w_raw), int(r_raw))
                 except ValueError as err:
                     self.app.show_snackbar(str(err), "red300")
-                    self.app.rebuild_entire_display()
+                    self.app.request_structural_refresh("exercise_card_structure", rebuild_navigation=True)
                     return
                 normalized_rpe = self.normalize_rpe(rpe_raw)
                 if normalized_rpe is None:
                     self.app.show_snackbar(RPE_ERROR, "red300")
-                    self.app.rebuild_entire_display()
+                    self.app.request_structural_refresh("exercise_card_structure", rebuild_navigation=True)
                     return
                 set_data["rpe"] = normalized_rpe
                 set_data["done"] = True
@@ -1074,7 +1075,7 @@ class ExerciseCard(ft.Card):
                 # Dimming is baked into initial row construction (see build_card),
                 # so a fresh rebuild is all that's needed to reflect the new state --
                 # no direct mutation of the already-mounted rows.
-                self.app.rebuild_entire_display()
+                self.app.request_structural_refresh("exercise_card_structure", rebuild_navigation=True)
         return set_done_changed
 
     def make_live_updater(self, set_idx, key_type):
@@ -1124,7 +1125,7 @@ class ExerciseCard(ft.Card):
         target = self.set_targets[new_idx] if new_idx < len(self.set_targets) else {"w": self.tgt_w, "r": self.tgt_r}
         self.app.sets[self.db_id] = add_set(self.app.sets[self.db_id], target)
         self.autosave_pending_sets() # Force atomic save
-        self.app.rebuild_entire_display()
+        self.app.request_structural_refresh("exercise_card_structure", rebuild_navigation=True)
 
     def on_remove_set(self, ev):
         if not self.app.require_premium("editing workout prescriptions"):
@@ -1133,7 +1134,7 @@ class ExerciseCard(ft.Card):
             return
         self.app.sets[self.db_id] = remove_last_set(self.app.sets[self.db_id])
         self.autosave_pending_sets() # Force atomic save
-        self.app.rebuild_entire_display()
+        self.app.request_structural_refresh("exercise_card_structure", rebuild_navigation=True)
 
     def trigger_delete_warning(self, ev):
         self.app.delete_dialog_id = self.db_id
@@ -1172,7 +1173,7 @@ class ExerciseCard(ft.Card):
         except Exception as e:
             print(f"[on_skip] rebuild_navigation_headers failed: {e}")
 
-        self.app.rebuild_entire_display()
+        self.app.request_structural_refresh("exercise_card_structure", rebuild_navigation=True)
 
     def on_unskip(self, ev):
         with get_db() as conn:
@@ -1184,7 +1185,7 @@ class ExerciseCard(ft.Card):
             del self.app.sets[self.db_id]
         
         self.app.rebuild_navigation_headers()
-        self.app.rebuild_entire_display()
+        self.app.request_structural_refresh("exercise_card_structure", rebuild_navigation=True)
 
     def on_save(self, ev):
         if not self.app.require_premium("logging workouts"):
@@ -1340,7 +1341,7 @@ class ExerciseCard(ft.Card):
             print(f"[on_save] rebuild_navigation_headers failed: {nav_err}")
 
         # Unconditional — runs regardless of what happened above.
-        self.app.rebuild_entire_display()
+        self.app.request_structural_refresh("exercise_card_structure", rebuild_navigation=True)
 
 
 class WorkoutTrackerApp:
@@ -6713,6 +6714,28 @@ class WorkoutTrackerApp:
         try:self.rebuild_navigation_headers()
         except Exception as err:print(f"[run_progression_engine] navigation failed: {err}")
         self.rebuild_entire_display();self.show_snackbar(f"Advanced to Week {next_w}: {report['sessions']} recurring exercise(s) generated from the plan.","green300")
+
+    def _dispatch_structural_refresh(self, callback):
+        """Run a structural refresh after the active Flet callback yields."""
+        async def deferred_refresh():
+            await asyncio.sleep(0)
+            callback()
+        runner = getattr(self.page, "run_task", None)
+        if callable(runner): runner(deferred_refresh)
+        else: callback()
+
+    def _apply_structural_refresh(self, request):
+        if request.remount_canvas: self.remount_main_canvas_on_rebuild = True
+        if request.rebuild_navigation: self.rebuild_navigation_headers()
+        self.rebuild_entire_display()
+
+    def request_structural_refresh(self, reason, *, rebuild_navigation=False, remount_canvas=True):
+        """Coalesce structural changes and defer mounted-tree replacement."""
+        coordinator = getattr(self, "_structural_refresh_coordinator", None)
+        if coordinator is None:
+            coordinator = StructuralRefreshCoordinator(self._dispatch_structural_refresh, self._apply_structural_refresh)
+            self._structural_refresh_coordinator = coordinator
+        return coordinator.request(reason, rebuild_navigation=rebuild_navigation, remount_canvas=remount_canvas)
 
     def rebuild_entire_display(self):
         if hasattr(self, "foundation"):

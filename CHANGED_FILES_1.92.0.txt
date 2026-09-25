@@ -1,0 +1,16 @@
+IronCycle 1.92.0 changed-file inventory
+
+- constants.py
+- main.py
+- services/structural_refresh_service.py
+- tests/test_188_repository_cleanup.py
+- tests/test_189_phase1_architecture.py
+- tests/test_1891_pure_helper_extraction.py
+- tests/test_1911_navigation_helper_hotfix.py
+- tests/test_192_structural_refresh.py
+- docs/releases/RELEASE_1.92.0.md
+- docs/validation/VALIDATION_1.92.0.md
+- docs/testing/ANDROID_SMOKE_TEST_1.92.0.md
+- VALIDATION_RESULTS_1.92.0.txt
+- CHANGED_FILES_1.92.0.txt
+- SOURCE_MANIFEST_1.92.0.txt
