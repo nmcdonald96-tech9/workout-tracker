@@ -53,7 +53,7 @@ def test_apply_failure_rearms_reentrant_request_and_recovers():
 def test_patch_release_contract_and_async_failure_logging():
     constants = (ROOT / "constants.py").read_text()
     main = (ROOT / "main.py").read_text()
-    assert 'APP_VERSION = "1.92.2"' in constants
+    assert 'APP_VERSION = "1.92.3"' in constants
     assert 'DATABASE_SCHEMA_VERSION = 20' in constants
     assert '[structural_refresh] FAILED:' in main
     assert (ROOT / "docs/releases/RELEASE_1.92.1.md").exists()

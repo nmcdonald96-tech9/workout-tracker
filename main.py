@@ -4544,22 +4544,39 @@ class WorkoutTrackerApp:
             pass
 
     def jump_to_category(self, category_name):
-        # Quick-nav behaves like an accordion: open the selected muscle group
-        # and collapse every other group programmed for the current day.
+        # Quick-nav behaves like an accordion. Keep the tuple-scoped keys used
+        # by is_category_collapsed() and defer scrolling until the remounted
+        # category anchors exist.
+        selected = str(category_name or "").strip()
+        if not selected:
+            return
         with get_db() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT DISTINCT category
-                FROM workout_sessions
-                WHERE meso_number = ? AND week = ? AND day_of_week = ?
-                ORDER BY category
-            """, (self.current_meso, self.current_week, self.current_day))
-            day_categories = [row[0] for row in cursor.fetchall() if row[0]]
+            day_categories = [
+                row[0]
+                for row in conn.execute(
+                    """
+                    SELECT DISTINCT category
+                    FROM workout_sessions
+                    WHERE meso_number = ? AND week = ? AND day_of_week = ?
+                    ORDER BY category
+                    """,
+                    (self.current_meso, self.current_week, self.current_day),
+                ).fetchall()
+                if row[0]
+            ]
 
-        self.collapsed_categories, request = jump_to_category_state(self.collapsed_categories, day_categories, category_name)
-        self.pending_scroll_key = request.key
-        self.remount_main_canvas_on_rebuild = request.remount
-        self.rebuild_entire_display()
+        selected_key = selected.casefold()
+        for category in day_categories:
+            self.collapsed_categories[self.category_key(category)] = (
+                str(category).strip().casefold() != selected_key
+            )
+        self.collapsed_categories[self.category_key(selected)] = False
+        self.pending_scroll_key = category_anchor_key(selected)
+        self.request_structural_refresh(
+            "category_jump",
+            rebuild_navigation=False,
+            remount_canvas=True,
+        )
 
     def advance_group_flow(self,session_id,completed_set):
         nxt=resolve_next_group_step(self.current_meso,self.current_week,self.current_day,session_id,completed_set)
@@ -6545,7 +6562,12 @@ class WorkoutTrackerApp:
             
         self.show_add_form = False
         self.wizard_custom_input.value = ""
-        self.rebuild_entire_display()
+        self.pending_scroll_key = category_anchor_key(cat)
+        self.request_structural_refresh(
+            "add_exercise",
+            rebuild_navigation=True,
+            remount_canvas=True,
+        )
 
     def rebuild_navigation_headers(self):
         # Completed and inactive mesocycles now live in Menu > Mesocycle.

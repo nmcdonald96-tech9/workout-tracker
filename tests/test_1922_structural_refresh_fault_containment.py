@@ -128,7 +128,7 @@ def test_application_logging_and_bounded_retry_contract():
 
 def test_1922_release_contract():
     constants = (ROOT / "constants.py").read_text(encoding="utf-8")
-    assert 'APP_VERSION = "1.92.2"' in constants
+    assert 'APP_VERSION = "1.92.3"' in constants
     assert "DATABASE_SCHEMA_VERSION = 20" in constants
     assert (ROOT / "docs/releases/RELEASE_1.92.2.md").exists()
     assert (ROOT / "docs/validation/VALIDATION_1.92.2.md").exists()
