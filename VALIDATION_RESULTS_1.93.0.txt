@@ -1,0 +1,28 @@
+IronCycle 1.93.0 validation results
+
+Authoritative input baseline
+- Source: repomix-output-1.92.3.txt plus exact main.txt
+- Confirmed before modification: APP_VERSION=1.92.3
+- Confirmed before modification: DATABASE_SCHEMA_VERSION=20
+- Baseline supported pytest: PASS, 103 passed in 2.68s
+
+Post-change validation
+- APP_VERSION=1.93.0: PASS
+- DATABASE_SCHEMA_VERSION=20: PASS (no migration)
+- Active application/service compilation: PASS
+- Focused tests/test_193_completed_revision_service.py: PASS, 12 passed in 0.13s
+- Complete supported pytest suite: PASS, 115 passed in 2.32s
+- Clean extracted-package compilation: PASS
+- Clean extracted-package complete supported pytest suite: PASS, 115 passed
+- ZIP integrity: PASS
+- SHA-256: generated in IronCycle-1.93.0-complete-replacement.sha256.txt
+
+Not tested
+- Physical Android/Flet UI, lifecycle, force-stop, and logcat behavior
+- APK/AAB build, signing, install, or upgrade
+- Google Play Billing purchase/restore/reconciliation
+- OneDrive interactive sign-in and Graph network operations
+
+Source limitation
+- Repomix is a text-source export and does not embed excluded binary asset payloads.
+  The apply script overlays this release and does not delete existing binary assets.

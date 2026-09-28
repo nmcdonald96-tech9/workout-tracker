@@ -1,0 +1,412 @@
+IRONCYCLE 1.93.0 BUILD INSTRUCTIONS
+===================================
+
+PURPOSE
+-------
+This Repomix file contains the accepted IronCycle 1.92.3 source baseline.
+
+Use the source in this Repomix file to build the complete IronCycle 1.93.0
+release. Do not merely review the source, describe a possible migration, or
+produce a prototype patch.
+
+The requested release must implement the dedicated completed-exercise
+revision service boundary described below.
+
+BASELINE
+--------
+Source baseline: IronCycle 1.92.3
+Target application version: 1.93.0
+Expected database schema version: 20
+
+Do not change the database schema unless the requested implementation is
+impossible without a schema change. If a schema change appears necessary,
+stop and clearly explain why before creating the release.
+
+PRIMARY CHANGE
+--------------
+Create:
+
+    services/completed_revision_service.py
+
+The completed revision service must own all durable completed-exercise
+revision operations and their transaction boundaries.
+
+SERVICE OWNERSHIP
+-----------------
+services/completed_revision_service.py must own:
+
+1. Completed-exercise snapshot capture
+2. Revision validation
+3. Transaction boundaries
+4. Completed-row replacement
+5. Progression recalculation coordination
+6. Future-target synchronization
+7. Return-to-Pending persistence
+8. Audit-event preparation and persistence
+9. Rollback
+10. Revision cancellation restoration
+11. Durable-state conflict detection where appropriate
+12. Preservation of completed-history fields
+13. Coordination with the existing progression policy service
+
+The service must not import Flet or create Flet controls.
+
+MAIN.PY OWNERSHIP
+-----------------
+main.py must retain:
+
+1. Dialogs
+2. Flet controls
+3. User interaction handling
+4. Snackbar messages
+5. Structural-refresh requests
+6. Temporary display state
+7. Navigation and scrolling
+8. Presentation of PR celebrations and strength classifications
+
+main.py may gather values from Flet controls and convert them to plain Python
+values or dictionaries before calling the service.
+
+main.py must not directly own SQLite transaction boundaries for completed
+revision persistence after this migration.
+
+TRANSACTION REQUIREMENTS
+------------------------
+Every durable completed-revision save must use one SQLite transaction.
+
+The same transaction must coordinate:
+
+1. Validation against current durable state
+2. Completed-set row replacement
+3. Completed-session status persistence
+4. Progression classification persistence
+5. Progression recalculation coordination
+6. Eligible future-target synchronization
+7. Audit-event insertion
+
+Use an explicit transaction appropriate for this repository, normally:
+
+    BEGIN IMMEDIATE
+
+On success:
+
+    COMMIT
+
+On any exception:
+
+    ROLLBACK
+
+A failure must not leave partially replaced completed rows, partially updated
+future targets, or committed audit events describing an operation that did
+not complete.
+
+SNAPSHOT AND CANCELLATION
+-------------------------
+Opening revision mode must capture the original completed session and every
+completed set field needed for exact restoration.
+
+Canceling a revision must atomically restore:
+
+1. Original session status
+2. Original session date
+3. Original bodyweight snapshot
+4. All original completed-set rows
+5. All progression metadata stored on those rows
+6. Original completion timestamps
+7. Any source or ownership metadata present in schema 20
+
+Do not restore only weight, reps, and RPE if additional completed-row fields
+exist.
+
+COMPLETED-ROW REPLACEMENT
+-------------------------
+Saving a revision must replace the completed rows atomically.
+
+Preserve or correctly regenerate all schema-20 fields required by the current
+application, including where present:
+
+- set_number
+- weight
+- reps
+- rpe
+- rest_seconds
+- target_weight
+- target_reps
+- normal_target_weight
+- normal_target_reps
+- completed_at
+- is_complete
+- progression_decision
+- progression_reason_code
+- progression_reason
+- progression_settings_snapshot
+- weight_source
+- reps_source
+- other ownership or provenance fields
+
+Inspect the actual schema and current save path before deciding which fields
+must be preserved or regenerated.
+
+Do not silently discard fields.
+
+VALIDATION
+----------
+Revision validation must enforce the same or stricter rules as normal workout
+completion.
+
+At minimum:
+
+1. Weight must be valid for the exercise.
+2. Reps must be a valid whole number.
+3. RPE must be from 1.0 through 10.0 in 0.5 increments.
+4. Invalid values such as 85 must not be persisted as RPE.
+5. A populated row must have all required fields.
+6. A completed row must have a completion timestamp.
+7. At least one completed set must exist.
+8. The session must still be in a state eligible for the requested operation.
+
+Return user-correctable validation failures to main.py through a dedicated
+exception type. main.py remains responsible for snackbar presentation.
+
+PROGRESSION
+-----------
+services/progression_service.py remains the authoritative progression policy.
+
+services/completed_revision_service.py coordinates progression but must not
+duplicate progression formulas.
+
+A successful completed revision must:
+
+1. Reclassify the corrected completed sets.
+2. Recalculate progression exactly once.
+3. Synchronize only eligible future Pending sessions.
+4. Avoid rewriting completed historical sessions.
+5. Preserve explicit user-owned future targets.
+6. Respect the repository's target-ownership rules.
+7. Respect readiness and set-specific progression behavior.
+8. Record enough diagnostic information for audit and testing.
+
+Inspect the actual repository code for target ownership, readiness ownership,
+and future-session selection. Do not assume that updating every later row
+with the same exercise name is safe.
+
+RETURN TO PENDING
+-----------------
+Return-to-Pending must be a service-owned durable operation.
+
+It must:
+
+1. Validate that the session is currently eligible.
+2. Persist Pending status transactionally.
+3. Preserve the existing values needed for the pending editor.
+4. Reconcile progression and future targets if the current application
+   contract requires it.
+5. Create the correct audit event.
+6. Roll back completely on failure.
+
+AUDIT
+-----
+Audit events must be inserted using the same SQLite connection and transaction
+as the durable operation.
+
+Retain existing event names when they are part of repository tests or release
+contracts, including where applicable:
+
+    completed_exercise_revision_started
+    completed_exercise_revision_saved
+    completed_exercise_revision_canceled
+    completed_exercise_returned_to_pending
+    progression_targets_recalculated
+
+Audit preparation belongs to the service.
+
+Snackbar wording and visual presentation belong to main.py.
+
+COMPATIBILITY
+-------------
+If existing callers or tests still use these database helpers:
+
+    completed_exercise_revision_snapshot
+    restore_completed_exercise_revision
+    revision_change_summary
+
+database.py may temporarily retain compatibility shims.
+
+Compatibility shims must delegate to
+services.completed_revision_service.py. They must not remain the authoritative
+implementation.
+
+Avoid circular imports. Use local imports where necessary.
+
+CONCURRENCY AND STALE REVISIONS
+-------------------------------
+Inspect the existing revision workflow for stale-state risk.
+
+If a completed result can change after the revision dialog is opened, include
+a durable fingerprint or equivalent comparison so saving an old revision does
+not overwrite a newer completed result silently.
+
+A conflict must fail safely without replacing rows or updating progression.
+
+MAIN.PY MIGRATION
+-----------------
+Migrate every completed-revision persistence path, including at least:
+
+    _reopen_completed
+    confirm_revise_completed
+    cancel_completed_revision
+    on_save
+
+Search for additional direct completed-revision SQL and migrate it where it
+belongs to the service.
+
+After migration, main.py must still own:
+
+- opening and closing dialogs
+- extracting control values
+- temporary revision display state
+- snackbars
+- automatic backup scheduling
+- structural refresh
+- navigation refresh
+- pending scroll targets
+- PR celebration display
+- strength badge display
+
+TEST REQUIREMENTS
+-----------------
+Add focused tests for the new boundary.
+
+At minimum, test:
+
+1. Snapshot captures all required session and set fields.
+2. Begin revision changes Completed to Pending atomically.
+3. Cancel revision restores the exact original rows.
+4. Valid revision replaces rows.
+5. Invalid weight is rejected.
+6. Invalid reps are rejected.
+7. Invalid RPE is rejected.
+8. RPE half-step values are accepted.
+9. Transaction failure rolls back replaced rows.
+10. Transaction failure rolls back future targets.
+11. Transaction failure rolls back audit events.
+12. Progression recalculation occurs exactly once.
+13. Corrected results synchronize eligible future Pending targets.
+14. Completed historical sessions are not rewritten.
+15. User-owned future targets are not overwritten.
+16. Return-to-Pending persists correctly.
+17. Return-to-Pending failure rolls back.
+18. Stale revision conflicts fail safely.
+19. database.py compatibility shims delegate correctly.
+20. The service contains no Flet dependency.
+
+Update historical source-inspection tests only when the ownership move makes
+their old expectation intentionally obsolete. Do not delete meaningful
+behavioral tests merely to make the suite pass.
+
+VALIDATION
+----------
+Run focused completed-revision tests first.
+
+Then run the complete test suite.
+
+Also perform:
+
+1. Python syntax compilation.
+2. Import smoke testing.
+3. Database initialization on a temporary database.
+4. Schema-version verification.
+5. Source scan confirming the service has no Flet imports.
+6. Source scan for completed-revision transaction SQL left in main.py.
+7. Clean-package extraction.
+8. Retesting from the extracted package.
+
+Do not claim that tests passed unless the command actually completed and the
+result was observed.
+
+If part of validation cannot run in the available environment, state exactly
+which validation was not completed.
+
+VERSIONING
+----------
+Set the application version to:
+
+    1.93.0
+
+Keep:
+
+    DATABASE_SCHEMA_VERSION = 20
+
+unless an approved schema change is required.
+
+Do not change unrelated application behavior or perform unrelated cleanup.
+
+DELIVERABLES
+------------
+Create final files in the output directory:
+
+    IronCycle-1.93.0-complete-replacement.zip
+    apply_ironcycle_1.93.0.sh
+    IronCycle-1.93.0-complete-replacement.sha256.txt
+
+The complete replacement ZIP must contain the source tree needed to replace
+the existing installation. It must not contain only a patch.
+
+Also include:
+
+    RELEASE_1.93.0.md
+    VALIDATION_1.93.0.md
+    ANDROID_SMOKE_TEST_1.93.0.md
+    CHANGED_FILES_1.93.0.txt
+    SOURCE_MANIFEST_1.93.0.txt
+    VALIDATION_RESULTS_1.93.0.txt
+
+Include the new tests in the replacement package.
+
+APPLICATION SCRIPT
+------------------
+The application script must:
+
+1. Require execution from the intended repository root.
+2. Verify expected baseline files before changing anything.
+3. Create a timestamped backup of files it replaces.
+4. Extract or copy complete replacement files.
+5. Preserve user data and the live database.
+6. Not delete assets unnecessarily.
+7. Run syntax checks.
+8. Print clear success or failure output.
+9. Stop immediately on errors.
+10. Never label a partial application as successful.
+
+ANDROID SMOKE TEST
+------------------
+Prepare an Android smoke-test checklist covering:
+
+1. Open a completed exercise.
+2. Enter revision mode.
+3. Change weight, reps, and RPE.
+4. Save the revision.
+5. Confirm corrected completed values.
+6. Confirm future targets were recalculated.
+7. Cancel a separate revision and confirm exact restoration.
+8. Return a completed exercise to Pending.
+9. Complete the returned exercise again.
+10. Restart the app and confirm persistence.
+11. Verify progression diagnostics or target explanation.
+12. Verify no duplicate completed sets.
+13. Verify no unintended changes to another exercise or future user-owned
+    target.
+
+FINAL RESPONSE
+--------------
+When completing this task:
+
+1. Provide download links for every final deliverable.
+2. Summarize the changed files.
+3. Report the exact tests executed and their results.
+4. Clearly distinguish automated validation from Android testing.
+5. Do not describe a prototype as a completed release.
+6. Do not provide only a patch unless explicitly requested.
+7. Do not ask for confirmation between ordinary build stages.
+8. Proceed through extraction, implementation, testing, packaging, and
+   verification automatically.

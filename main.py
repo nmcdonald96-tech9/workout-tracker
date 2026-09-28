@@ -57,6 +57,10 @@ from services.pending_set_service import (
 from app.navigation import category_anchor_key, exercise_anchor_key, ordered_day_names
 from components.exercise_card import format_target_weight
 from services.workout_navigation_service import find_control_offset, jump_to_category_state
+from services.completed_revision_service import (
+    CompletedRevisionError, capture_revision_snapshot, commit_completed_revision,
+    editable_copies, return_to_pending,
+)
 
 # --- WIFI TRANSFER HARDENING ---
 # Threaded server prevents browser side-requests (favicon/retries) from blocking the
@@ -242,6 +246,11 @@ class ExerciseCard(ft.Card):
         return blur_handler
 
     def build_card(self):
+        # Revision mode is a UI-only pending presentation. The authoritative
+        # session remains Completed until the service commits atomically.
+        revision_snapshot = self.app.completed_revision_sessions.get(self.db_id)
+        if revision_snapshot is not None and self.status == STATUS_COMPLETED:
+            self.status = STATUS_PENDING
         # --- DATA FETCHING PHASE ---
         if self.context is not None:
             readiness_logged = bool(self.context.get("readiness_logged", False))
@@ -816,24 +825,37 @@ class ExerciseCard(ft.Card):
         self.margin = 4
 
     def _reopen_completed(self, action, revision_mode=False):
-        if revision_mode:
-            self.app.completed_revision_sessions[self.db_id]=completed_exercise_revision_snapshot(self.db_id)
-            record_audit("completed_exercise_revision_started",f"session_id={self.db_id}; exercise={self.exercise}")
-        else:
-            self.app.completed_revision_sessions.pop(self.db_id,None)
-            record_audit("completed_exercise_returned_to_pending",f"session_id={self.db_id}; exercise={self.exercise}")
-        with get_db() as conn:conn.execute("UPDATE workout_sessions SET status=? WHERE id=?",(STATUS_PENDING,self.db_id));conn.commit()
-        self.app.sets.pop(self.db_id,None);self.app.view_mode="workout";self.app.pending_scroll_key=exercise_anchor_key(self.db_id)
-        self.app.rebuild_navigation_headers();self.app.request_structural_refresh("exercise_card_structure", rebuild_navigation=True);self.app.show_snackbar("Revision mode opened with logged values preserved." if revision_mode else "Exercise returned to Pending with existing values preserved.","cyan300")
+        try:
+            if revision_mode:
+                with get_db() as conn:
+                    snapshot = capture_revision_snapshot(conn, self.db_id)
+                self.app.completed_revision_sessions[self.db_id] = snapshot
+                self.app.sets[self.db_id] = editable_copies(snapshot)
+                message = "Revision mode opened with logged values preserved."
+            else:
+                with get_db() as conn:
+                    result = return_to_pending(conn, self.db_id)
+                self.app.completed_revision_sessions.pop(self.db_id, None)
+                self.app.sets.pop(self.db_id, None)
+                message = f"Exercise returned to Pending with {result.draft_rows_preserved} draft set(s) preserved."
+            self.app.view_mode = "workout"
+            self.app.pending_scroll_key = exercise_anchor_key(self.db_id)
+            self.app.request_structural_refresh("exercise_card_structure", rebuild_navigation=True)
+            self.app.show_snackbar(message, "cyan300")
+        except CompletedRevisionError as err:
+            self.app.show_snackbar(str(err), "red300")
     def confirm_revise_completed(self,e=None):
         dialog=ft.AlertDialog(title=ft.Text("Revise Logged Sets",weight="bold"),content=ft.Text("Correct logged weight, reps, RPE, or set count. Save Revision keeps the exercise completed and refreshes progression from the corrected result."),actions=[ft.TextButton("Cancel",on_click=lambda ev:self.app.safe_close(dialog)),ft.ElevatedButton("Begin Revision",on_click=lambda ev:[self.app.safe_close(dialog),self._reopen_completed("completed_exercise_revision_started",True)])]);self.app.safe_open(dialog)
     def confirm_reopen_completed(self,e=None):
         dialog=ft.AlertDialog(title=ft.Text("Return Exercise to Pending",weight="bold"),content=ft.Text("Move this exercise back to Pending? Existing set values remain available, but it will not count as completed until logged again."),actions=[ft.TextButton("Cancel",on_click=lambda ev:self.app.safe_close(dialog)),ft.ElevatedButton("Return to Pending",on_click=lambda ev:[self.app.safe_close(dialog),self._reopen_completed("completed_exercise_returned_to_pending",False)])]);self.app.safe_open(dialog)
     def cancel_completed_revision(self,e=None):
-        try:
-            restore_completed_exercise_revision(self.db_id,self.app.completed_revision_sessions.get(self.db_id));record_audit("completed_exercise_revision_canceled",f"session_id={self.db_id}; exercise={self.exercise}");self.app.completed_revision_sessions.pop(self.db_id,None);self.app.sets.pop(self.db_id,None);self.app.rebuild_navigation_headers();self.app.request_structural_refresh("exercise_card_structure", rebuild_navigation=True);self.app.show_snackbar("Revision canceled. Original completed result restored.","green300")
-        except Exception as err:self.app.show_snackbar(f"Could not cancel revision: {err}","red300")
-
+        # Permanent completed rows were never changed when revision began.
+        if self.app.completed_revision_sessions.pop(self.db_id, None) is None:
+            return
+        self.app.sets.pop(self.db_id, None)
+        self.app.pending_scroll_key = exercise_anchor_key(self.db_id)
+        self.app.request_structural_refresh("exercise_card_structure", rebuild_navigation=True)
+        self.app.show_snackbar("Revision canceled. Original completed result was unchanged.", "green300")
     def open_setup_notes_dialog(self,e=None):
         with get_db() as c:r=c.execute("SELECT setup_notes FROM exercise_dict WHERE name=?",(self.exercise,)).fetchone()
         field=ft.TextField(label="Setup notes",value=r[0] if r and r[0] else "",multiline=True,min_lines=3,max_lines=6)
@@ -1096,6 +1118,10 @@ class ExerciseCard(ft.Card):
         return live_update_event
 
     def autosave_pending_sets(self):
+        # Completed revision drafts are intentionally memory-only until the
+        # completed-revision service commits them atomically.
+        if self.db_id in self.app.completed_revision_sessions:
+            return False
         if self.db_id not in self.app.sets:
             return False
         context = PendingSetContext(
@@ -1189,6 +1215,37 @@ class ExerciseCard(ft.Card):
 
     def on_save(self, ev):
         if not self.app.require_premium("logging workouts"):
+            return
+        revision_snapshot = self.app.completed_revision_sessions.get(self.db_id)
+        if revision_snapshot is not None:
+            revised = []
+            for index, draft in enumerate(self.app.sets.get(self.db_id, []), start=1):
+                row = dict(draft)
+                row["session_id"] = self.db_id
+                row["set_number"] = index
+                target = self.set_targets[index - 1] if index <= len(self.set_targets) else {"w": self.tgt_w, "r": self.tgt_r}
+                normal = self.normal_set_targets[index - 1] if index <= len(self.normal_set_targets) else target
+                row.setdefault("target_weight", target["w"])
+                row.setdefault("target_reps", target["r"])
+                row.setdefault("normal_target_weight", normal["w"])
+                row.setdefault("normal_target_reps", normal["r"])
+                revised.append(row)
+            try:
+                with get_db() as conn:
+                    result = commit_completed_revision(conn, revision_snapshot, revised)
+            except CompletedRevisionError as err:
+                # Keep the in-memory draft so the user can correct or cancel it.
+                self.app.show_snackbar(str(err), "red300")
+                return
+            self.app.completed_revision_sessions.pop(self.db_id, None)
+            self.app.sets.pop(self.db_id, None)
+            self.app.pending_scroll_key = exercise_anchor_key(self.db_id)
+            self.app.request_structural_refresh("exercise_card_structure", rebuild_navigation=True)
+            self.app.show_snackbar(
+                f"Revision saved: {result.sets_added_count} added, {result.sets_removed_count} removed, {result.sets_modified_count} modified.",
+                "green300",
+            )
+            self.app.schedule_automatic_cloud_backup("automatic: completed exercise revised")
             return
         rows_to_save = []
 

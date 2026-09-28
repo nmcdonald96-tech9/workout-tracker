@@ -44,8 +44,8 @@ def test_post_mount_scroll_contract_is_retained():
 
 def test_release_contract():
     constants = (ROOT / "constants.py").read_text(encoding="utf-8")
-    assert 'APP_VERSION = "1.92.3"' in constants
+    assert 'APP_VERSION = "1.93.0"' in constants
     assert "DATABASE_SCHEMA_VERSION = 20" in constants
-    assert (ROOT / "docs/releases/RELEASE_1.92.3.md").exists()
-    assert (ROOT / "docs/testing/ANDROID_SMOKE_TEST_1.92.3.md").exists()
-    assert (ROOT / "docs/validation/VALIDATION_1.92.3.md").exists()
+    assert (ROOT / "docs/releases/RELEASE_1.93.0.md").exists()
+    assert (ROOT / "docs/testing/ANDROID_SMOKE_TEST_1.93.0.md").exists()
+    assert (ROOT / "docs/validation/VALIDATION_1.93.0.md").exists()

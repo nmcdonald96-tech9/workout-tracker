@@ -283,3 +283,33 @@ def simulate_progression(settings,w,r,equipment_type="Barbell"):
     n=get_next_dumbbell(w) if equipment_type=="Dumbbell" else w+float(settings["progression_step"]);cap=settings.get("max_progression_weight")
     if cap is not None and n>float(cap):return {"next_weight":float(cap),"next_reps":ceiling,"summary":f"Load cap: hold {float(cap):g} lb and maintain up to {ceiling} reps"}
     return {"next_weight":n,"next_reps":8,"summary":f"Graduate load: {n:g} lb, reps reset for the next climb"}
+
+
+def recalculate_after_completed_revision(conn, session_id, revised_sets, *, exercise_name, movement_type,
+                                         equipment_type="Other", is_bodyweight=False, bodyweight=0.0,
+                                         age=43, profile=0):
+    """Authoritative post-revision progression coordination.
+
+    Calculates set outcomes once through the established set-specific engine and
+    persists the resulting completed-row diagnostics using the caller's active
+    transaction. Future-session eligibility and ownership synchronization remain
+    the completed-revision persistence service's responsibility.
+    """
+    values=[(r.weight,r.reps,r.rpe,r.target_weight,r.target_reps,
+             r.normal_target_weight,r.normal_target_reps) for r in revised_sets]
+    first=revised_sets[0]
+    targets, diagnostics=calculate_set_specific_progression(
+        values, first.target_weight, first.target_reps, movement_type,
+        readiness_score=15, joint_score=5, equipment_type=equipment_type,
+        is_bodyweight=is_bodyweight, bodyweight=bodyweight, age=age,
+        profile=profile, exercise_name=exercise_name,
+    )
+    if len(diagnostics)!=len(revised_sets):
+        raise ValueError("Progression recalculation did not return every completed set.")
+    for row, outcome in zip(revised_sets, diagnostics):
+        conn.execute("UPDATE workout_sets SET progression_decision=?,progression_reason_code=?,progression_reason=?,progression_settings_snapshot=? WHERE id=? AND session_id=?",(
+            outcome.get("decision"),outcome.get("reason_code"),outcome.get("reason"),
+            __import__("json").dumps(outcome.get("settings") or {},sort_keys=True,separators=(",",":")),
+            row.id,int(session_id)))
+    return {"recalculated":True,"count":len(diagnostics),"sets":tuple(diagnostics),
+            "next_targets":tuple(targets)}
