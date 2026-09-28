@@ -1155,18 +1155,8 @@ class ExerciseCard(ft.Card):
             return False
 
     def request_set_structure_refresh(self, reason):
-        """Refresh only this mounted card; preserve the workout ListView and viewport."""
-        try:
-            self.build_card()
-            self.update()
-            return True
-        except Exception as ex:
-            print(f"[set_structure_card_refresh] {reason}: {ex}")
-            self.app.show_snackbar(
-                "The set was saved, but the exercise card could not refresh.",
-                "amber300",
-            )
-            return False
+        """Replace this card inside the mounted workout list without moving its viewport."""
+        return self.app.replace_exercise_card_in_place(self)
 
     def on_add_set(self, ev):
         if not self.app.require_premium("editing workout prescriptions"):
@@ -2028,10 +2018,16 @@ class WorkoutTrackerApp:
                 except:pass
         def move_card(sid,d):reorder_pending_exercise_in_category(self.current_meso,week.value,day.value,sid,d);refresh(True)
         def move_group(sid,d):set_group_member_position(self.current_meso,week.value,day.value,sid,d);refresh(True)
-        def group(ev=None):set_exercise_group(self.current_meso,week.value,day.value,[x['id'] for x in rows() if x['id'] in selected]);enqueue_cloud_backup('automatic: workout structure changed');self.schedule_automatic_cloud_backup();refresh(True)
+        def refresh_workout_after_group_change(message):
+            self.request_structural_refresh('superset_assignment_changed',rebuild_navigation=False,remount_canvas=True)
+            self.show_snackbar(message,'green300')
+        def group(ev=None):
+            selected_ids=[x['id'] for x in rows() if x['id'] in selected]
+            if len(selected_ids)<2:self.show_snackbar('Select at least two pending exercises.','amber300');return
+            set_exercise_group(self.current_meso,week.value,day.value,selected_ids);enqueue_cloud_backup('automatic: workout structure changed');self.schedule_automatic_cloud_backup();refresh(True);refresh_workout_after_group_change('Superset group created.')
         def ungroup(ev=None):
             if not selected:self.show_snackbar('Select a grouped exercise.','amber300');return
-            clear_exercise_group(self.current_meso,week.value,day.value,next(iter(selected)));enqueue_cloud_backup('automatic: workout structure changed');self.schedule_automatic_cloud_backup();refresh(True)
+            clear_exercise_group(self.current_meso,week.value,day.value,next(iter(selected)));enqueue_cloud_backup('automatic: workout structure changed');self.schedule_automatic_cloud_backup();refresh(True);refresh_workout_after_group_change('Superset group removed.')
         week.on_select=refresh;day.on_select=refresh;refresh()
         dialog=ft.AlertDialog(title=ft.Text('Workout Structure & Supersets',weight='bold',size=18 if compact else 20),content=ft.Container(width=420,height=540,content=ft.Column([ft.Row([week,day]),items,ft.Text('Card arrows move within a muscle group. A arrows change execution order.',size=9,color='white54'),ft.Row([ft.ElevatedButton('Create Group',on_click=group,expand=True),ft.ElevatedButton('Ungroup',on_click=ungroup,expand=True)],spacing=6)],expand=True,spacing=5)),actions=[ft.TextButton('Done',on_click=lambda ev:[self.safe_close(dialog),self.sets.clear(),self.rebuild_entire_display()])],inset_padding=10 if compact else 12,content_padding=12 if compact else 16)
         self.safe_open(dialog)
@@ -4511,6 +4507,30 @@ class WorkoutTrackerApp:
 
     def preserve_workout_viewport(self):
         self.pending_scroll_offset=float(self.workout_scroll_offset or 0.0)
+
+    def replace_exercise_card_in_place(self, card):
+        """Replace one child while preserving the existing ListView and scroll position."""
+        wanted_key = exercise_anchor_key(card.db_id)
+        try:
+            index = next(
+                i for i, control in enumerate(self.main_canvas.controls)
+                if getattr(control, "key", None) == wanted_key
+            )
+            replacement = ExerciseCard(
+                card.db_id, card.exercise, card.tgt_w, card.tgt_r,
+                card.status, card.mov_type, self, context=card.context,
+            )
+            replacement.key = wanted_key
+            self.main_canvas.controls[index] = replacement
+            self.main_canvas.update()
+            return True
+        except Exception as ex:
+            print(f"[replace_exercise_card_in_place] {ex}")
+            self.show_snackbar(
+                "The set was saved, but the exercise card could not refresh.",
+                "amber300",
+            )
+            return False
 
     def remount_main_canvas(self):
         """Replace the main ListView so Android creates a new zeroed viewport."""

@@ -18,4 +18,4 @@ def test_completion_navigation_still_exists():
 def test_compact_skipped_card_retained():
  s=(ROOT/'main.py').read_text();assert 'ExerciseCardMode.SKIPPED_COMPACT' in s and 'SKIPPED' in s and 'Unskip' in s
 def test_release_contract():
- c=(ROOT/'constants.py').read_text();assert 'APP_VERSION = "1.95.1"' in c and 'DATABASE_SCHEMA_VERSION = 20' in c
+ c=(ROOT/'constants.py').read_text();assert 'APP_VERSION = "1.95.2"' in c and 'DATABASE_SCHEMA_VERSION = 20' in c

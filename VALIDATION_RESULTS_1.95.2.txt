@@ -1,0 +1,1 @@
+IronCycle 1.95.2 validation is executed by the apply script against the committed 1.95.1 baseline. Physical Android validation remains required.

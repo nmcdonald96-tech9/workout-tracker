@@ -1,0 +1,10 @@
+IronCycle 1.95.2 changed-file inventory
+- constants.py
+- main.py
+- tests/test_1952_mounted_list_card_replacement.py
+- docs/releases/RELEASE_1.95.2.md
+- docs/testing/ANDROID_SMOKE_TEST_1.95.2.md
+- docs/validation/VALIDATION_1.95.2.md
+- CHANGED_FILES_1.95.2.txt
+- SOURCE_MANIFEST_1.95.2.txt
+- VALIDATION_RESULTS_1.95.2.txt
