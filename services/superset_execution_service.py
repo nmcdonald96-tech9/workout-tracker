@@ -1,97 +1,29 @@
-"""Framework-neutral post-set and superset execution routing for IronCycle 1.94."""
-from __future__ import annotations
+"""Framework-neutral post-set and superset execution routing."""
 from dataclasses import dataclass
 from enum import Enum
-from typing import Optional
-
-PENDING = "Pending"
-
-class SupersetExecutionAction(str, Enum):
-    ADVANCE_SET = "advance_set"
-    ADVANCE_GROUP = "advance_group"
-    READY_TO_LOG_EXERCISE = "ready_to_log_exercise"
-    READY_TO_LOG_GROUP = "ready_to_log_group"
-    NO_ACTION = "no_action"
-
+class SupersetExecutionAction(str,Enum):
+ ADVANCE_SET="advance_set"; ADVANCE_GROUP="advance_group"; READY_TO_LOG_EXERCISE="ready_to_log_exercise"; READY_TO_LOG_GROUP="ready_to_log_group"; NO_ACTION="no_action"
 @dataclass(frozen=True)
 class SupersetExecutionInstruction:
-    action: SupersetExecutionAction
-    source_session_id: int
-    completed_set_number: int
-    target_session_id: Optional[int] = None
-    target_set_number: Optional[int] = None
-    target_exercise: Optional[str] = None
-    target_category: Optional[str] = None
-    group_id: Optional[str] = None
-    round_complete: bool = False
-    group_complete: bool = False
-    single_member_remaining: bool = False
-    remaining_member_count: int = 0
-    reason_code: str = ""
-    message: Optional[str] = None
-
-    def as_legacy_group_step(self):
-        if self.action not in (SupersetExecutionAction.ADVANCE_SET, SupersetExecutionAction.ADVANCE_GROUP):
-            return None
-        return {
-            "session_id": self.target_session_id,
-            "exercise": self.target_exercise,
-            "category": self.target_category,
-            "pending_set": self.target_set_number,
-            "round_complete": self.round_complete,
-            "group_complete": self.group_complete,
-            "remaining_members": self.remaining_member_count,
-            "single_member_remaining": self.single_member_remaining,
-            "group_id": self.group_id,
-        }
-
-def _pending_set(conn, session_id):
-    rows=conn.execute("SELECT set_number,is_complete FROM workout_sets WHERE session_id=? ORDER BY set_number",(int(session_id),)).fetchall()
-    if not rows:
-        return 1
-    return next((int(number) for number,done in rows if not done),None)
-
-def resolve_post_set_action(conn, *, session_id: int, completed_set_number: int) -> SupersetExecutionInstruction:
-    """Return one deterministic UI-neutral instruction without committing or mutating controls."""
-    sid=int(session_id); completed=int(completed_set_number or 0)
-    source=conn.execute("""SELECT exercise_group_id,COALESCE(group_position,999),status,exercise,category,
-                                  meso_number,week,day_of_week
-                           FROM workout_sessions WHERE id=?""",(sid,)).fetchone()
-    if not source:
-        return SupersetExecutionInstruction(SupersetExecutionAction.NO_ACTION,sid,completed,reason_code="SOURCE_MISSING")
-    group_id,source_position,status,exercise,category,meso,week,day=source
-    if status != PENDING:
-        return SupersetExecutionInstruction(SupersetExecutionAction.NO_ACTION,sid,completed,group_id=group_id,reason_code="SOURCE_NOT_PENDING")
-    if not group_id:
-        pending=_pending_set(conn,sid)
-        if pending is None:
-            return SupersetExecutionInstruction(SupersetExecutionAction.READY_TO_LOG_EXERCISE,sid,completed,target_session_id=sid,group_complete=True,reason_code="STANDALONE_COMPLETE")
-        return SupersetExecutionInstruction(SupersetExecutionAction.ADVANCE_SET,sid,completed,target_session_id=sid,target_set_number=pending,target_exercise=exercise,target_category=category,reason_code="STANDALONE_NEXT_SET")
-    members=conn.execute("""SELECT id,exercise,category,status,COALESCE(group_position,999)
-                            FROM workout_sessions
-                            WHERE meso_number=? AND week=? AND day_of_week=? AND exercise_group_id=?
-                            ORDER BY COALESCE(group_position,999),COALESCE(workout_order,id),id""",
-                         (meso,str(week),day,group_id)).fetchall()
-    candidates=[]
-    for member_id,member_exercise,member_category,member_status,position in members:
-        if member_status != PENDING:
-            continue
-        pending=_pending_set(conn,member_id)
-        if pending is not None:
-            candidates.append((int(member_id),member_exercise,member_category,int(position),pending))
-    if not candidates:
-        return SupersetExecutionInstruction(SupersetExecutionAction.READY_TO_LOG_GROUP,sid,completed,group_id=group_id,group_complete=True,reason_code="GROUP_COMPLETE")
-    completed_key=(completed,int(source_position))
-    ordered=sorted(candidates,key=lambda item:(item[4],item[3],item[0]))
-    target=next((item for item in ordered if (item[4],item[3])>completed_key),ordered[0])
-    target_id,target_exercise,target_category,target_position,target_set=target
-    target_key=(target_set,target_position)
-    round_complete=target_key<=completed_key or target_set>completed
-    remaining=len(candidates)
-    action=SupersetExecutionAction.ADVANCE_SET if target_id==sid else SupersetExecutionAction.ADVANCE_GROUP
-    return SupersetExecutionInstruction(action,sid,completed,target_id,target_set,target_exercise,target_category,group_id,round_complete,False,remaining==1,remaining,"GROUP_NEXT_SET")
-
-def resolve_next_group_step(conn, session_id, completed_set):
-    """Compatibility result for resolver-v2 callers; policy remains single-sourced here."""
-    instruction=resolve_post_set_action(conn,session_id=session_id,completed_set_number=completed_set)
-    return instruction.as_legacy_group_step()
+ action:SupersetExecutionAction; source_session_id:int; completed_set_number:int; target_session_id:int|None=None; target_set_number:int|None=None; target_exercise:str|None=None; target_category:str|None=None; group_id:str|None=None; round_complete:bool=False; group_complete:bool=False; single_member_remaining:bool=False; remaining_member_count:int=0; reason_code:str=""
+ def as_legacy_group_step(self):
+  if self.action not in (SupersetExecutionAction.ADVANCE_SET,SupersetExecutionAction.ADVANCE_GROUP):return None
+  return {"session_id":self.target_session_id,"exercise":self.target_exercise,"category":self.target_category,"pending_set":self.target_set_number,"round_complete":self.round_complete,"group_complete":self.group_complete,"remaining_members":self.remaining_member_count,"single_member_remaining":self.single_member_remaining,"group_id":self.group_id}
+def _pending(conn,sid):
+ rows=conn.execute("SELECT set_number,is_complete FROM workout_sets WHERE session_id=? ORDER BY set_number",(sid,)).fetchall()
+ return 1 if not rows else next((int(n) for n,d in rows if not d),None)
+def resolve_post_set_action(conn,*,session_id,completed_set_number):
+ sid=int(session_id);done=int(completed_set_number or 0);src=conn.execute("SELECT exercise_group_id,COALESCE(group_position,999),status,exercise,category,meso_number,week,day_of_week FROM workout_sessions WHERE id=?",(sid,)).fetchone()
+ if not src:return SupersetExecutionInstruction(SupersetExecutionAction.NO_ACTION,sid,done,reason_code="SOURCE_MISSING")
+ gid,pos,status,exercise,category,meso,week,day=src
+ if status!="Pending":return SupersetExecutionInstruction(SupersetExecutionAction.NO_ACTION,sid,done,group_id=gid,reason_code="SOURCE_NOT_PENDING")
+ if not gid:
+  pending=_pending(conn,sid)
+  return SupersetExecutionInstruction(SupersetExecutionAction.READY_TO_LOG_EXERCISE if pending is None else SupersetExecutionAction.ADVANCE_SET,sid,done,sid,pending,exercise,category,None,False,pending is None,False,1,"STANDALONE")
+ members=conn.execute("SELECT id,exercise,category,status,COALESCE(group_position,999) FROM workout_sessions WHERE meso_number=? AND week=? AND day_of_week=? AND exercise_group_id=? ORDER BY COALESCE(group_position,999),COALESCE(workout_order,id),id",(meso,str(week),day,gid)).fetchall();c=[]
+ for mid,mex,mcat,mstatus,mpos in members:
+  pending=_pending(conn,mid) if mstatus=="Pending" else None
+  if pending is not None:c.append((int(mid),mex,mcat,int(mpos),pending))
+ if not c:return SupersetExecutionInstruction(SupersetExecutionAction.READY_TO_LOG_GROUP,sid,done,group_id=gid,group_complete=True,reason_code="GROUP_COMPLETE")
+ key=(done,int(pos));ordered=sorted(c,key=lambda x:(x[4],x[3],x[0]));t=next((x for x in ordered if (x[4],x[3])>key),ordered[0]);tid,tex,tcat,tpos,tset=t;tk=(tset,tpos);count=len(c)
+ return SupersetExecutionInstruction(SupersetExecutionAction.ADVANCE_SET if tid==sid else SupersetExecutionAction.ADVANCE_GROUP,sid,done,tid,tset,tex,tcat,gid,tk<=key or tset>done,False,count==1,count,"GROUP_NEXT")

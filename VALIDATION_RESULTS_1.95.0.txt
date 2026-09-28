@@ -1,0 +1,9 @@
+IronCycle 1.95.0 validation results
+
+Python compilation: PASS
+Focused 1.95 interaction tests: 8 passed
+Complete supported pytest suite: 128 passed in 2.33s
+Application version: 1.95.0
+Database schema: 20, unchanged
+
+Not executed here: Android packaging/signing and physical-device Flet interaction.
