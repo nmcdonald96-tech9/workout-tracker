@@ -4719,15 +4719,37 @@ class WorkoutTrackerApp:
             remount_canvas=True,
         )
 
-    def advance_group_flow(self,session_id,completed_set):
-        with get_db() as execution_conn:instruction=resolve_post_set_action(execution_conn,session_id=session_id,completed_set_number=completed_set)
-        if instruction.action not in (SupersetExecutionAction.ADVANCE_SET,SupersetExecutionAction.ADVANCE_GROUP):return False
-        nxt=instruction.as_legacy_group_step()
+    def apply_execution_instruction(self, instruction):
+        if instruction.action not in (SupersetExecutionAction.ADVANCE_SET,SupersetExecutionAction.ADVANCE_GROUP):
+            return False
         with get_db() as conn:
-            cats=[r[0] for r in conn.execute("SELECT DISTINCT category FROM workout_sessions WHERE meso_number=? AND week=? AND day_of_week=?",(self.current_meso,self.current_week,self.current_day)).fetchall() if r[0]]
-        for dcat in cats:self.collapsed_categories[self.category_key(dcat)]=(dcat!=nxt['category'])
-        self.collapsed_categories[self.category_key(nxt['category'])]=False;self.active_exercise_by_category[self.category_key(nxt['category'])]=nxt['session_id'];self.pending_scroll_key=exercise_anchor_key(nxt['session_id']);self.remount_main_canvas_on_rebuild=True
-        record_audit('superset_advance',f"{session_id} set {completed_set} -> {nxt['session_id']} set {nxt['pending_set']}; round_complete={int(bool(nxt.get('round_complete')))}; remaining={nxt.get('remaining_members')}");self.rebuild_entire_display();return True
+            categories=[row[0] for row in conn.execute(
+                "SELECT DISTINCT category FROM workout_sessions WHERE meso_number=? AND week=? AND day_of_week=?",
+                (self.current_meso,self.current_week,self.current_day),
+            ).fetchall() if row[0]]
+        position=self.workout_position()
+        self.workout_view_controller.focus_category(
+            position,categories,instruction.target_category,instruction.target_session_id,
+        )
+        self.workout_viewport_controller.navigate_to_key(
+            exercise_anchor_key(instruction.target_session_id),reason="superset_handoff",
+        )
+        self.remount_main_canvas_on_rebuild=True
+        record_audit(
+            'superset_advance',
+            f"{instruction.source_session_id} set {instruction.completed_set_number} -> "
+            f"{instruction.target_session_id} set {instruction.target_set_number}; "
+            f"round_complete={int(bool(instruction.round_complete))}; "
+            f"remaining={instruction.remaining_member_count}",
+        )
+        return True
+
+    def advance_group_flow(self,session_id,completed_set):
+        with get_db() as execution_conn:
+            instruction=resolve_post_set_action(
+                execution_conn,session_id=session_id,completed_set_number=completed_set,
+            )
+        return self.apply_execution_instruction(instruction)
 
     def activate_exercise(self, category_name, session_id):
         if not category_name:
@@ -4944,9 +4966,16 @@ class WorkoutTrackerApp:
         progress=ft.Column([ft.Row([ft.Text("WORKOUT PROGRESS",size=8,weight="bold",color=COLOR_INFO),ft.Text(f"Exercises {ex}/{len(rows)} • Sets {done}/{total} • Groups {groups}/{len(cats)}",size=9,color="white70")],alignment=ft.MainAxisAlignment.SPACE_BETWEEN,spacing=2),ft.ProgressBar(value=(done/total if total else 0),color="cyan400",bgcolor="white10",height=4)],spacing=1,tight=True)
         return ft.Column([readiness]+([quick] if quick else [])+[progress],spacing=1,tight=True)
 
+    def close_week_day_selector(self):
+        dialog = getattr(self, "week_day_dialog", None)
+        if dialog is not None:
+            self.safe_close(dialog)
+            self.week_day_dialog = None
+
     def open_week_day_selector(self, e=None):
         self.rebuild_navigation_headers()
-        dialog=ft.AlertDialog(title=ft.Text("Weeks and days"),content=ft.Column([ft.Text("Select week",size=10,weight="bold",color=COLOR_INFO),self.week_nav_row,ft.Text("Select day",size=10,weight="bold",color=COLOR_INFO),self.day_nav_row],spacing=6,tight=True),actions=[ft.TextButton("Close",on_click=lambda ev:self.safe_close(dialog))],inset_padding=12)
+        dialog=ft.AlertDialog(title=ft.Text("Weeks and days"),content=ft.Column([ft.Text("Select week",size=10,weight="bold",color=COLOR_INFO),self.week_nav_row,ft.Text("Select day",size=10,weight="bold",color=COLOR_INFO),self.day_nav_row],spacing=6,tight=True),actions=[ft.TextButton("Close",on_click=lambda ev:self.close_week_day_selector())],inset_padding=12)
+        self.week_day_dialog = dialog
         self.safe_open(dialog)
 
     def get_previous_workout_comparison(self):
@@ -6790,11 +6819,13 @@ class WorkoutTrackerApp:
         self.rebuild_entire_display()
 
     def change_active_week(self, week_str):
+        self.close_week_day_selector()
         self.set_active_position(force_week=week_str)
         self.rebuild_navigation_headers()
         self.rebuild_entire_display()
 
     def change_active_day(self, day_str):
+        self.close_week_day_selector()
         self.current_day = day_str
         self.rebuild_navigation_headers()
         self.rebuild_entire_display()

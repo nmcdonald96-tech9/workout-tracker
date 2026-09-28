@@ -1,0 +1,25 @@
+IronCycle 1.97.0 validation results
+
+Python compilation: PASS
+Focused workout-composition cleanup suite: 5 passed
+Complete supported pytest suite: 138 passed
+Application version: 1.97.0
+Database schema: 20, unchanged
+Historical release contracts: excluded from supported collection
+
+Automated contracts verified:
+- Week and day selection closes the modal before rebuilding.
+- Superset execution-instruction application is centralized.
+- Category focus uses the workout-view controller.
+- Intentional handoff navigation uses the viewport controller.
+- Jump To uses one deferred structural-refresh path.
+- Post-mount viewport application remains centralized.
+- Transitional resolver compatibility remains available.
+- The mounted-list Add/Remove Set pathway remains intact.
+
+Not executed:
+- Android APK and AAB packaging
+- Physical-device modal lifecycle
+- Physical-device viewport and execution navigation
+- Google Play Billing interaction
+- OneDrive interactive authentication

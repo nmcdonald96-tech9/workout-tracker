@@ -1,0 +1,11 @@
+IronCycle 1.97.0 changed-file inventory
+- constants.py
+- main.py
+- tests/test_197_workout_composition_cleanup.py
+- docs/releases/RELEASE_1.97.0.md
+- docs/testing/ANDROID_SMOKE_TEST_1.97.0.md
+- docs/validation/VALIDATION_1.97.0.md
+- docs/architecture/WORKOUT_CONTROLLER_OWNERSHIP_1.97.md
+- CHANGED_FILES_1.97.0.txt
+- SOURCE_MANIFEST_1.97.0.txt
+- VALIDATION_RESULTS_1.97.0.txt
