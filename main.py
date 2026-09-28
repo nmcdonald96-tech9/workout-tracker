@@ -61,6 +61,9 @@ from services.completed_revision_service import (
     CompletedRevisionError, capture_revision_snapshot, commit_completed_revision,
     editable_copies, return_to_pending,
 )
+from services.superset_execution_service import (
+    SupersetExecutionAction, resolve_post_set_action,
+)
 
 # --- WIFI TRANSFER HARDENING ---
 # Threaded server prevents browser side-requests (favicon/retries) from blocking the
@@ -158,12 +161,7 @@ class ExerciseCard(ft.Card):
         self.app.safe_open(swap_dialog)
 
     def refresh_weight_edit_feedback(self, set_idx):
-        """Refresh value-only weight feedback without remounting the workout canvas.
-
-        TextField values are safe to synchronize through the control update API.
-        If the packaged runtime rejects an in-place update, preserve the edited
-        exercise anchor and use the existing deferred structural-refresh fallback.
-        """
+        """Refresh value-only weight feedback without remounting the workout canvas."""
         try:
             drafts = self.app.sets.get(self.db_id, [])
             if set_idx >= len(drafts):
@@ -757,7 +755,13 @@ class ExerciseCard(ft.Card):
         group_label=group_label_for_session(self.db_id)
         if group_label: chips_row.controls.append(make_helper_chip(group_label, "purple900", "purple100"))
         chips_row.controls.append(make_helper_chip(f"SET {active_pos} OF {total_pos}", "blue900", "blue100"))
-        group_next=resolve_next_group_step(self.app.current_meso,self.app.current_week,self.app.current_day,self.db_id,active_pos) if group_label else None
+        group_next = None
+        if group_label:
+            with get_db() as execution_conn:
+                execution_instruction = resolve_post_set_action(
+                    execution_conn, session_id=self.db_id, completed_set_number=active_pos
+                )
+            group_next = execution_instruction.as_legacy_group_step()
         if group_next:
             if group_next.get("single_member_remaining"):
                 action_text=f"Continue • {group_next['exercise']} Set {group_next['pending_set']}"
@@ -1173,6 +1177,20 @@ class ExerciseCard(ft.Card):
             print(f"Error autosaving pending sets: {exc}")
             return False
 
+    def request_set_structure_refresh(self, reason):
+        """Remount one changed card while retaining its exercise viewport."""
+        category = (self.context or {}).get("category")
+        if category:
+            category_key = self.app.category_key(category)
+            self.app.collapsed_categories[category_key] = False
+            self.app.active_exercise_by_category[category_key] = self.db_id
+        self.app.pending_scroll_key = exercise_anchor_key(self.db_id)
+        self.app.request_structural_refresh(
+            reason,
+            rebuild_navigation=False,
+            remount_canvas=True,
+        )
+
     def on_add_set(self, ev):
         if not self.app.require_premium("editing workout prescriptions"):
             return
@@ -1181,7 +1199,7 @@ class ExerciseCard(ft.Card):
         target = self.set_targets[new_idx] if new_idx < len(self.set_targets) else {"w": self.tgt_w, "r": self.tgt_r}
         self.app.sets[self.db_id] = add_set(self.app.sets[self.db_id], target)
         self.autosave_pending_sets() # Force atomic save
-        self.app.request_structural_refresh("exercise_card_structure", rebuild_navigation=True)
+        self.request_set_structure_refresh("add_set")
 
     def on_remove_set(self, ev):
         if not self.app.require_premium("editing workout prescriptions"):
@@ -1190,7 +1208,7 @@ class ExerciseCard(ft.Card):
             return
         self.app.sets[self.db_id] = remove_last_set(self.app.sets[self.db_id])
         self.autosave_pending_sets() # Force atomic save
-        self.app.request_structural_refresh("exercise_card_structure", rebuild_navigation=True)
+        self.request_set_structure_refresh("remove_set")
 
     def trigger_delete_warning(self, ev):
         self.app.delete_dialog_id = self.db_id
@@ -2035,32 +2053,19 @@ class WorkoutTrackerApp:
             focus_session_id = int(source_session_id) if source_session_id else (selected_ids[0] if selected_ids else None)
             if focus_session_id is not None:
                 self.pending_scroll_key = exercise_anchor_key(focus_session_id)
-            self.request_structural_refresh(
-                reason,
-                rebuild_navigation=False,
-                remount_canvas=True,
-            )
+            self.request_structural_refresh(reason, rebuild_navigation=False, remount_canvas=True)
             self.show_snackbar(message, 'green300')
-
         def group(ev=None):
             selected_ids = [x['id'] for x in rows() if x['id'] in selected]
             if len(selected_ids) < 2:
-                self.show_snackbar('Select at least two pending exercises.', 'amber300')
-                return
+                self.show_snackbar('Select at least two pending exercises.', 'amber300'); return
             set_exercise_group(self.current_meso, week.value, day.value, selected_ids)
-            enqueue_cloud_backup('automatic: workout structure changed')
-            self.schedule_automatic_cloud_backup()
-            refresh(True)
+            enqueue_cloud_backup('automatic: workout structure changed'); self.schedule_automatic_cloud_backup(); refresh(True)
             refresh_workout_after_group_change('superset_assignment_changed', 'Superset group created.')
-
         def ungroup(ev=None):
-            if not selected:
-                self.show_snackbar('Select a grouped exercise.', 'amber300')
-                return
-            clear_exercise_group(self.current_meso, week.value, day.value, next(iter(selected)))
-            enqueue_cloud_backup('automatic: workout structure changed')
-            self.schedule_automatic_cloud_backup()
-            refresh(True)
+            if not selected:self.show_snackbar('Select a grouped exercise.','amber300');return
+            clear_exercise_group(self.current_meso,week.value,day.value,next(iter(selected)))
+            enqueue_cloud_backup('automatic: workout structure changed'); self.schedule_automatic_cloud_backup(); refresh(True)
             refresh_workout_after_group_change('superset_assignment_changed', 'Superset group removed.')
         week.on_select=refresh;day.on_select=refresh;refresh()
         dialog=ft.AlertDialog(title=ft.Text('Workout Structure & Supersets',weight='bold',size=18 if compact else 20),content=ft.Container(width=420,height=540,content=ft.Column([ft.Row([week,day]),items,ft.Text('Card arrows move within a muscle group. A arrows change execution order.',size=9,color='white54'),ft.Row([ft.ElevatedButton('Create Group',on_click=group,expand=True),ft.ElevatedButton('Ungroup',on_click=ungroup,expand=True)],spacing=6)],expand=True,spacing=5)),actions=[ft.TextButton('Done',on_click=lambda ev:[self.safe_close(dialog),self.sets.clear(),self.rebuild_entire_display()])],inset_padding=10 if compact else 12,content_padding=12 if compact else 16)
@@ -4694,8 +4699,18 @@ class WorkoutTrackerApp:
         )
 
     def advance_group_flow(self,session_id,completed_set):
-        nxt=resolve_next_group_step(self.current_meso,self.current_week,self.current_day,session_id,completed_set)
-        if not nxt:return False
+        with get_db() as execution_conn:
+            instruction = resolve_post_set_action(
+                execution_conn,
+                session_id=session_id,
+                completed_set_number=completed_set,
+            )
+        if instruction.action not in (
+            SupersetExecutionAction.ADVANCE_SET,
+            SupersetExecutionAction.ADVANCE_GROUP,
+        ):
+            return False
+        nxt = instruction.as_legacy_group_step()
         with get_db() as conn:
             cats=[r[0] for r in conn.execute("SELECT DISTINCT category FROM workout_sessions WHERE meso_number=? AND week=? AND day_of_week=?",(self.current_meso,self.current_week,self.current_day)).fetchall() if r[0]]
         for dcat in cats:self.collapsed_categories[self.category_key(dcat)]=(dcat!=nxt['category'])
