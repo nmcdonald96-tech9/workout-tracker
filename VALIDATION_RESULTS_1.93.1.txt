@@ -1,0 +1,12 @@
+IronCycle 1.93.1 validation results
+
+Python compilation: PASS
+Focused regression suite: 7 passed
+Complete supported pytest suite: 122 passed in 2.67s
+Application version: 1.93.1
+Database schema: 20, unchanged
+
+Not executed here:
+- Android APK/AAB packaging and signing
+- Physical-device viewport retention and packaged Flet control updates
+- Billing, OneDrive, lifecycle, and logcat device checks

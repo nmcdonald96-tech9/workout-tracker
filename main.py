@@ -157,6 +157,39 @@ class ExerciseCard(ft.Card):
         )
         self.app.safe_open(swap_dialog)
 
+    def refresh_weight_edit_feedback(self, set_idx):
+        """Refresh value-only weight feedback without remounting the workout canvas.
+
+        TextField values are safe to synchronize through the control update API.
+        If the packaged runtime rejects an in-place update, preserve the edited
+        exercise anchor and use the existing deferred structural-refresh fallback.
+        """
+        try:
+            drafts = self.app.sets.get(self.db_id, [])
+            if set_idx >= len(drafts):
+                return True
+            draft = drafts[set_idx]
+            if set_idx < len(self.reps_fields):
+                reps_field = self.reps_fields[set_idx]
+                reps_field.value = str(draft.get("r", ""))
+                reps_field.update()
+            if set_idx < len(self.weight_fields):
+                weight_value = draft.get("w", "")
+                plate_text = calculate_plates_per_side(self.exercise, weight_value)
+                self.plate_feedback_label.value = f"Set {set_idx + 1}: {plate_text}" if plate_text else ""
+                self.plate_container.visible = bool(plate_text)
+                self.plate_container.update()
+            return True
+        except Exception as ex:
+            print(f"[weight_edit_feedback] in-place update failed: {ex}")
+            self.app.pending_scroll_key = exercise_anchor_key(self.db_id)
+            self.app.request_structural_refresh(
+                "weight_edit_feedback_fallback",
+                rebuild_navigation=False,
+                remount_canvas=True,
+            )
+            return False
+
     def make_blur_handler(self, set_idx, key_type):
         # Runs once when a field loses focus -- never on every keystroke.
         # Only ever mutates self.app.sets (a plain dict, always safe) and,
@@ -209,8 +242,7 @@ class ExerciseCard(ft.Card):
                 set_data.clear(); set_data.update(updated)
                 self.set_targets[set_idx]["r"] = orig_r
                 self.autosave_pending_sets()
-                self.app.pending_scroll_key = exercise_anchor_key(self.db_id)
-                self.app.request_structural_refresh("exercise_card_structure", rebuild_navigation=True)
+                self.refresh_weight_edit_feedback(set_idx)
                 return
 
             try:
@@ -237,12 +269,10 @@ class ExerciseCard(ft.Card):
                 set_data.clear(); set_data.update(updated)
                 self.set_targets[set_idx]["r"] = new_target_r
 
-            # Rebuild regardless of whether the reps branch above fired --
-            # this is also what refreshes plate feedback, which is
-            # recomputed fresh from state on every build_card() call.
+            # Weight and derived reps are value-only changes. Keep the mounted
+            # workout canvas and viewport intact; update only the affected fields.
             self.autosave_pending_sets()
-            self.app.pending_scroll_key = exercise_anchor_key(self.db_id)
-            self.app.request_structural_refresh("exercise_card_structure", rebuild_navigation=True)
+            self.refresh_weight_edit_feedback(set_idx)
         return blur_handler
 
     def build_card(self):
@@ -2000,10 +2030,38 @@ class WorkoutTrackerApp:
                 except:pass
         def move_card(sid,d):reorder_pending_exercise_in_category(self.current_meso,week.value,day.value,sid,d);refresh(True)
         def move_group(sid,d):set_group_member_position(self.current_meso,week.value,day.value,sid,d);refresh(True)
-        def group(ev=None):set_exercise_group(self.current_meso,week.value,day.value,[x['id'] for x in rows() if x['id'] in selected]);enqueue_cloud_backup('automatic: workout structure changed');self.schedule_automatic_cloud_backup();refresh(True)
+        def refresh_workout_after_group_change(reason, message):
+            selected_ids = [x['id'] for x in rows() if x['id'] in selected]
+            focus_session_id = int(source_session_id) if source_session_id else (selected_ids[0] if selected_ids else None)
+            if focus_session_id is not None:
+                self.pending_scroll_key = exercise_anchor_key(focus_session_id)
+            self.request_structural_refresh(
+                reason,
+                rebuild_navigation=False,
+                remount_canvas=True,
+            )
+            self.show_snackbar(message, 'green300')
+
+        def group(ev=None):
+            selected_ids = [x['id'] for x in rows() if x['id'] in selected]
+            if len(selected_ids) < 2:
+                self.show_snackbar('Select at least two pending exercises.', 'amber300')
+                return
+            set_exercise_group(self.current_meso, week.value, day.value, selected_ids)
+            enqueue_cloud_backup('automatic: workout structure changed')
+            self.schedule_automatic_cloud_backup()
+            refresh(True)
+            refresh_workout_after_group_change('superset_assignment_changed', 'Superset group created.')
+
         def ungroup(ev=None):
-            if not selected:self.show_snackbar('Select a grouped exercise.','amber300');return
-            clear_exercise_group(self.current_meso,week.value,day.value,next(iter(selected)));enqueue_cloud_backup('automatic: workout structure changed');self.schedule_automatic_cloud_backup();refresh(True)
+            if not selected:
+                self.show_snackbar('Select a grouped exercise.', 'amber300')
+                return
+            clear_exercise_group(self.current_meso, week.value, day.value, next(iter(selected)))
+            enqueue_cloud_backup('automatic: workout structure changed')
+            self.schedule_automatic_cloud_backup()
+            refresh(True)
+            refresh_workout_after_group_change('superset_assignment_changed', 'Superset group removed.')
         week.on_select=refresh;day.on_select=refresh;refresh()
         dialog=ft.AlertDialog(title=ft.Text('Workout Structure & Supersets',weight='bold',size=18 if compact else 20),content=ft.Container(width=420,height=540,content=ft.Column([ft.Row([week,day]),items,ft.Text('Card arrows move within a muscle group. A arrows change execution order.',size=9,color='white54'),ft.Row([ft.ElevatedButton('Create Group',on_click=group,expand=True),ft.ElevatedButton('Ungroup',on_click=ungroup,expand=True)],spacing=6)],expand=True,spacing=5)),actions=[ft.TextButton('Done',on_click=lambda ev:[self.safe_close(dialog),self.sets.clear(),self.rebuild_entire_display()])],inset_padding=10 if compact else 12,content_padding=12 if compact else 16)
         self.safe_open(dialog)
