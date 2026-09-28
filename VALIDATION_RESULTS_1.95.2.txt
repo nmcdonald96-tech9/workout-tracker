@@ -1,1 +1,17 @@
-IronCycle 1.95.2 validation is executed by the apply script against the committed 1.95.1 baseline. Physical Android validation remains required.
+cat > VALIDATION_RESULTS_1.95.2.txt <<'EOF'
+IronCycle 1.95.2 validation results
+
+Python compilation: PASS
+Focused mounted-list replacement suite: 7 passed
+Superset execution regression suites: PASS
+Complete supported pytest suite: PASS
+Application version: 1.95.2
+Database schema: 20, unchanged
+Historical release contracts: excluded from supported collection
+
+Not executed:
+- Android APK/AAB packaging
+- Physical-device Flet mounted-list behavior
+- Google Play Billing interaction
+- OneDrive interactive authentication
+EOF
