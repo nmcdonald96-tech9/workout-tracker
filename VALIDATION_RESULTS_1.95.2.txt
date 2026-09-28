@@ -2,16 +2,24 @@ cat > VALIDATION_RESULTS_1.95.2.txt <<'EOF'
 IronCycle 1.95.2 validation results
 
 Python compilation: PASS
-Focused mounted-list replacement suite: 7 passed
-Superset execution regression suites: PASS
-Complete supported pytest suite: PASS
+Focused mounted-list replacement suite: 7 passed in 0.08s
+Superset execution regression suites: 9 passed in 0.18s
+Complete supported pytest suite: 127 passed in 0.91s
 Application version: 1.95.2
 Database schema: 20, unchanged
 Historical release contracts: excluded from supported collection
 
-Not executed:
-- Android APK/AAB packaging
-- Physical-device Flet mounted-list behavior
+Automated contracts verified:
+- Add Set and Remove Set use mounted-list child replacement.
+- Set-count editing does not request a full workout canvas remount.
+- Set-count editing does not request exercise-anchor navigation.
+- Immediate superset-assignment refresh remains connected.
+- Superset resolver compatibility remains available.
+- Compact skipped-card presentation remains connected.
+
+Not executed by automated validation:
+- Android APK and AAB packaging
+- Physical-device mounted-list behavior
 - Google Play Billing interaction
 - OneDrive interactive authentication
 EOF
