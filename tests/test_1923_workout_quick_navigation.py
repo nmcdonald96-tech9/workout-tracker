@@ -37,14 +37,15 @@ def test_post_mount_scroll_contract_is_retained():
     source = (ROOT / "main.py").read_text(encoding="utf-8")
     rebuild = source[source.index("    def rebuild_entire_display("):]
     update = rebuild.index("self.page.update()")
-    pending = rebuild.index("if self.pending_scroll_key:")
-    scroll = rebuild.index("self.scroll_to_workout_key(focus_key)")
-    assert update < pending < scroll
+    consume = rebuild.index("workout_viewport_controller.consume()")
+    pending = rebuild.index("ViewportAction.SCROLL_TO_KEY")
+    scroll = rebuild.index("self.scroll_to_workout_key(viewport_instruction.key)")
+    assert update < consume < pending < scroll
 
 
 def test_release_contract():
     constants = (ROOT / "constants.py").read_text(encoding="utf-8")
-    assert 'APP_VERSION = "1.95.2"' in constants
+    assert 'APP_VERSION = "1.96.0"' in constants
     assert "DATABASE_SCHEMA_VERSION = 20" in constants
     assert (ROOT / "docs/releases/RELEASE_1.93.0.md").exists()
     assert (ROOT / "docs/testing/ANDROID_SMOKE_TEST_1.93.0.md").exists()

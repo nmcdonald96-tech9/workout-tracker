@@ -1,0 +1,23 @@
+IronCycle 1.96.0 changed-file inventory
+- CHANGED_FILES_1.96.0.txt
+- SOURCE_MANIFEST_1.96.0.txt
+- VALIDATION_RESULTS_1.96.0.txt
+- constants.py
+- controllers/__init__.py
+- controllers/workout_view_controller.py
+- controllers/workout_viewport_controller.py
+- docs/releases/RELEASE_1.96.0.md
+- docs/testing/ANDROID_SMOKE_TEST_1.96.0.md
+- docs/validation/VALIDATION_1.96.0.md
+- main.py
+- tests/test_188_repository_cleanup.py
+- tests/test_1891_pure_helper_extraction.py
+- tests/test_189_phase1_architecture.py
+- tests/test_1911_navigation_helper_hotfix.py
+- tests/test_1921_structural_refresh_recovery.py
+- tests/test_1922_structural_refresh_fault_containment.py
+- tests/test_1923_workout_quick_navigation.py
+- tests/test_192_structural_refresh.py
+- tests/test_193_completed_revision_service.py
+- tests/test_1952_mounted_list_card_replacement.py
+- tests/test_196_workout_view_controllers.py

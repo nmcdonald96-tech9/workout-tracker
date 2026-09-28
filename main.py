@@ -64,6 +64,8 @@ from services.completed_revision_service import (
 )
 from services.exercise_completion_service import CompletionAction, resolve_completion_action
 from services.superset_execution_service import SupersetExecutionAction, resolve_post_set_action
+from controllers.workout_view_controller import WorkoutPosition, WorkoutViewController
+from controllers.workout_viewport_controller import ViewportAction, WorkoutViewportController
 
 # --- WIFI TRANSFER HARDENING ---
 # Threaded server prevents browser side-requests (favicon/retries) from blocking the
@@ -1441,12 +1443,12 @@ class WorkoutTrackerApp:
         # uses each set's explicit Done checkbox and workout_sets.completed_at.
         self.set_touch_times = {}
         self.view_mode = "workout" 
-        self.collapsed_categories = {}
-        # Quick-nav and active-exercise focus state.
-        self.active_exercise_by_category = {}
-        self.pending_scroll_key = None
-        self.workout_scroll_offset = 0.0
-        self.pending_scroll_offset = None
+        self.workout_view_controller = WorkoutViewController()
+        self.workout_viewport_controller = WorkoutViewportController()
+        # Compatibility aliases retain existing callback access while the
+        # controllers own the underlying workout-view state.
+        self.collapsed_categories = self.workout_view_controller.collapsed
+        self.active_exercise_by_category = self.workout_view_controller.active
         self.delete_dialog_id = None
         self.current_meso = 1
         
@@ -4501,12 +4503,38 @@ class WorkoutTrackerApp:
     # -----------------------------------------------
 
 
-    def capture_workout_scroll(self, event):
-        try:self.workout_scroll_offset=float(getattr(event,"pixels",self.workout_scroll_offset) or 0.0)
-        except Exception:pass
+    @property
+    def workout_scroll_offset(self):
+        return self.workout_viewport_controller.current_offset
+
+    @workout_scroll_offset.setter
+    def workout_scroll_offset(self,value):
+        self.workout_viewport_controller.record_scroll(value)
+
+    @property
+    def pending_scroll_offset(self):
+        return self.workout_viewport_controller.pending_offset
+
+    @pending_scroll_offset.setter
+    def pending_scroll_offset(self,value):
+        self.workout_viewport_controller.pending_offset=value
+
+    @property
+    def pending_scroll_key(self):
+        return self.workout_viewport_controller.pending_key
+
+    @pending_scroll_key.setter
+    def pending_scroll_key(self,value):
+        self.workout_viewport_controller.pending_key=value
+
+    def workout_position(self):
+        return WorkoutPosition(self.current_meso,str(self.current_week),self.current_day)
+
+    def capture_workout_scroll(self,event):
+        self.workout_viewport_controller.record_scroll(getattr(event,"pixels",0.0))
 
     def preserve_workout_viewport(self):
-        self.pending_scroll_offset=float(self.workout_scroll_offset or 0.0)
+        return self.workout_viewport_controller.preserve_current()
 
     def replace_exercise_card_in_place(self, card):
         """Replace one child while preserving the existing ListView and scroll position."""
@@ -4795,10 +4823,10 @@ class WorkoutTrackerApp:
         return ft.Container(content=ft.Row(buttons,spacing=4,scroll="auto"),padding=2)
 
     def category_key(self, category_name):
-        return (self.current_meso, self.current_week, self.current_day, category_name)
+        return self.workout_view_controller.category_key(self.workout_position(),category_name)
 
     def is_category_collapsed(self, category_name):
-        return self.collapsed_categories.get(self.category_key(category_name), False)
+        return self.workout_view_controller.is_collapsed(self.workout_position(),category_name)
 
     def toggle_category(self, category_name):
         key = self.category_key(category_name)
@@ -7098,18 +7126,9 @@ class WorkoutTrackerApp:
             original_category_index = {cat: idx for idx, cat in enumerate(category_order)}
 
             def category_completion_sort_key(cat):
-                rows = grouped.get(cat, [])
-                pending_count = sum(1 for row in rows if row[4] == STATUS_PENDING)
-                is_group_completed = pending_count == 0
-                active_id = self.active_exercise_by_category.get(self.category_key(cat))
-                has_active_pending = any(
-                    row[0] == active_id and row[4] == STATUS_PENDING
-                    for row in rows
-                )
-                return (
-                    0 if has_active_pending else 1,
-                    1 if is_group_completed else 0,
-                    original_category_index.get(cat, 999)
+                return self.workout_view_controller.category_sort_key(
+                    self.workout_position(),cat,grouped.get(cat,[]),
+                    original_category_index.get(cat,999),
                 )
 
             category_order = sorted(category_order, key=category_completion_sort_key)
@@ -7157,16 +7176,13 @@ class WorkoutTrackerApp:
             # Quick-nav/category taps may still use scrolling where supported.
             # Exercise promotion sets no pending key because it remounts the
             # ListView instead of issuing an ignored Android scroll command.
-            if self.pending_scroll_offset is not None:
-                restore_offset = self.pending_scroll_offset
-                self.pending_scroll_offset = None
-                try:self.main_canvas.scroll_to(offset=restore_offset,duration=0)
-                except TypeError:self.main_canvas.scroll_to(restore_offset,duration=0)
+            viewport_instruction=self.workout_viewport_controller.consume()
+            if viewport_instruction.action==ViewportAction.PRESERVE_OFFSET:
+                try:self.main_canvas.scroll_to(offset=viewport_instruction.offset,duration=0)
+                except TypeError:self.main_canvas.scroll_to(viewport_instruction.offset,duration=0)
                 except Exception as ex:print(f"[restore_workout_offset] {ex}")
-            elif self.pending_scroll_key:
-                focus_key = self.pending_scroll_key
-                self.pending_scroll_key = None
-                self.scroll_to_workout_key(focus_key)
+            elif viewport_instruction.action==ViewportAction.SCROLL_TO_KEY:
+                self.scroll_to_workout_key(viewport_instruction.key)
 
         except Exception:
             error_log = traceback.format_exc()
