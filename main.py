@@ -1154,9 +1154,19 @@ class ExerciseCard(ft.Card):
             print(f"Error autosaving pending sets: {exc}")
             return False
 
-    def request_set_structure_refresh(self,reason):
-        self.app.preserve_workout_viewport()
-        self.app.request_structural_refresh(reason,rebuild_navigation=False,remount_canvas=True)
+    def request_set_structure_refresh(self, reason):
+        """Refresh only this mounted card; preserve the workout ListView and viewport."""
+        try:
+            self.build_card()
+            self.update()
+            return True
+        except Exception as ex:
+            print(f"[set_structure_card_refresh] {reason}: {ex}")
+            self.app.show_snackbar(
+                "The set was saved, but the exercise card could not refresh.",
+                "amber300",
+            )
+            return False
 
     def on_add_set(self, ev):
         if not self.app.require_premium("editing workout prescriptions"):

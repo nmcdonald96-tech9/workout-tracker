@@ -32,4 +32,4 @@ def test_boundaries_are_framework_neutral():
  for rel in ('components/exercise_card_state.py','services/exercise_completion_service.py','services/superset_execution_service.py'):
   source=(ROOT/rel).read_text();assert 'import flet' not in source and '.commit(' not in source
 def test_release_contract():
- c=(ROOT/'constants.py').read_text();assert 'APP_VERSION = "1.95.0"' in c and 'DATABASE_SCHEMA_VERSION = 20' in c
+ c=(ROOT/'constants.py').read_text();assert 'APP_VERSION = "1.95.1"' in c and 'DATABASE_SCHEMA_VERSION = 20' in c

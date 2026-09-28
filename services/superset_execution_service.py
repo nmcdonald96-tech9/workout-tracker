@@ -27,3 +27,6 @@ def resolve_post_set_action(conn,*,session_id,completed_set_number):
  if not c:return SupersetExecutionInstruction(SupersetExecutionAction.READY_TO_LOG_GROUP,sid,done,group_id=gid,group_complete=True,reason_code="GROUP_COMPLETE")
  key=(done,int(pos));ordered=sorted(c,key=lambda x:(x[4],x[3],x[0]));t=next((x for x in ordered if (x[4],x[3])>key),ordered[0]);tid,tex,tcat,tpos,tset=t;tk=(tset,tpos);count=len(c)
  return SupersetExecutionInstruction(SupersetExecutionAction.ADVANCE_SET if tid==sid else SupersetExecutionAction.ADVANCE_GROUP,sid,done,tid,tset,tex,tcat,gid,tk<=key or tset>done,False,count==1,count,"GROUP_NEXT")
+def resolve_next_group_step(conn,session_id,completed_set):
+ """Compatibility adapter retained for database.py and card-render callers."""
+ return resolve_post_set_action(conn,session_id=session_id,completed_set_number=completed_set).as_legacy_group_step()
