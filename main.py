@@ -1438,6 +1438,9 @@ class WorkoutTrackerApp:
 
         self.sets = {}
         self.pending_set_contexts = {}
+        # Local render revisions force Flet to mount fresh card controls and
+        # callbacks without replacing the workout ListView or moving its viewport.
+        self.exercise_card_revisions = {}
         self.show_add_form = False
         self.show_survey = False
         self.pr_celebrations = {}
@@ -4566,29 +4569,55 @@ class WorkoutTrackerApp:
     def preserve_workout_viewport(self):
         return self.workout_viewport_controller.preserve_current()
 
+    def exercise_card_render_key(self, session_id):
+        session_id = int(session_id)
+        revision = int(self.exercise_card_revisions.get(session_id, 0))
+        return f"{exercise_anchor_key(session_id)}-render-{revision}"
+
+    def resolve_workout_render_key(self, key):
+        """Resolve stable exercise anchors to the currently mounted render key."""
+        text = str(key or "")
+        prefix = "exercise-"
+        if text.startswith(prefix) and "-render-" not in text:
+            raw_id = text[len(prefix):]
+            if raw_id.isdigit():
+                return self.exercise_card_render_key(int(raw_id))
+        return key
+
     def replace_exercise_card_in_place(self, card):
-        """Replace one child while preserving the existing ListView and scroll position."""
-        wanted_key = exercise_anchor_key(card.db_id)
+        """Force-mount a fresh keyed card while preserving the ListView viewport."""
+        session_id = int(card.db_id)
         try:
             index = next(
                 i for i, control in enumerate(self.main_canvas.controls)
-                if getattr(control, "key", None) == wanted_key
+                if getattr(control, "db_id", None) == session_id
             )
+            revision = int(self.exercise_card_revisions.get(session_id, 0)) + 1
+            self.exercise_card_revisions[session_id] = revision
             replacement = ExerciseCard(
                 card.db_id, card.exercise, card.tgt_w, card.tgt_r,
                 card.status, card.mov_type, self, context=card.context,
             )
-            replacement.key = wanted_key
+            replacement.key = self.exercise_card_render_key(session_id)
             self.main_canvas.controls[index] = replacement
             self.main_canvas.update()
-            return True
-        except Exception as ex:
-            print(f"[replace_exercise_card_in_place] {ex}")
-            self.show_snackbar(
-                "The set was saved, but the exercise card could not refresh.",
-                "amber300",
+            print(
+                "[replace_exercise_card_in_place] "
+                f"db_id={session_id} revision={revision} update_ok"
             )
-            return False
+            return True
+        except StopIteration:
+            print(f"[replace_exercise_card_in_place] lookup_failed db_id={session_id}")
+        except Exception as ex:
+            print(
+                "[replace_exercise_card_in_place] "
+                f"failed type={type(ex).__name__} error={ex}"
+            )
+        self.show_snackbar(
+            "The set was saved, but the exercise card could not refresh.",
+            "amber300",
+        )
+        return False
 
     def remount_main_canvas(self):
         """Replace the main ListView so Android creates a new zeroed viewport."""
@@ -4633,6 +4662,7 @@ class WorkoutTrackerApp:
         estimate the target's vertical position from the rebuilt control tree
         and use the widely-supported numeric offset API instead.
         """
+        key = self.resolve_workout_render_key(key)
         def control_contains_key(control, wanted_key):
             try:
                 if getattr(control, "key", None) == wanted_key:
@@ -7236,7 +7266,7 @@ class WorkoutTrackerApp:
                     ctx = workout_snapshot.card_context(db_id,exercise,db_cat,previous_week_order.get((db_cat,exercise)))
                     
                     card = ExerciseCard(db_id, exercise, tgt_w, tgt_r, status, mov_type, self, context=ctx)
-                    card.key = exercise_anchor_key(db_id)
+                    card.key = self.exercise_card_render_key(db_id)
                     self.main_canvas.controls.append(card)
 
             if pending_week_count == 0 and len(self.engine_button_container.controls) > 0:

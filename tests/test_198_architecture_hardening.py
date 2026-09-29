@@ -24,7 +24,7 @@ def test_privacy_safe_controller_diagnostics_are_present():
  s=(ROOT/'main.py').read_text();assert 'Workout view controller: active' in s and 'Viewport pending action:' in s and 'Structural refresh coordinator:' in s
  assert 'pending_key' not in s[s.index('"Workout view controller: active"'):s.index('"Unequal group set counts: supported"')]
 def test_release_contract():
- c=(ROOT/'constants.py').read_text();assert 'APP_VERSION = "1.98.2"' in c and 'DATABASE_SCHEMA_VERSION = 20' in c
+ c=(ROOT/'constants.py').read_text();assert 'APP_VERSION = "1.98.3"' in c and 'DATABASE_SCHEMA_VERSION = 20' in c
 
 def test_authentic_aab_workflow_compiles_controllers():
  workflow=(ROOT/'.github/workflows/main-android-apk-aab-authentic-packaging.yml').read_text()

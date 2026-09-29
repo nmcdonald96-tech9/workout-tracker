@@ -26,4 +26,4 @@ def test_add_remove_path_is_unchanged():
  s=(ROOT/'main.py').read_text();assert 'replace_exercise_card_in_place(self)' in method('request_set_structure_refresh','on_add_set')
  assert 'self.main_canvas.controls[index] = replacement' in method('replace_exercise_card_in_place','remount_main_canvas')
 def test_release_contract():
- c=(ROOT/'constants.py').read_text();assert 'APP_VERSION = "1.98.2"' in c and 'DATABASE_SCHEMA_VERSION = 20' in c
+ c=(ROOT/'constants.py').read_text();assert 'APP_VERSION = "1.98.3"' in c and 'DATABASE_SCHEMA_VERSION = 20' in c

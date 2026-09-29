@@ -22,4 +22,4 @@ def test_main_composes_controllers_and_preserves_1952_card_path():
  assert 'workout_viewport_controller.consume()' in s and 'category_sort_key(' in s
  assert 'replace_exercise_card_in_place(self)' in s and 'self.main_canvas.controls[index] = replacement' in s
 def test_release_contract():
- c=(ROOT/'constants.py').read_text();assert 'APP_VERSION = "1.98.2"' in c and 'DATABASE_SCHEMA_VERSION = 20' in c
+ c=(ROOT/'constants.py').read_text();assert 'APP_VERSION = "1.98.3"' in c and 'DATABASE_SCHEMA_VERSION = 20' in c
