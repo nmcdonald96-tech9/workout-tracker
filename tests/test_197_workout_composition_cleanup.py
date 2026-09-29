@@ -23,4 +23,4 @@ def test_transitional_resolver_stays_available_until_callers_are_gone():
  from services.superset_execution_service import resolve_post_set_action
  assert callable(resolve_post_set_action)
 def test_release_contract():
- c=(ROOT/'constants.py').read_text();assert 'APP_VERSION = "1.98.1"' in c and 'DATABASE_SCHEMA_VERSION = 20' in c
+ c=(ROOT/'constants.py').read_text();assert 'APP_VERSION = "1.98.2"' in c and 'DATABASE_SCHEMA_VERSION = 20' in c

@@ -49,5 +49,5 @@ def test_uninitialized_coordinator_reports_idle_by_contract():
 def test_release_contract():
     constants = (ROOT / "constants.py").read_text(encoding="utf-8")
 
-    assert 'APP_VERSION = "1.98.1"' in constants
+    assert 'APP_VERSION = "1.98.2"' in constants
     assert "DATABASE_SCHEMA_VERSION = 20" in constants

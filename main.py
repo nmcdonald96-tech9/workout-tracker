@@ -163,12 +163,15 @@ class ExerciseCard(ft.Card):
         self.app.safe_open(swap_dialog)
 
     def refresh_weight_edit_feedback(self,set_idx):
+        """Rebuild this card off-tree so derived reps and ownership chips are current."""
         try:
-            draft=self.app.sets[self.db_id][set_idx]
-            self.reps_fields[set_idx].value=str(draft.get("r",""));self.reps_fields[set_idx].update()
-            plate=calculate_plates_per_side(self.exercise,draft.get("w",0));self.plate_feedback_label.value=f"Set {set_idx+1}: {plate}" if plate else "";self.plate_container.visible=bool(plate);self.plate_container.update();return True
+            drafts=self.app.sets.get(self.db_id,[])
+            if set_idx < 0 or set_idx >= len(drafts):
+                return False
+            return self.app.replace_exercise_card_in_place(self)
         except Exception as ex:
-            print(f"[weight_edit_feedback] {ex}");return False
+            print(f"[weight_edit_feedback] {type(ex).__name__}: {ex}")
+            return False
 
     def make_blur_handler(self, set_idx, key_type):
         # Runs once when a field loses focus -- never on every keystroke.
@@ -1106,16 +1109,15 @@ class ExerciseCard(ft.Card):
             grouped_advanced=requested_value and self.app.advance_group_flow(self.db_id,set_idx+1)
             all_done = bool(self.app.sets.get(self.db_id)) and all(bool(x.get("done")) for x in self.app.sets[self.db_id])
             completion_instruction=resolve_completion_action(requested_complete=requested_value,set_index=set_idx,total_sets=len(self.app.sets[self.db_id]),all_done=all_done,execution_available=grouped_advanced)
-            if completion_instruction.action==CompletionAction.LOG_EXERCISE:self.on_save(None);return
-            if completion_instruction.action==CompletionAction.APPLY_EXECUTION:return
-            if requested_value and not exercise_was_started:
-                category_name = self.context.get("category") if self.context else None
-                self.app.activate_exercise(category_name, self.db_id)  # rebuilds internally
-            else:
-                # Dimming is baked into initial row construction (see build_card),
-                # so a fresh rebuild is all that's needed to reflect the new state --
-                # no direct mutation of the already-mounted rows.
-                self.app.request_structural_refresh("exercise_card_structure", rebuild_navigation=True)
+            if completion_instruction.action==CompletionAction.LOG_EXERCISE:
+                self.on_save(None)
+                return
+            if completion_instruction.action==CompletionAction.APPLY_EXECUTION:
+                return
+            # Standalone nonfinal completion or reopening stays on the current
+            # exercise. Replace only this card so completed-row dimming, active
+            # set position, helper text, and button state appear immediately.
+            self.app.replace_exercise_card_in_place(self)
         return set_done_changed
 
     def make_live_updater(self, set_idx, key_type):
