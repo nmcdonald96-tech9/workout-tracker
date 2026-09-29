@@ -67,12 +67,8 @@ def test_superset_assignment_requests_immediate_refresh():
 
 
 def test_resolver_compatibility_retained():
-    from services.superset_execution_service import (
-        resolve_next_group_step,
-        resolve_post_set_action,
-    )
+    from services.superset_execution_service import resolve_post_set_action
 
-    assert callable(resolve_next_group_step)
     assert callable(resolve_post_set_action)
 
 
@@ -87,5 +83,5 @@ def test_compact_skipped_card_retained():
 def test_release_contract():
     constants = (ROOT / "constants.py").read_text(encoding="utf-8")
 
-    assert 'APP_VERSION = "1.97.0"' in constants
+    assert 'APP_VERSION = "1.98.0"' in constants
     assert 'DATABASE_SCHEMA_VERSION = 20' in constants

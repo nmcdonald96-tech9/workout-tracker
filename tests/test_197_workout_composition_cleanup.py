@@ -20,7 +20,7 @@ def test_viewport_application_has_one_post_mount_path():
  assert 'workout_viewport_controller.consume()' in rebuild
  assert 'ViewportAction.PRESERVE_OFFSET' in rebuild and 'ViewportAction.SCROLL_TO_KEY' in rebuild
 def test_transitional_resolver_stays_available_until_callers_are_gone():
- from services.superset_execution_service import resolve_next_group_step,resolve_post_set_action
- assert callable(resolve_next_group_step) and callable(resolve_post_set_action)
+ from services.superset_execution_service import resolve_post_set_action
+ assert callable(resolve_post_set_action)
 def test_release_contract():
- c=(ROOT/'constants.py').read_text();assert 'APP_VERSION = "1.97.0"' in c and 'DATABASE_SCHEMA_VERSION = 20' in c
+ c=(ROOT/'constants.py').read_text();assert 'APP_VERSION = "1.98.0"' in c and 'DATABASE_SCHEMA_VERSION = 20' in c

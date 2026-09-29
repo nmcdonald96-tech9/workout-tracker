@@ -741,14 +741,19 @@ class ExerciseCard(ft.Card):
         group_label=group_label_for_session(self.db_id)
         if group_label: chips_row.controls.append(make_helper_chip(group_label, "purple900", "purple100"))
         chips_row.controls.append(make_helper_chip(f"SET {active_pos} OF {total_pos}", "blue900", "blue100"))
-        group_next=resolve_next_group_step(self.app.current_meso,self.app.current_week,self.app.current_day,self.db_id,active_pos) if group_label else None
-        if group_next:
-            if group_next.get("single_member_remaining"):
-                action_text=f"Continue • {group_next['exercise']} Set {group_next['pending_set']}"
-            elif group_next.get("round_complete"):
-                action_text=f"Round complete • Next {group_next['exercise']} Set {group_next['pending_set']}"
+        group_instruction=None
+        if group_label:
+            with get_db() as execution_conn:
+                group_instruction=resolve_post_set_action(
+                    execution_conn,session_id=self.db_id,completed_set_number=active_pos,
+                )
+        if group_instruction and group_instruction.action in (SupersetExecutionAction.ADVANCE_SET,SupersetExecutionAction.ADVANCE_GROUP):
+            if group_instruction.single_member_remaining:
+                action_text=f"Continue • {group_instruction.target_exercise} Set {group_instruction.target_set_number}"
+            elif group_instruction.round_complete:
+                action_text=f"Round complete • Next {group_instruction.target_exercise} Set {group_instruction.target_set_number}"
             else:
-                action_text=f"Next • {group_next['exercise']} Set {group_next['pending_set']}"
+                action_text=f"Next • {group_instruction.target_exercise} Set {group_instruction.target_set_number}"
         chips_row.controls.append(make_helper_chip(action_text, "white10", "white70"))
         completed_times = [x.get("completed_at") for x in self.app.sets.get(self.db_id, []) if x.get("done") and x.get("completed_at")]
         if completed_times and self.status == STATUS_PENDING:
@@ -3023,7 +3028,12 @@ class WorkoutTrackerApp:
             "Static Android-safe warm-up guidance: enabled",
             "Setup notes location: exercise actions menu",
             "Superset execution guidance: enabled",
-            "Superset execution resolver: v2",
+            "Superset execution resolver: typed service (legacy adapter retired)",
+            "Workout view controller: active",
+            "Workout viewport controller: active",
+            f"Workout controller position: {self.workout_view_controller.diagnostics(self.workout_position())['position']}",
+            f"Viewport pending action: {self.workout_viewport_controller.diagnostics()['pending_action']}",
+            f"Structural refresh coordinator: {'running' if self.structural_refresh.running else 'scheduled' if self.structural_refresh.scheduled else 'pending' if self.structural_refresh.pending else 'idle'}",
             "Unequal group set counts: supported",
             "Skipped/completed group members: safely bypassed",
             "Group labels in Focus Mode: enabled",
@@ -4708,11 +4718,14 @@ class WorkoutTrackerApp:
 
         selected_key = selected.casefold()
         for category in day_categories:
-            self.collapsed_categories[self.category_key(category)] = (
-                str(category).strip().casefold() != selected_key
+            self.workout_view_controller.set_collapsed(
+                self.workout_position(),category,
+                str(category).strip().casefold() != selected_key,
             )
-        self.collapsed_categories[self.category_key(selected)] = False
-        self.pending_scroll_key = category_anchor_key(selected)
+        self.workout_view_controller.set_collapsed(self.workout_position(),selected,False)
+        self.workout_viewport_controller.navigate_to_key(
+            category_anchor_key(selected),reason="category_jump",
+        )
         self.request_structural_refresh(
             "category_jump",
             rebuild_navigation=False,
@@ -4757,7 +4770,9 @@ class WorkoutTrackerApp:
         key = self.category_key(category_name)
         if self.active_exercise_by_category.get(key) == session_id:
             return
-        self.active_exercise_by_category[key] = session_id
+        self.workout_view_controller.set_active(
+            self.workout_position(),category_name,session_id,
+        )
         # Keep the promoted exercise's group open and reduce screen clutter.
         with get_db() as conn:
             cursor = conn.cursor()
@@ -4767,11 +4782,13 @@ class WorkoutTrackerApp:
             """, (self.current_meso, self.current_week, self.current_day))
             for row in cursor.fetchall():
                 if row[0]:
-                    self.collapsed_categories[self.category_key(row[0])] = (row[0] != category_name)
-        self.collapsed_categories[key] = False
+                    self.workout_view_controller.set_collapsed(
+                        self.workout_position(),row[0],row[0] != category_name,
+                    )
+        self.workout_view_controller.set_collapsed(self.workout_position(),category_name,False)
         # Replacing the ListView is the compatibility strategy: the active
         # category is sorted first below, and the new viewport starts at zero.
-        self.pending_scroll_key = None
+        self.workout_viewport_controller.reset_top(reason="activate_exercise")
         self.remount_main_canvas_on_rebuild = True
         self.rebuild_entire_display()
 
@@ -4863,10 +4880,14 @@ class WorkoutTrackerApp:
                 """, (self.current_meso, self.current_week, self.current_day))
                 for row in cursor.fetchall():
                     if row[0]:
-                        self.collapsed_categories[self.category_key(row[0])] = (row[0] != category_name)
+                        self.workout_view_controller.set_collapsed(self.workout_position(),row[0],row[0] != category_name)
         else:
-            self.collapsed_categories[key] = True
-        self.pending_scroll_key = category_anchor_key(category_name) if opening else None
+            self.workout_view_controller.set_collapsed(self.workout_position(),category_name,True)
+        
+        if opening:
+            self.workout_viewport_controller.navigate_to_key(category_anchor_key(category_name),reason="category_toggle")
+        else:
+            self.workout_viewport_controller.reset_top(reason="category_closed")
         self.rebuild_entire_display()
 
     def make_category_header(self, category_name, rows_in_cat):
@@ -6733,7 +6754,9 @@ class WorkoutTrackerApp:
             
         self.show_add_form = False
         self.wizard_custom_input.value = ""
-        self.pending_scroll_key = category_anchor_key(cat)
+        self.workout_viewport_controller.navigate_to_key(
+            category_anchor_key(cat),reason="add_exercise",
+        )
         self.request_structural_refresh(
             "add_exercise",
             rebuild_navigation=True,

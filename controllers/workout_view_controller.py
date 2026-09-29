@@ -30,3 +30,11 @@ class WorkoutViewController:
         pending=[row for row in rows if row[4]=="Pending"]
         has_active=any(row[0]==active_id for row in pending)
         return (0 if has_active else 1,1 if not pending else 0,original_index)
+
+    def diagnostics(self,position):
+        prefix=(position.meso,position.week,position.day)
+        return {
+            "position":f"M{position.meso} W{position.week} {position.day}",
+            "active_categories":sum(1 for key,value in self.active.items() if key[:3]==prefix and value is not None),
+            "collapsed_categories":sum(1 for key,value in self.collapsed.items() if key[:3]==prefix and value),
+        }
