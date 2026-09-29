@@ -244,7 +244,6 @@ class ExerciseCard(ft.Card):
                 )
                 updated = apply_weight_derived_reps(set_data, new_w, new_target_r)
                 set_data.clear(); set_data.update(updated)
-                self.set_targets[set_idx]["r"] = new_target_r
 
             self.autosave_pending_sets(); self.refresh_weight_edit_feedback(set_idx)
         return blur_handler

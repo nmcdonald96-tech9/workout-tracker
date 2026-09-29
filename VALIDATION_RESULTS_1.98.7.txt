@@ -1,0 +1,14 @@
+IronCycle 1.98.7 validation results
+
+Python compilation: PASS
+Focused weight-baseline suite: 6 passed in 0.16s
+Complete supported pytest suite: 133 passed in 2.18s
+Application version: 1.98.7
+Database schema: 20, unchanged
+Runtime foundation: physically verified 1.95.2 source
+
+Not executed:
+- Signed Android APK/AAB packaging
+- Physical-device repeated weight edits
+- Complete-button interaction
+- Google Play upload
