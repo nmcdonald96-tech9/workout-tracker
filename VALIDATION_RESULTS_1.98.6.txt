@@ -1,0 +1,14 @@
+IronCycle 1.98.6 exact-commit reproduction validation
+
+Known working commit: 4a0d2841bb80cf537651da40c3ba1b3bd0146614
+Runtime main.py SHA-256: 39e522c6064cfa0ee8807984219d7d7c34316dd0d3177828504de651d81dd107
+Python compilation: PASS
+Focused source-identity suite: 3 passed in 0.11s
+Complete supported pytest suite: 130 passed in 1.84s
+Application version: 1.98.6
+Database schema: 20, unchanged
+
+Not executed:
+- Signed Android APK packaging
+- Physical-device reproduction
+- Google Play upload

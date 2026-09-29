@@ -1,4 +1,3 @@
-cat > VALIDATION_RESULTS_1.95.2.txt <<'EOF'
 IronCycle 1.95.2 validation results
 
 Python compilation: PASS
@@ -22,4 +21,3 @@ Not executed by automated validation:
 - Physical-device mounted-list behavior
 - Google Play Billing interaction
 - OneDrive interactive authentication
-EOF

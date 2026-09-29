@@ -1099,20 +1099,16 @@ class ExerciseCard(ft.Card):
             grouped_advanced=requested_value and self.app.advance_group_flow(self.db_id,set_idx+1)
             all_done = bool(self.app.sets.get(self.db_id)) and all(bool(x.get("done")) for x in self.app.sets[self.db_id])
             completion_instruction=resolve_completion_action(requested_complete=requested_value,set_index=set_idx,total_sets=len(self.app.sets[self.db_id]),all_done=all_done,execution_available=grouped_advanced)
-            if completion_instruction.action==CompletionAction.LOG_EXERCISE:
-                self.on_save(None)
-                return
-            if completion_instruction.action==CompletionAction.APPLY_EXECUTION:
-                return
-            # Standalone nonfinal completion/reopen must always rebuild after
-            # persistence. Do not rely on activate_exercise(), which may no-op
-            # when this exercise is already active.
-            self.app.pending_scroll_key = exercise_anchor_key(self.db_id)
-            self.app.request_structural_refresh(
-                "exercise_card_structure",
-                rebuild_navigation=True,
-                remount_canvas=True,
-            )
+            if completion_instruction.action==CompletionAction.LOG_EXERCISE:self.on_save(None);return
+            if completion_instruction.action==CompletionAction.APPLY_EXECUTION:return
+            if requested_value and not exercise_was_started:
+                category_name = self.context.get("category") if self.context else None
+                self.app.activate_exercise(category_name, self.db_id)  # rebuilds internally
+            else:
+                # Dimming is baked into initial row construction (see build_card),
+                # so a fresh rebuild is all that's needed to reflect the new state --
+                # no direct mutation of the already-mounted rows.
+                self.app.request_structural_refresh("exercise_card_structure", rebuild_navigation=True)
         return set_done_changed
 
     def make_live_updater(self, set_idx, key_type):
@@ -2937,18 +2933,6 @@ class WorkoutTrackerApp:
         )
         self.safe_open(dialog)
 
-    def structural_refresh_status(self):
-        coordinator = getattr(self, "_structural_refresh_coordinator", None)
-        if coordinator is None:
-            return "idle"
-        if coordinator.running:
-            return "running"
-        if coordinator.scheduled:
-            return "scheduled"
-        if coordinator.pending:
-            return "pending"
-        return "idle"
-
     def open_diagnostics_dialog(self, e=None):
         self.close_actions_menu()
         integrity = "Unavailable"
@@ -3038,8 +3022,6 @@ class WorkoutTrackerApp:
             "Setup notes location: exercise actions menu",
             "Superset execution guidance: enabled",
             "Superset execution resolver: v2",
-            "Workout recovery baseline: Android-verified 1.95.2 behavior",
-            f"Structural refresh coordinator: {self.structural_refresh_status()}",
             "Unequal group set counts: supported",
             "Skipped/completed group members: safely bypassed",
             "Group labels in Focus Mode: enabled",
@@ -4934,16 +4916,9 @@ class WorkoutTrackerApp:
         progress=ft.Column([ft.Row([ft.Text("WORKOUT PROGRESS",size=8,weight="bold",color=COLOR_INFO),ft.Text(f"Exercises {ex}/{len(rows)} • Sets {done}/{total} • Groups {groups}/{len(cats)}",size=9,color="white70")],alignment=ft.MainAxisAlignment.SPACE_BETWEEN,spacing=2),ft.ProgressBar(value=(done/total if total else 0),color="cyan400",bgcolor="white10",height=4)],spacing=1,tight=True)
         return ft.Column([readiness]+([quick] if quick else [])+[progress],spacing=1,tight=True)
 
-    def close_week_day_selector(self):
-        dialog = getattr(self, "week_day_dialog", None)
-        if dialog is not None:
-            self.safe_close(dialog)
-            self.week_day_dialog = None
-
     def open_week_day_selector(self, e=None):
         self.rebuild_navigation_headers()
-        dialog=ft.AlertDialog(title=ft.Text("Weeks and days"),content=ft.Column([ft.Text("Select week",size=10,weight="bold",color=COLOR_INFO),self.week_nav_row,ft.Text("Select day",size=10,weight="bold",color=COLOR_INFO),self.day_nav_row],spacing=6,tight=True),actions=[ft.TextButton("Close",on_click=lambda ev:self.close_week_day_selector())],inset_padding=12)
-        self.week_day_dialog = dialog
+        dialog=ft.AlertDialog(title=ft.Text("Weeks and days"),content=ft.Column([ft.Text("Select week",size=10,weight="bold",color=COLOR_INFO),self.week_nav_row,ft.Text("Select day",size=10,weight="bold",color=COLOR_INFO),self.day_nav_row],spacing=6,tight=True),actions=[ft.TextButton("Close",on_click=lambda ev:self.safe_close(dialog))],inset_padding=12)
         self.safe_open(dialog)
 
     def get_previous_workout_comparison(self):
@@ -6787,13 +6762,11 @@ class WorkoutTrackerApp:
         self.rebuild_entire_display()
 
     def change_active_week(self, week_str):
-        self.close_week_day_selector()
         self.set_active_position(force_week=week_str)
         self.rebuild_navigation_headers()
         self.rebuild_entire_display()
 
     def change_active_day(self, day_str):
-        self.close_week_day_selector()
         self.current_day = day_str
         self.rebuild_navigation_headers()
         self.rebuild_entire_display()

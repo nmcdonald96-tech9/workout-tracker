@@ -194,6 +194,8 @@ jobs:
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           set -euo pipefail
+          rm -rf .git
+          test ! -e .git
           flet build apk \
             --yes \
             --product "IronCycle" \
