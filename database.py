@@ -1397,6 +1397,12 @@ def superset_timing_analytics(meso,week,day):
 
 
 # --- 1.35 WORKOUT FLOW AND DATA MANAGEMENT ---
+def resolve_next_group_step(meso,week,day,session_id,completed_set):
+    """Compatibility wrapper over the 1.94 superset execution authority."""
+    from services.superset_execution_service import resolve_next_group_step as resolve
+    with get_db() as conn:
+        return resolve(conn, session_id, completed_set)
+
 def record_audit(action,details=''):
     with get_db() as c:
         c.execute("INSERT INTO app_audit(created_at,action,details) VALUES(?,?,?)",(datetime.now().isoformat(timespec='seconds'),action,details));c.execute("DELETE FROM app_audit WHERE id NOT IN (SELECT id FROM app_audit ORDER BY id DESC LIMIT 500)");c.commit()

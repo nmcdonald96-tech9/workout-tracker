@@ -163,15 +163,12 @@ class ExerciseCard(ft.Card):
         self.app.safe_open(swap_dialog)
 
     def refresh_weight_edit_feedback(self,set_idx):
-        """Rebuild this card off-tree so derived reps and ownership chips are current."""
         try:
-            drafts=self.app.sets.get(self.db_id,[])
-            if set_idx < 0 or set_idx >= len(drafts):
-                return False
-            return self.app.replace_exercise_card_in_place(self)
+            draft=self.app.sets[self.db_id][set_idx]
+            self.reps_fields[set_idx].value=str(draft.get("r",""));self.reps_fields[set_idx].update()
+            plate=calculate_plates_per_side(self.exercise,draft.get("w",0));self.plate_feedback_label.value=f"Set {set_idx+1}: {plate}" if plate else "";self.plate_container.visible=bool(plate);self.plate_container.update();return True
         except Exception as ex:
-            print(f"[weight_edit_feedback] {type(ex).__name__}: {ex}")
-            return False
+            print(f"[weight_edit_feedback] {ex}");return False
 
     def make_blur_handler(self, set_idx, key_type):
         # Runs once when a field loses focus -- never on every keystroke.
@@ -744,19 +741,14 @@ class ExerciseCard(ft.Card):
         group_label=group_label_for_session(self.db_id)
         if group_label: chips_row.controls.append(make_helper_chip(group_label, "purple900", "purple100"))
         chips_row.controls.append(make_helper_chip(f"SET {active_pos} OF {total_pos}", "blue900", "blue100"))
-        group_instruction=None
-        if group_label:
-            with get_db() as execution_conn:
-                group_instruction=resolve_post_set_action(
-                    execution_conn,session_id=self.db_id,completed_set_number=active_pos,
-                )
-        if group_instruction and group_instruction.action in (SupersetExecutionAction.ADVANCE_SET,SupersetExecutionAction.ADVANCE_GROUP):
-            if group_instruction.single_member_remaining:
-                action_text=f"Continue • {group_instruction.target_exercise} Set {group_instruction.target_set_number}"
-            elif group_instruction.round_complete:
-                action_text=f"Round complete • Next {group_instruction.target_exercise} Set {group_instruction.target_set_number}"
+        group_next=resolve_next_group_step(self.app.current_meso,self.app.current_week,self.app.current_day,self.db_id,active_pos) if group_label else None
+        if group_next:
+            if group_next.get("single_member_remaining"):
+                action_text=f"Continue • {group_next['exercise']} Set {group_next['pending_set']}"
+            elif group_next.get("round_complete"):
+                action_text=f"Round complete • Next {group_next['exercise']} Set {group_next['pending_set']}"
             else:
-                action_text=f"Next • {group_instruction.target_exercise} Set {group_instruction.target_set_number}"
+                action_text=f"Next • {group_next['exercise']} Set {group_next['pending_set']}"
         chips_row.controls.append(make_helper_chip(action_text, "white10", "white70"))
         completed_times = [x.get("completed_at") for x in self.app.sets.get(self.db_id, []) if x.get("done") and x.get("completed_at")]
         if completed_times and self.status == STATUS_PENDING:
@@ -1109,15 +1101,16 @@ class ExerciseCard(ft.Card):
             grouped_advanced=requested_value and self.app.advance_group_flow(self.db_id,set_idx+1)
             all_done = bool(self.app.sets.get(self.db_id)) and all(bool(x.get("done")) for x in self.app.sets[self.db_id])
             completion_instruction=resolve_completion_action(requested_complete=requested_value,set_index=set_idx,total_sets=len(self.app.sets[self.db_id]),all_done=all_done,execution_available=grouped_advanced)
-            if completion_instruction.action==CompletionAction.LOG_EXERCISE:
-                self.on_save(None)
-                return
-            if completion_instruction.action==CompletionAction.APPLY_EXECUTION:
-                return
-            # Standalone nonfinal completion or reopening stays on the current
-            # exercise. Replace only this card so completed-row dimming, active
-            # set position, helper text, and button state appear immediately.
-            self.app.replace_exercise_card_in_place(self)
+            if completion_instruction.action==CompletionAction.LOG_EXERCISE:self.on_save(None);return
+            if completion_instruction.action==CompletionAction.APPLY_EXECUTION:return
+            if requested_value and not exercise_was_started:
+                category_name = self.context.get("category") if self.context else None
+                self.app.activate_exercise(category_name, self.db_id)  # rebuilds internally
+            else:
+                # Dimming is baked into initial row construction (see build_card),
+                # so a fresh rebuild is all that's needed to reflect the new state --
+                # no direct mutation of the already-mounted rows.
+                self.app.request_structural_refresh("exercise_card_structure", rebuild_navigation=True)
         return set_done_changed
 
     def make_live_updater(self, set_idx, key_type):
@@ -1438,9 +1431,6 @@ class WorkoutTrackerApp:
 
         self.sets = {}
         self.pending_set_contexts = {}
-        # Local render revisions force Flet to mount fresh card controls and
-        # callbacks without replacing the workout ListView or moving its viewport.
-        self.exercise_card_revisions = {}
         self.show_add_form = False
         self.show_survey = False
         self.pr_celebrations = {}
@@ -2946,13 +2936,8 @@ class WorkoutTrackerApp:
         self.safe_open(dialog)
 
     def structural_refresh_status(self):
-        """Return a privacy-safe structural-refresh coordinator status."""
-        coordinator = getattr(
-            self,
-            "_structural_refresh_coordinator",
-            None,
-        )
-
+        """Return privacy-safe status for the lazily-created refresh coordinator."""
+        coordinator = getattr(self, "_structural_refresh_coordinator", None)
         if coordinator is None:
             return "idle"
         if coordinator.running:
@@ -3051,11 +3036,8 @@ class WorkoutTrackerApp:
             "Static Android-safe warm-up guidance: enabled",
             "Setup notes location: exercise actions menu",
             "Superset execution guidance: enabled",
-            "Superset execution resolver: typed service (legacy adapter retired)",
-            "Workout view controller: active",
-            "Workout viewport controller: active",
-            f"Workout controller position: {self.workout_view_controller.diagnostics(self.workout_position())['position']}",
-            f"Viewport pending action: {self.workout_viewport_controller.diagnostics()['pending_action']}",
+            "Superset execution resolver: v2",
+            "Workout recovery baseline: Android-verified 1.97 behavior",
             f"Structural refresh coordinator: {self.structural_refresh_status()}",
             "Unequal group set counts: supported",
             "Skipped/completed group members: safely bypassed",
@@ -4569,55 +4551,29 @@ class WorkoutTrackerApp:
     def preserve_workout_viewport(self):
         return self.workout_viewport_controller.preserve_current()
 
-    def exercise_card_render_key(self, session_id):
-        session_id = int(session_id)
-        revision = int(self.exercise_card_revisions.get(session_id, 0))
-        return f"{exercise_anchor_key(session_id)}-render-{revision}"
-
-    def resolve_workout_render_key(self, key):
-        """Resolve stable exercise anchors to the currently mounted render key."""
-        text = str(key or "")
-        prefix = "exercise-"
-        if text.startswith(prefix) and "-render-" not in text:
-            raw_id = text[len(prefix):]
-            if raw_id.isdigit():
-                return self.exercise_card_render_key(int(raw_id))
-        return key
-
     def replace_exercise_card_in_place(self, card):
-        """Force-mount a fresh keyed card while preserving the ListView viewport."""
-        session_id = int(card.db_id)
+        """Replace one child while preserving the existing ListView and scroll position."""
+        wanted_key = exercise_anchor_key(card.db_id)
         try:
             index = next(
                 i for i, control in enumerate(self.main_canvas.controls)
-                if getattr(control, "db_id", None) == session_id
+                if getattr(control, "key", None) == wanted_key
             )
-            revision = int(self.exercise_card_revisions.get(session_id, 0)) + 1
-            self.exercise_card_revisions[session_id] = revision
             replacement = ExerciseCard(
                 card.db_id, card.exercise, card.tgt_w, card.tgt_r,
                 card.status, card.mov_type, self, context=card.context,
             )
-            replacement.key = self.exercise_card_render_key(session_id)
+            replacement.key = wanted_key
             self.main_canvas.controls[index] = replacement
             self.main_canvas.update()
-            print(
-                "[replace_exercise_card_in_place] "
-                f"db_id={session_id} revision={revision} update_ok"
-            )
             return True
-        except StopIteration:
-            print(f"[replace_exercise_card_in_place] lookup_failed db_id={session_id}")
         except Exception as ex:
-            print(
-                "[replace_exercise_card_in_place] "
-                f"failed type={type(ex).__name__} error={ex}"
+            print(f"[replace_exercise_card_in_place] {ex}")
+            self.show_snackbar(
+                "The set was saved, but the exercise card could not refresh.",
+                "amber300",
             )
-        self.show_snackbar(
-            "The set was saved, but the exercise card could not refresh.",
-            "amber300",
-        )
-        return False
+            return False
 
     def remount_main_canvas(self):
         """Replace the main ListView so Android creates a new zeroed viewport."""
@@ -4662,7 +4618,6 @@ class WorkoutTrackerApp:
         estimate the target's vertical position from the rebuilt control tree
         and use the widely-supported numeric offset API instead.
         """
-        key = self.resolve_workout_render_key(key)
         def control_contains_key(control, wanted_key):
             try:
                 if getattr(control, "key", None) == wanted_key:
@@ -4768,14 +4723,11 @@ class WorkoutTrackerApp:
 
         selected_key = selected.casefold()
         for category in day_categories:
-            self.workout_view_controller.set_collapsed(
-                self.workout_position(),category,
-                str(category).strip().casefold() != selected_key,
+            self.collapsed_categories[self.category_key(category)] = (
+                str(category).strip().casefold() != selected_key
             )
-        self.workout_view_controller.set_collapsed(self.workout_position(),selected,False)
-        self.workout_viewport_controller.navigate_to_key(
-            category_anchor_key(selected),reason="category_jump",
-        )
+        self.collapsed_categories[self.category_key(selected)] = False
+        self.pending_scroll_key = category_anchor_key(selected)
         self.request_structural_refresh(
             "category_jump",
             rebuild_navigation=False,
@@ -4820,9 +4772,7 @@ class WorkoutTrackerApp:
         key = self.category_key(category_name)
         if self.active_exercise_by_category.get(key) == session_id:
             return
-        self.workout_view_controller.set_active(
-            self.workout_position(),category_name,session_id,
-        )
+        self.active_exercise_by_category[key] = session_id
         # Keep the promoted exercise's group open and reduce screen clutter.
         with get_db() as conn:
             cursor = conn.cursor()
@@ -4832,13 +4782,11 @@ class WorkoutTrackerApp:
             """, (self.current_meso, self.current_week, self.current_day))
             for row in cursor.fetchall():
                 if row[0]:
-                    self.workout_view_controller.set_collapsed(
-                        self.workout_position(),row[0],row[0] != category_name,
-                    )
-        self.workout_view_controller.set_collapsed(self.workout_position(),category_name,False)
+                    self.collapsed_categories[self.category_key(row[0])] = (row[0] != category_name)
+        self.collapsed_categories[key] = False
         # Replacing the ListView is the compatibility strategy: the active
         # category is sorted first below, and the new viewport starts at zero.
-        self.workout_viewport_controller.reset_top(reason="activate_exercise")
+        self.pending_scroll_key = None
         self.remount_main_canvas_on_rebuild = True
         self.rebuild_entire_display()
 
@@ -4930,14 +4878,10 @@ class WorkoutTrackerApp:
                 """, (self.current_meso, self.current_week, self.current_day))
                 for row in cursor.fetchall():
                     if row[0]:
-                        self.workout_view_controller.set_collapsed(self.workout_position(),row[0],row[0] != category_name)
+                        self.collapsed_categories[self.category_key(row[0])] = (row[0] != category_name)
         else:
-            self.workout_view_controller.set_collapsed(self.workout_position(),category_name,True)
-        
-        if opening:
-            self.workout_viewport_controller.navigate_to_key(category_anchor_key(category_name),reason="category_toggle")
-        else:
-            self.workout_viewport_controller.reset_top(reason="category_closed")
+            self.collapsed_categories[key] = True
+        self.pending_scroll_key = category_anchor_key(category_name) if opening else None
         self.rebuild_entire_display()
 
     def make_category_header(self, category_name, rows_in_cat):
@@ -6804,9 +6748,7 @@ class WorkoutTrackerApp:
             
         self.show_add_form = False
         self.wizard_custom_input.value = ""
-        self.workout_viewport_controller.navigate_to_key(
-            category_anchor_key(cat),reason="add_exercise",
-        )
+        self.pending_scroll_key = category_anchor_key(cat)
         self.request_structural_refresh(
             "add_exercise",
             rebuild_navigation=True,
@@ -7266,7 +7208,7 @@ class WorkoutTrackerApp:
                     ctx = workout_snapshot.card_context(db_id,exercise,db_cat,previous_week_order.get((db_cat,exercise)))
                     
                     card = ExerciseCard(db_id, exercise, tgt_w, tgt_r, status, mov_type, self, context=ctx)
-                    card.key = self.exercise_card_render_key(db_id)
+                    card.key = exercise_anchor_key(db_id)
                     self.main_canvas.controls.append(card)
 
             if pending_week_count == 0 and len(self.engine_button_container.controls) > 0:

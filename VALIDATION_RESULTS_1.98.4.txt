@@ -1,0 +1,14 @@
+IronCycle 1.98.4 validation results
+
+Python compilation: PASS
+Focused recovery-baseline suite: 7 passed in 0.14s
+Complete supported pytest suite: 145 passed in 3.17s
+Application version: 1.98.4
+Database schema: 20, unchanged
+Recovery source baseline: Android-verified 1.97.0
+
+Not executed:
+- Signed Android APK/AAB packaging
+- Physical-device recovery behavior
+- Google Play Billing purchase interaction
+- OneDrive interactive authentication

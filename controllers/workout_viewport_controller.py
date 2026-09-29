@@ -35,9 +35,3 @@ class WorkoutViewportController:
             instruction=ViewportInstruction(ViewportAction.NONE,None,None,"no_pending_viewport_work")
         self.pending_offset=None; self.pending_key=None
         return instruction
-
-    def diagnostics(self):
-        if self.pending_offset is not None: pending=ViewportAction.PRESERVE_OFFSET.value
-        elif self.pending_key: pending=ViewportAction.SCROLL_TO_KEY.value
-        else: pending=ViewportAction.NONE.value
-        return {"current_offset":round(self.current_offset,1),"pending_action":pending,"pending_key":self.pending_key}

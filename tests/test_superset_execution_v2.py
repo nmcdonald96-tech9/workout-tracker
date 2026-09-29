@@ -1,11 +1,3 @@
-from services.superset_execution_service import resolve_post_set_action
-
-def resolve(database,session_id,completed_set):
-    with database.get_db() as conn:
-        x=resolve_post_set_action(conn,session_id=session_id,completed_set_number=completed_set)
-    if x.action.value not in ("advance_set","advance_group"):
-        return None
-    return {"session_id":x.target_session_id,"pending_set":x.target_set_number,"round_complete":x.round_complete,"remaining_members":x.remaining_member_count,"single_member_remaining":x.single_member_remaining}
 import importlib
 
 
@@ -33,10 +25,10 @@ def complete(database,sid,set_number):
 def test_three_member_round_order(tmp_path,monkeypatch):
     db,ids=setup_group(tmp_path,monkeypatch)
     complete(db,ids[0],1)
-    nxt=resolve(db,ids[0],1)
+    nxt=db.resolve_next_group_step(1,'1','Monday',ids[0],1)
     assert (nxt['session_id'],nxt['pending_set'],nxt['round_complete'])==(ids[1],1,False)
     complete(db,ids[1],1);complete(db,ids[2],1)
-    nxt=resolve(db,ids[2],1)
+    nxt=db.resolve_next_group_step(1,'1','Monday',ids[2],1)
     assert (nxt['session_id'],nxt['pending_set'],nxt['round_complete'])==(ids[0],2,True)
 
 
@@ -44,16 +36,16 @@ def test_unequal_sets_do_not_open_missing_set(tmp_path,monkeypatch):
     db,ids=setup_group(tmp_path,monkeypatch,set_counts=(3,2))
     for sid in ids:
         complete(db,sid,1);complete(db,sid,2)
-    nxt=resolve(db,ids[1],2)
+    nxt=db.resolve_next_group_step(1,'1','Monday',ids[1],2)
     assert nxt['session_id']==ids[0] and nxt['pending_set']==3
     complete(db,ids[0],3)
-    assert resolve(db,ids[0],3) is None
+    assert db.resolve_next_group_step(1,'1','Monday',ids[0],3) is None
 
 
 def test_skipped_member_is_bypassed(tmp_path,monkeypatch):
     db,ids=setup_group(tmp_path,monkeypatch,statuses=['Pending','Skipped','Pending'])
     complete(db,ids[0],1)
-    nxt=resolve(db,ids[0],1)
+    nxt=db.resolve_next_group_step(1,'1','Monday',ids[0],1)
     assert nxt['session_id']==ids[2]
     assert nxt['remaining_members']==2
 
@@ -61,6 +53,6 @@ def test_skipped_member_is_bypassed(tmp_path,monkeypatch):
 def test_one_remaining_member_continues_normally(tmp_path,monkeypatch):
     db,ids=setup_group(tmp_path,monkeypatch,statuses=['Pending','Completed'])
     complete(db,ids[0],1)
-    nxt=resolve(db,ids[0],1)
+    nxt=db.resolve_next_group_step(1,'1','Monday',ids[0],1)
     assert nxt['session_id']==ids[0] and nxt['pending_set']==2
     assert nxt['single_member_remaining'] is True
