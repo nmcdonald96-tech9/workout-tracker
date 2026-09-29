@@ -2940,6 +2940,24 @@ class WorkoutTrackerApp:
         )
         self.safe_open(dialog)
 
+    def structural_refresh_status(self):
+        """Return a privacy-safe structural-refresh coordinator status."""
+        coordinator = getattr(
+            self,
+            "_structural_refresh_coordinator",
+            None,
+        )
+
+        if coordinator is None:
+            return "idle"
+        if coordinator.running:
+            return "running"
+        if coordinator.scheduled:
+            return "scheduled"
+        if coordinator.pending:
+            return "pending"
+        return "idle"
+
     def open_diagnostics_dialog(self, e=None):
         self.close_actions_menu()
         integrity = "Unavailable"
@@ -3033,7 +3051,7 @@ class WorkoutTrackerApp:
             "Workout viewport controller: active",
             f"Workout controller position: {self.workout_view_controller.diagnostics(self.workout_position())['position']}",
             f"Viewport pending action: {self.workout_viewport_controller.diagnostics()['pending_action']}",
-            f"Structural refresh coordinator: {'running' if self.structural_refresh.running else 'scheduled' if self.structural_refresh.scheduled else 'pending' if self.structural_refresh.pending else 'idle'}",
+            f"Structural refresh coordinator: {self.structural_refresh_status()}",
             "Unequal group set counts: supported",
             "Skipped/completed group members: safely bypassed",
             "Group labels in Focus Mode: enabled",
