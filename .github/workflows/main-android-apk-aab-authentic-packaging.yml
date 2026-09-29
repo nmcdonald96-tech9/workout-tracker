@@ -134,7 +134,7 @@ jobs:
           for optional in exercise_catalog.py onboarding_catalog.py ironcycle_billing.py; do
             [ ! -f "$optional" ] || files+=("$optional")
           done
-          while IFS= read -r module; do files+=("$module"); done < <(find app components controllers services views -type f -name '*.py' -print 2>/dev/null | sort)
+          while IFS= read -r module; do files+=("$module"); done < <(find app components services views -type f -name '*.py' -print 2>/dev/null | sort)
           python -m py_compile "${files[@]}"
 
           APP_VERSION="$(python - <<'PY'

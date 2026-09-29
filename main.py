@@ -64,8 +64,6 @@ from services.completed_revision_service import (
 )
 from services.exercise_completion_service import CompletionAction, resolve_completion_action
 from services.superset_execution_service import SupersetExecutionAction, resolve_post_set_action
-from controllers.workout_view_controller import WorkoutPosition, WorkoutViewController
-from controllers.workout_viewport_controller import ViewportAction, WorkoutViewportController
 
 # --- WIFI TRANSFER HARDENING ---
 # Threaded server prevents browser side-requests (favicon/retries) from blocking the
@@ -1101,16 +1099,20 @@ class ExerciseCard(ft.Card):
             grouped_advanced=requested_value and self.app.advance_group_flow(self.db_id,set_idx+1)
             all_done = bool(self.app.sets.get(self.db_id)) and all(bool(x.get("done")) for x in self.app.sets[self.db_id])
             completion_instruction=resolve_completion_action(requested_complete=requested_value,set_index=set_idx,total_sets=len(self.app.sets[self.db_id]),all_done=all_done,execution_available=grouped_advanced)
-            if completion_instruction.action==CompletionAction.LOG_EXERCISE:self.on_save(None);return
-            if completion_instruction.action==CompletionAction.APPLY_EXECUTION:return
-            if requested_value and not exercise_was_started:
-                category_name = self.context.get("category") if self.context else None
-                self.app.activate_exercise(category_name, self.db_id)  # rebuilds internally
-            else:
-                # Dimming is baked into initial row construction (see build_card),
-                # so a fresh rebuild is all that's needed to reflect the new state --
-                # no direct mutation of the already-mounted rows.
-                self.app.request_structural_refresh("exercise_card_structure", rebuild_navigation=True)
+            if completion_instruction.action==CompletionAction.LOG_EXERCISE:
+                self.on_save(None)
+                return
+            if completion_instruction.action==CompletionAction.APPLY_EXECUTION:
+                return
+            # Standalone nonfinal completion/reopen must always rebuild after
+            # persistence. Do not rely on activate_exercise(), which may no-op
+            # when this exercise is already active.
+            self.app.pending_scroll_key = exercise_anchor_key(self.db_id)
+            self.app.request_structural_refresh(
+                "exercise_card_structure",
+                rebuild_navigation=True,
+                remount_canvas=True,
+            )
         return set_done_changed
 
     def make_live_updater(self, set_idx, key_type):
@@ -1443,12 +1445,12 @@ class WorkoutTrackerApp:
         # uses each set's explicit Done checkbox and workout_sets.completed_at.
         self.set_touch_times = {}
         self.view_mode = "workout" 
-        self.workout_view_controller = WorkoutViewController()
-        self.workout_viewport_controller = WorkoutViewportController()
-        # Compatibility aliases retain existing callback access while the
-        # controllers own the underlying workout-view state.
-        self.collapsed_categories = self.workout_view_controller.collapsed
-        self.active_exercise_by_category = self.workout_view_controller.active
+        self.collapsed_categories = {}
+        # Quick-nav and active-exercise focus state.
+        self.active_exercise_by_category = {}
+        self.pending_scroll_key = None
+        self.workout_scroll_offset = 0.0
+        self.pending_scroll_offset = None
         self.delete_dialog_id = None
         self.current_meso = 1
         
@@ -2936,7 +2938,6 @@ class WorkoutTrackerApp:
         self.safe_open(dialog)
 
     def structural_refresh_status(self):
-        """Return privacy-safe status for the lazily-created refresh coordinator."""
         coordinator = getattr(self, "_structural_refresh_coordinator", None)
         if coordinator is None:
             return "idle"
@@ -3037,7 +3038,7 @@ class WorkoutTrackerApp:
             "Setup notes location: exercise actions menu",
             "Superset execution guidance: enabled",
             "Superset execution resolver: v2",
-            "Workout recovery baseline: Android-verified 1.97 behavior",
+            "Workout recovery baseline: Android-verified 1.95.2 behavior",
             f"Structural refresh coordinator: {self.structural_refresh_status()}",
             "Unequal group set counts: supported",
             "Skipped/completed group members: safely bypassed",
@@ -4518,38 +4519,12 @@ class WorkoutTrackerApp:
     # -----------------------------------------------
 
 
-    @property
-    def workout_scroll_offset(self):
-        return self.workout_viewport_controller.current_offset
-
-    @workout_scroll_offset.setter
-    def workout_scroll_offset(self,value):
-        self.workout_viewport_controller.record_scroll(value)
-
-    @property
-    def pending_scroll_offset(self):
-        return self.workout_viewport_controller.pending_offset
-
-    @pending_scroll_offset.setter
-    def pending_scroll_offset(self,value):
-        self.workout_viewport_controller.pending_offset=value
-
-    @property
-    def pending_scroll_key(self):
-        return self.workout_viewport_controller.pending_key
-
-    @pending_scroll_key.setter
-    def pending_scroll_key(self,value):
-        self.workout_viewport_controller.pending_key=value
-
-    def workout_position(self):
-        return WorkoutPosition(self.current_meso,str(self.current_week),self.current_day)
-
-    def capture_workout_scroll(self,event):
-        self.workout_viewport_controller.record_scroll(getattr(event,"pixels",0.0))
+    def capture_workout_scroll(self, event):
+        try:self.workout_scroll_offset=float(getattr(event,"pixels",self.workout_scroll_offset) or 0.0)
+        except Exception:pass
 
     def preserve_workout_viewport(self):
-        return self.workout_viewport_controller.preserve_current()
+        self.pending_scroll_offset=float(self.workout_scroll_offset or 0.0)
 
     def replace_exercise_card_in_place(self, card):
         """Replace one child while preserving the existing ListView and scroll position."""
@@ -4734,37 +4709,15 @@ class WorkoutTrackerApp:
             remount_canvas=True,
         )
 
-    def apply_execution_instruction(self, instruction):
-        if instruction.action not in (SupersetExecutionAction.ADVANCE_SET,SupersetExecutionAction.ADVANCE_GROUP):
-            return False
-        with get_db() as conn:
-            categories=[row[0] for row in conn.execute(
-                "SELECT DISTINCT category FROM workout_sessions WHERE meso_number=? AND week=? AND day_of_week=?",
-                (self.current_meso,self.current_week,self.current_day),
-            ).fetchall() if row[0]]
-        position=self.workout_position()
-        self.workout_view_controller.focus_category(
-            position,categories,instruction.target_category,instruction.target_session_id,
-        )
-        self.workout_viewport_controller.navigate_to_key(
-            exercise_anchor_key(instruction.target_session_id),reason="superset_handoff",
-        )
-        self.remount_main_canvas_on_rebuild=True
-        record_audit(
-            'superset_advance',
-            f"{instruction.source_session_id} set {instruction.completed_set_number} -> "
-            f"{instruction.target_session_id} set {instruction.target_set_number}; "
-            f"round_complete={int(bool(instruction.round_complete))}; "
-            f"remaining={instruction.remaining_member_count}",
-        )
-        return True
-
     def advance_group_flow(self,session_id,completed_set):
-        with get_db() as execution_conn:
-            instruction=resolve_post_set_action(
-                execution_conn,session_id=session_id,completed_set_number=completed_set,
-            )
-        return self.apply_execution_instruction(instruction)
+        with get_db() as execution_conn:instruction=resolve_post_set_action(execution_conn,session_id=session_id,completed_set_number=completed_set)
+        if instruction.action not in (SupersetExecutionAction.ADVANCE_SET,SupersetExecutionAction.ADVANCE_GROUP):return False
+        nxt=instruction.as_legacy_group_step()
+        with get_db() as conn:
+            cats=[r[0] for r in conn.execute("SELECT DISTINCT category FROM workout_sessions WHERE meso_number=? AND week=? AND day_of_week=?",(self.current_meso,self.current_week,self.current_day)).fetchall() if r[0]]
+        for dcat in cats:self.collapsed_categories[self.category_key(dcat)]=(dcat!=nxt['category'])
+        self.collapsed_categories[self.category_key(nxt['category'])]=False;self.active_exercise_by_category[self.category_key(nxt['category'])]=nxt['session_id'];self.pending_scroll_key=exercise_anchor_key(nxt['session_id']);self.remount_main_canvas_on_rebuild=True
+        record_audit('superset_advance',f"{session_id} set {completed_set} -> {nxt['session_id']} set {nxt['pending_set']}; round_complete={int(bool(nxt.get('round_complete')))}; remaining={nxt.get('remaining_members')}");self.rebuild_entire_display();return True
 
     def activate_exercise(self, category_name, session_id):
         if not category_name:
@@ -4860,10 +4813,10 @@ class WorkoutTrackerApp:
         return ft.Container(content=ft.Row(buttons,spacing=4,scroll="auto"),padding=2)
 
     def category_key(self, category_name):
-        return self.workout_view_controller.category_key(self.workout_position(),category_name)
+        return (self.current_meso, self.current_week, self.current_day, category_name)
 
     def is_category_collapsed(self, category_name):
-        return self.workout_view_controller.is_collapsed(self.workout_position(),category_name)
+        return self.collapsed_categories.get(self.category_key(category_name), False)
 
     def toggle_category(self, category_name):
         key = self.category_key(category_name)
@@ -7172,9 +7125,18 @@ class WorkoutTrackerApp:
             original_category_index = {cat: idx for idx, cat in enumerate(category_order)}
 
             def category_completion_sort_key(cat):
-                return self.workout_view_controller.category_sort_key(
-                    self.workout_position(),cat,grouped.get(cat,[]),
-                    original_category_index.get(cat,999),
+                rows = grouped.get(cat, [])
+                pending_count = sum(1 for row in rows if row[4] == STATUS_PENDING)
+                is_group_completed = pending_count == 0
+                active_id = self.active_exercise_by_category.get(self.category_key(cat))
+                has_active_pending = any(
+                    row[0] == active_id and row[4] == STATUS_PENDING
+                    for row in rows
+                )
+                return (
+                    0 if has_active_pending else 1,
+                    1 if is_group_completed else 0,
+                    original_category_index.get(cat, 999)
                 )
 
             category_order = sorted(category_order, key=category_completion_sort_key)
@@ -7222,13 +7184,16 @@ class WorkoutTrackerApp:
             # Quick-nav/category taps may still use scrolling where supported.
             # Exercise promotion sets no pending key because it remounts the
             # ListView instead of issuing an ignored Android scroll command.
-            viewport_instruction=self.workout_viewport_controller.consume()
-            if viewport_instruction.action==ViewportAction.PRESERVE_OFFSET:
-                try:self.main_canvas.scroll_to(offset=viewport_instruction.offset,duration=0)
-                except TypeError:self.main_canvas.scroll_to(viewport_instruction.offset,duration=0)
+            if self.pending_scroll_offset is not None:
+                restore_offset = self.pending_scroll_offset
+                self.pending_scroll_offset = None
+                try:self.main_canvas.scroll_to(offset=restore_offset,duration=0)
+                except TypeError:self.main_canvas.scroll_to(restore_offset,duration=0)
                 except Exception as ex:print(f"[restore_workout_offset] {ex}")
-            elif viewport_instruction.action==ViewportAction.SCROLL_TO_KEY:
-                self.scroll_to_workout_key(viewport_instruction.key)
+            elif self.pending_scroll_key:
+                focus_key = self.pending_scroll_key
+                self.pending_scroll_key = None
+                self.scroll_to_workout_key(focus_key)
 
         except Exception:
             error_log = traceback.format_exc()
