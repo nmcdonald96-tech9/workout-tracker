@@ -4915,9 +4915,16 @@ class WorkoutTrackerApp:
         progress=ft.Column([ft.Row([ft.Text("WORKOUT PROGRESS",size=8,weight="bold",color=COLOR_INFO),ft.Text(f"Exercises {ex}/{len(rows)} • Sets {done}/{total} • Groups {groups}/{len(cats)}",size=9,color="white70")],alignment=ft.MainAxisAlignment.SPACE_BETWEEN,spacing=2),ft.ProgressBar(value=(done/total if total else 0),color="cyan400",bgcolor="white10",height=4)],spacing=1,tight=True)
         return ft.Column([readiness]+([quick] if quick else [])+[progress],spacing=1,tight=True)
 
+    def close_week_day_selector(self):
+        dialog = getattr(self, "week_day_dialog", None)
+        if dialog is not None:
+            self.safe_close(dialog)
+            self.week_day_dialog = None
+
     def open_week_day_selector(self, e=None):
         self.rebuild_navigation_headers()
-        dialog=ft.AlertDialog(title=ft.Text("Weeks and days"),content=ft.Column([ft.Text("Select week",size=10,weight="bold",color=COLOR_INFO),self.week_nav_row,ft.Text("Select day",size=10,weight="bold",color=COLOR_INFO),self.day_nav_row],spacing=6,tight=True),actions=[ft.TextButton("Close",on_click=lambda ev:self.safe_close(dialog))],inset_padding=12)
+        dialog=ft.AlertDialog(title=ft.Text("Weeks and days"),content=ft.Column([ft.Text("Select week",size=10,weight="bold",color=COLOR_INFO),self.week_nav_row,ft.Text("Select day",size=10,weight="bold",color=COLOR_INFO),self.day_nav_row],spacing=6,tight=True),actions=[ft.TextButton("Close",on_click=lambda ev:self.close_week_day_selector())],inset_padding=12)
+        self.week_day_dialog = dialog
         self.safe_open(dialog)
 
     def get_previous_workout_comparison(self):
@@ -6761,11 +6768,13 @@ class WorkoutTrackerApp:
         self.rebuild_entire_display()
 
     def change_active_week(self, week_str):
+        self.close_week_day_selector()
         self.set_active_position(force_week=week_str)
         self.rebuild_navigation_headers()
         self.rebuild_entire_display()
 
     def change_active_day(self, day_str):
+        self.close_week_day_selector()
         self.current_day = day_str
         self.rebuild_navigation_headers()
         self.rebuild_entire_display()
