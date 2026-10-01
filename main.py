@@ -1780,10 +1780,21 @@ class WorkoutTrackerApp:
             result=cached if cached.get("owned") else await self.billing.reconcile(LIFETIME_PRODUCT_ID)
             status=result.get("status","unknown")
             if result.get("owned"):
+                was_owned = self.entitlement.snapshot().state == LIFETIME_UNLOCKED
                 self.entitlement.record_google_play_ownership(result.get("verification_source","google_play"))
                 self.entitlement.record_billing_check(status,successful=True)
                 self.billing_status="owned";self.billing_error=None
-                self.rebuild_entire_display()
+                if reason == "startup" and was_owned:
+                    self.record_workout_ui_trace(
+                        "startup_billing_rebuild_coalesced", None, None,
+                        reason=reason, already_owned=True,
+                    )
+                else:
+                    self.record_workout_ui_trace(
+                        "billing_rebuild_requested", None, None,
+                        reason=reason, already_owned=was_owned,
+                    )
+                    self.rebuild_entire_display()
             else:
                 inconclusive=bool(result.get("inconclusive")) or status in ("billing_unavailable","error","timeout","busy","inconclusive","stream_error","completion_error","pending")
                 self.entitlement.record_billing_check(status,successful=not inconclusive,error=result.get("message"))
