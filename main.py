@@ -2932,6 +2932,31 @@ class WorkoutTrackerApp:
         )
         self.safe_open(dialog)
 
+    def release_readiness_lines(self, integrity):
+        """Return privacy-safe 2.0 readiness signals without workout values."""
+        billing = self.entitlement.billing_diagnostics()
+        identity = exercise_identity_summary()
+        checks = {
+            "database_integrity": str(integrity).strip().lower() == "ok",
+            "billing_ownership": bool(billing.get("owned")),
+            "onedrive_graph": self.cloud_state == "verified",
+            "onboarding": self.get_bool_setting("onboarding_completed", False),
+            "exercise_identity": int(identity.get("needs_review", 0)) == 0,
+        }
+        passed = sum(1 for value in checks.values() if value)
+        return [
+            "2.0 readiness profile: 1.99",
+            f"2.0 readiness signals: {passed}/{len(checks)} passing",
+            f"2.0 database gate: {'pass' if checks['database_integrity'] else 'review'}",
+            f"2.0 billing gate: {'pass' if checks['billing_ownership'] else 'review'}",
+            f"2.0 OneDrive gate: {'pass' if checks['onedrive_graph'] else 'review'}",
+            f"2.0 onboarding gate: {'pass' if checks['onboarding'] else 'clean-install test required'}",
+            f"2.0 exercise identity gate: {'pass' if checks['exercise_identity'] else 'review'}",
+            "2.0 workout interaction baseline: Android verified 1.98.8",
+            "2.0 pending gates: clean install, trial expiry, restore matrix, accessibility, Play-delivered acceptance",
+            "2.0 diagnostics data policy: no workout values, tokens, account identifiers, or backup contents",
+        ]
+
     def open_diagnostics_dialog(self, e=None):
         self.close_actions_menu()
         integrity = "Unavailable"
@@ -2993,6 +3018,7 @@ class WorkoutTrackerApp:
             "Release channel: Google Play testing",
             "Privacy-safe support diagnostics: enabled",
             "Support reports exclude purchase tokens, payment details, backup contents, and Microsoft account information.",
+            *self.release_readiness_lines(integrity),
             f"Onboarding completed: {'Yes' if self.get_bool_setting('onboarding_completed',False) else 'No'}",
             f"Automatic First Setup eligible: {'No - existing onboarding state is preserved' if self.get_bool_setting('onboarding_completed',False) else 'Yes if no completed workout history'}",
             f"Canonical exercise catalog: {len(CANONICAL_EXERCISES)} entries / v{CATALOG_VERSION}",

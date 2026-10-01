@@ -1,0 +1,11 @@
+IronCycle 1.99.0 changed-file inventory
+- constants.py
+- main.py
+- tests/test_1990_release_readiness.py
+- docs/releases/RELEASE_1.99.0.md
+- docs/testing/RELEASE_READINESS_MATRIX_2.0.md
+- docs/testing/ANDROID_SMOKE_TEST_1.99.0.md
+- docs/validation/VALIDATION_1.99.0.md
+- VALIDATION_RESULTS_1.99.0.txt
+- CHANGED_FILES_1.99.0.txt
+- SOURCE_MANIFEST_1.99.0.txt
