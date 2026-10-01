@@ -7,7 +7,7 @@ def test_submit_and_blur_share_one_commit_handler():
  assert 'w_f.on_submit = self.make_weight_commit_handler(idx)' in s
  assert 'w_f.on_blur = self.make_weight_commit_handler(idx)' in s
  b=method('make_weight_commit_handler','make_blur_handler')
- assert 'self.commit_weight_edit(set_idx)' in b
+ assert 'self.commit_weight_edit(set_idx, getattr(e.control, "value", None))' in b
 def test_commit_uses_immutable_target_baseline():
  b=method('commit_weight_edit','make_weight_commit_handler')
  assert 'orig_w = float(self.set_targets[set_idx]["w"])' in b
@@ -37,4 +37,4 @@ def test_verified_interactions_remain_present():
 def test_readiness_diagnostics_remain_present():
  assert '2.0 readiness profile: 1.99' in method('release_readiness_lines','open_diagnostics_dialog')
 def test_release_contract():
- c=(ROOT/'constants.py').read_text();assert 'APP_VERSION = "1.99.1"' in c and 'DATABASE_SCHEMA_VERSION = 20' in c
+ c=(ROOT/'constants.py').read_text();assert 'APP_VERSION = "1.99.2"' in c and 'DATABASE_SCHEMA_VERSION = 20' in c

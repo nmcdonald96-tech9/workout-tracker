@@ -168,15 +168,19 @@ class ExerciseCard(ft.Card):
         except Exception as ex:
             print(f"[weight_edit_feedback] {ex}");return False
 
-    def commit_weight_edit(self, set_idx):
-        """Commit one weight edit from submit or blur using a stable target baseline."""
-        self.autosave_pending_sets()
-
+    def commit_weight_edit(self, set_idx, raw_value=None):
+        """Commit the event control value before calculating derived reps."""
         if not hasattr(self, "set_targets") or set_idx >= len(self.set_targets):
             return False
         if self.db_id not in self.app.sets or set_idx >= len(self.app.sets[self.db_id]):
             return False
 
+        set_data = self.app.sets[self.db_id][set_idx]
+        if raw_value is not None:
+            updated = apply_direct_edit(set_data, "w", raw_value)
+            set_data.clear(); set_data.update(updated)
+
+        self.autosave_pending_sets()
         try:
             orig_w = float(self.set_targets[set_idx]["w"])
             orig_r = int(self.set_targets[set_idx]["r"])
@@ -185,9 +189,7 @@ class ExerciseCard(ft.Card):
 
         is_bw = EXERCISE_METADATA.get(self.exercise, {}).get("equipment") == "Bodyweight"
         bw = get_user_bodyweight() if is_bw else 0.0
-        set_data = self.app.sets[self.db_id][set_idx]
         raw_val = str(set_data.get("w", "")).strip()
-
         if self.status != STATUS_PENDING or bool(set_data.get("done")):
             return False
 
@@ -208,10 +210,7 @@ class ExerciseCard(ft.Card):
         orig_e1rm = calculate_e1rm(orig_w, orig_r, bw)
         if orig_e1rm > 0:
             new_total_w = new_w + bw
-            if new_total_w < orig_e1rm:
-                new_target_r = int(round(37 - (36 * new_total_w / orig_e1rm)))
-            else:
-                new_target_r = 1
+            new_target_r = int(round(37 - (36 * new_total_w / orig_e1rm))) if new_total_w < orig_e1rm else 1
             resolved_meta = resolve_exercise_metadata(self.exercise)
             new_target_r = max(
                 int(resolved_meta.get("min_reps", 1)),
@@ -225,17 +224,15 @@ class ExerciseCard(ft.Card):
         return True
 
     def make_weight_commit_handler(self, set_idx):
-        """Use the same idempotent commit path for Android submit and blur events."""
         def commit_handler(e):
-            self.commit_weight_edit(set_idx)
+            self.commit_weight_edit(set_idx, getattr(e.control, "value", None))
         return commit_handler
 
     def make_blur_handler(self, set_idx, key_type):
         def blur_handler(e):
             if key_type == "w":
-                self.commit_weight_edit(set_idx)
+                self.commit_weight_edit(set_idx, getattr(e.control, "value", None))
                 return
-
             self.autosave_pending_sets()
             if key_type == "rpe":
                 drafts = self.app.sets.get(self.db_id, [])
