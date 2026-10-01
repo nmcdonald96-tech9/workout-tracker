@@ -4,13 +4,12 @@ ROOT=Path(__file__).resolve().parents[1]
 def method(name,next_name):
  s=(ROOT/'main.py').read_text();a=s.index(f'    def {name}(');b=s.index(f'    def {next_name}(',a);return s[a:b]
 def test_weight_blur_does_not_mutate_authoritative_rep_target():
- b=method('make_blur_handler','build_card')
+ b=method('commit_weight_edit','make_weight_commit_handler')
  assert 'self.set_targets[set_idx]["r"] = new_target_r' not in b
  assert 'apply_weight_derived_reps(set_data, new_w, new_target_r)' in b
  assert 'set_data.clear(); set_data.update(updated)' in b
 def test_clear_weight_restores_authoritative_original_target():
- b=method('make_blur_handler','build_card')
- assert 'self.set_targets[set_idx]["r"] = orig_r' in b
+ b=method('commit_weight_edit','make_weight_commit_handler')
  assert 'clear_override(updated, "r", current_target)' in b
 def test_repeated_edit_math_has_stable_baseline():
  from database import calculate_e1rm
@@ -28,4 +27,4 @@ def test_no_card_reconciliation_experiments():
  s=(ROOT/'main.py').read_text()
  for marker in ('exercise_card_revisions','exercise_card_render_key','resolve_workout_render_key'): assert marker not in s
 def test_release_contract():
- c=(ROOT/'constants.py').read_text(); assert 'APP_VERSION = "1.99.0"' in c and 'DATABASE_SCHEMA_VERSION = 20' in c
+ c=(ROOT/'constants.py').read_text(); assert 'APP_VERSION = "1.99.1"' in c and 'DATABASE_SCHEMA_VERSION = 20' in c

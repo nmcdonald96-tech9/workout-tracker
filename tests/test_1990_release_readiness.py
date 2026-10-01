@@ -11,7 +11,7 @@ def test_diagnostics_includes_readiness_section():
  s=(ROOT/'main.py').read_text();a=s.index('    def open_diagnostics_dialog(');b=s.index('    async def copy_text_to_clipboard(',a);b=s[a:b]
  assert '*self.release_readiness_lines(integrity)' in b
 def test_verified_workout_baseline_is_untouched():
- s=(ROOT/'main.py').read_text();a=s.index('    def make_blur_handler(');b=s.index('    def build_card(',a);weight=s[a:b]
+ s=(ROOT/'main.py').read_text();a=s.index('    def commit_weight_edit(');b=s.index('    def make_weight_commit_handler(',a);weight=s[a:b]
  assert 'self.set_targets[set_idx]["r"] = new_target_r' not in weight
  assert 'apply_weight_derived_reps(set_data, new_w, new_target_r)' in weight
  complete=method('make_set_done_handler','make_live_updater')
@@ -23,4 +23,4 @@ def test_packaging_dependency_locks_are_retained():
  for rel in ('packages/ironcycle-billing/flutter/ironcycle_billing/pubspec.yaml','packages/ironcycle-billing/src/ironcycle_billing/flutter/ironcycle_billing/pubspec.yaml'):
   text=(ROOT/rel).read_text();assert 'jni_flutter: 1.0.3' in text and 'in_app_purchase: 3.3.0' in text and 'in_app_purchase_android: 0.5.0' in text
 def test_release_contract():
- c=(ROOT/'constants.py').read_text();assert 'APP_VERSION = "1.99.0"' in c and 'DATABASE_SCHEMA_VERSION = 20' in c
+ c=(ROOT/'constants.py').read_text();assert 'APP_VERSION = "1.99.1"' in c and 'DATABASE_SCHEMA_VERSION = 20' in c

@@ -19,7 +19,7 @@ def test_day_change_closes_dialog_before_context_change():
  assert b.index('self.close_week_day_selector()') < b.index('self.current_day = day_str')
  assert b.index('self.current_day = day_str') < b.index('self.rebuild_entire_display()')
 def test_weight_baseline_fix_is_untouched():
- s=(ROOT/'main.py').read_text();a=s.index('    def make_blur_handler(');b=s.index('    def build_card(',a);block=s[a:b]
+ s=(ROOT/'main.py').read_text();a=s.index('    def commit_weight_edit(');b=s.index('    def make_weight_commit_handler(',a);block=s[a:b]
  assert 'self.set_targets[set_idx]["r"] = new_target_r' not in block
  assert 'apply_weight_derived_reps(set_data, new_w, new_target_r)' in block
 def test_complete_handler_is_untouched_by_modal_patch():
@@ -27,4 +27,4 @@ def test_complete_handler_is_untouched_by_modal_patch():
  assert 'self.app.advance_group_flow(self.db_id,set_idx+1)' in b
  assert 'CompletionAction.LOG_EXERCISE' in b
 def test_release_contract():
- c=(ROOT/'constants.py').read_text(); assert 'APP_VERSION = "1.99.0"' in c and 'DATABASE_SCHEMA_VERSION = 20' in c
+ c=(ROOT/'constants.py').read_text(); assert 'APP_VERSION = "1.99.1"' in c and 'DATABASE_SCHEMA_VERSION = 20' in c

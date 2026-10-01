@@ -168,84 +168,81 @@ class ExerciseCard(ft.Card):
         except Exception as ex:
             print(f"[weight_edit_feedback] {ex}");return False
 
-    def make_blur_handler(self, set_idx, key_type):
-        # Runs once when a field loses focus -- never on every keystroke.
-        # Only ever mutates self.app.sets (a plain dict, always safe) and,
-        # when a visual refresh is actually needed, triggers a full
-        # rebuild_entire_display(). It NEVER sets a property directly on an
-        # already-mounted control -- that pattern is what threw "Frozen
-        # controls cannot be updated" on the packaged Android runtime.
-        def blur_handler(e):
-            self.autosave_pending_sets()
+    def commit_weight_edit(self, set_idx):
+        """Commit one weight edit from submit or blur using a stable target baseline."""
+        self.autosave_pending_sets()
 
+        if not hasattr(self, "set_targets") or set_idx >= len(self.set_targets):
+            return False
+        if self.db_id not in self.app.sets or set_idx >= len(self.app.sets[self.db_id]):
+            return False
+
+        try:
+            orig_w = float(self.set_targets[set_idx]["w"])
+            orig_r = int(self.set_targets[set_idx]["r"])
+        except Exception:
+            return False
+
+        is_bw = EXERCISE_METADATA.get(self.exercise, {}).get("equipment") == "Bodyweight"
+        bw = get_user_bodyweight() if is_bw else 0.0
+        set_data = self.app.sets[self.db_id][set_idx]
+        raw_val = str(set_data.get("w", "")).strip()
+
+        if self.status != STATUS_PENDING or bool(set_data.get("done")):
+            return False
+
+        if raw_val in ("", ".", "-", "-."):
+            current_target = self.set_targets[set_idx]
+            updated = clear_override(set_data, "w", current_target)
+            updated = clear_override(updated, "r", current_target)
+            set_data.clear(); set_data.update(updated)
+            self.autosave_pending_sets()
+            self.refresh_weight_edit_feedback(set_idx)
+            return True
+
+        try:
+            new_w = float(raw_val)
+        except ValueError:
+            return False
+
+        orig_e1rm = calculate_e1rm(orig_w, orig_r, bw)
+        if orig_e1rm > 0:
+            new_total_w = new_w + bw
+            if new_total_w < orig_e1rm:
+                new_target_r = int(round(37 - (36 * new_total_w / orig_e1rm)))
+            else:
+                new_target_r = 1
+            resolved_meta = resolve_exercise_metadata(self.exercise)
+            new_target_r = max(
+                int(resolved_meta.get("min_reps", 1)),
+                min(int(resolved_meta.get("max_reps", 50)), new_target_r),
+            )
+            updated = apply_weight_derived_reps(set_data, new_w, new_target_r)
+            set_data.clear(); set_data.update(updated)
+
+        self.autosave_pending_sets()
+        self.refresh_weight_edit_feedback(set_idx)
+        return True
+
+    def make_weight_commit_handler(self, set_idx):
+        """Use the same idempotent commit path for Android submit and blur events."""
+        def commit_handler(e):
+            self.commit_weight_edit(set_idx)
+        return commit_handler
+
+    def make_blur_handler(self, set_idx, key_type):
+        def blur_handler(e):
+            if key_type == "w":
+                self.commit_weight_edit(set_idx)
+                return
+
+            self.autosave_pending_sets()
             if key_type == "rpe":
                 drafts = self.app.sets.get(self.db_id, [])
                 draft = drafts[set_idx] if set_idx < len(drafts) else {}
                 raw_rpe = str(draft.get("rpe", "")).strip()
                 if raw_rpe and self.normalize_rpe(raw_rpe) is None:
                     self.app.show_snackbar(RPE_ERROR, "red300")
-                return
-
-            if key_type != "w":
-                return  # reps blur: nothing downstream needs recomputing
-
-            if not hasattr(self, "set_targets") or set_idx >= len(self.set_targets):
-                return
-            if self.db_id not in self.app.sets or set_idx >= len(self.app.sets[self.db_id]):
-                return
-
-            try:
-                orig_w = float(self.set_targets[set_idx]["w"])
-                orig_r = int(self.set_targets[set_idx]["r"])
-            except Exception:
-                return
-
-            is_bw = EXERCISE_METADATA.get(self.exercise, {}).get("equipment") == "Bodyweight"
-            bw = get_user_bodyweight() if is_bw else 0.0
-
-            set_data = self.app.sets[self.db_id][set_idx]
-            raw_val = str(set_data.get("w", "")).strip()
-
-            # Left-to-right entry is authoritative for pending, incomplete sets:
-            # Weight -> recalculated REPS -> RPE -> Complete. A later weight edit
-            # intentionally replaces any current rep value; entering reps after
-            # weight remains the user's manual override.
-            if self.status != STATUS_PENDING or bool(set_data.get("done")):
-                return
-
-            if raw_val in ("", ".", "-", "-."):
-                current_target = self.set_targets[set_idx]
-                updated = clear_override(set_data, "w", current_target)
-                updated = clear_override(updated, "r", current_target)
-                set_data.clear(); set_data.update(updated)
-                self.set_targets[set_idx]["r"] = orig_r
-                self.autosave_pending_sets(); self.refresh_weight_edit_feedback(set_idx)
-                return
-
-            try:
-                new_w = float(raw_val)
-            except ValueError:
-                return  # let on_save's validation catch genuinely invalid text
-
-            orig_e1rm = calculate_e1rm(orig_w, orig_r, bw)
-            if orig_e1rm > 0:
-                new_total_w = new_w + bw
-                if new_total_w < orig_e1rm:
-                    new_target_r = int(round(37 - (36 * new_total_w / orig_e1rm)))
-                else:
-                    new_target_r = 1
-                # Keep the automatic left-to-right result inside the exercise's
-                # valid rep boundaries. The adapted value belongs to the weight
-                # edit until the user explicitly edits REPS afterward.
-                resolved_meta = resolve_exercise_metadata(self.exercise)
-                new_target_r = max(
-                    int(resolved_meta.get("min_reps", 1)),
-                    min(int(resolved_meta.get("max_reps", 50)), new_target_r),
-                )
-                updated = apply_weight_derived_reps(set_data, new_w, new_target_r)
-                set_data.clear(); set_data.update(updated)
-
-            self.autosave_pending_sets(); self.refresh_weight_edit_feedback(set_idx)
         return blur_handler
 
     def build_card(self):
@@ -571,7 +568,8 @@ class ExerciseCard(ft.Card):
                 keyboard_type=ft.KeyboardType.NUMBER
             )
             w_f.on_change = self.make_live_updater(idx, "w")
-            w_f.on_blur = self.make_blur_handler(idx, "w")
+            w_f.on_submit = self.make_weight_commit_handler(idx)
+            w_f.on_blur = self.make_weight_commit_handler(idx)
 
             r_f = ft.TextField(
                 value=set_data["r"],
