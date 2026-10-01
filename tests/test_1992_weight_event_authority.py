@@ -4,8 +4,8 @@ def method(name,next_name):
  s=(ROOT/'main.py').read_text();a=s.index(f'    def {name}(');b=s.index(f'    def {next_name}(',a);return s[a:b]
 def test_submit_and_blur_pass_current_control_value():
  s=(ROOT/'main.py').read_text()
- assert 'w_f.on_submit = self.make_weight_commit_handler(idx)' in s
- assert 'w_f.on_blur = self.make_weight_commit_handler(idx)' in s
+ assert 'w_f.on_submit = self.make_weight_commit_handler(idx, "weight_submit")' in s
+ assert 'w_f.on_blur = self.make_weight_commit_handler(idx, "weight_blur")' in s
  b=method('make_weight_commit_handler','make_blur_handler')
  assert 'getattr(e.control, "value", None)' in b
 def test_event_value_becomes_draft_authority_before_calculation():
@@ -22,4 +22,4 @@ def test_no_structural_refresh_or_card_replacement():
  assert 'request_structural_refresh' not in b
  assert 'replace_exercise_card_in_place' not in b
 def test_release_contract():
- c=(ROOT/'constants.py').read_text();assert 'APP_VERSION = "1.99.2"' in c and 'DATABASE_SCHEMA_VERSION = 20' in c
+ c=(ROOT/'constants.py').read_text();assert 'APP_VERSION = "1.99.3"' in c and 'DATABASE_SCHEMA_VERSION = 20' in c

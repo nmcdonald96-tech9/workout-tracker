@@ -1,0 +1,13 @@
+IronCycle 1.99.3 changed-file inventory
+- constants.py
+- main.py
+- tests/test_1987_weight_derived_baseline.py
+- tests/test_1988_week_day_modal_lifecycle.py
+- tests/test_1990_release_readiness.py
+- tests/test_1993_workout_ui_trace.py
+- docs/releases/RELEASE_1.99.3.md
+- docs/testing/ANDROID_SMOKE_TEST_1.99.3.md
+- docs/validation/VALIDATION_1.99.3.md
+- VALIDATION_RESULTS_1.99.3.txt
+- CHANGED_FILES_1.99.3.txt
+- SOURCE_MANIFEST_1.99.3.txt

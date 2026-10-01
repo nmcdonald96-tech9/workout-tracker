@@ -103,7 +103,12 @@ class ExerciseCard(ft.Card):
         self.weight_fields = []
         self.reps_fields = []
         self.rpe_fields = []
+        self.app.record_workout_ui_trace("card_created", self.db_id, None, self)
         self.build_card()
+        self.app.record_workout_ui_trace(
+            "card_built", self.db_id, None, self,
+            weight_count=len(self.weight_fields), reps_count=len(self.reps_fields),
+        )
 
 
     def make_rpe_updater(self, set_idx):
@@ -163,76 +168,77 @@ class ExerciseCard(ft.Card):
     def refresh_weight_edit_feedback(self,set_idx):
         try:
             draft=self.app.sets[self.db_id][set_idx]
-            self.reps_fields[set_idx].value=str(draft.get("r",""));self.reps_fields[set_idx].update()
+            field=self.reps_fields[set_idx]
+            self.app.record_workout_ui_trace("reps_update_started", self.db_id, set_idx, self, control=field)
+            field.value=str(draft.get("r",""));field.update()
+            self.app.record_workout_ui_trace("reps_update_returned", self.db_id, set_idx, self, control=field)
             plate=calculate_plates_per_side(self.exercise,draft.get("w",0));self.plate_feedback_label.value=f"Set {set_idx+1}: {plate}" if plate else "";self.plate_container.visible=bool(plate);self.plate_container.update();return True
         except Exception as ex:
+            self.app.record_workout_ui_trace("reps_update_exception", self.db_id, set_idx, self, error=type(ex).__name__)
             print(f"[weight_edit_feedback] {ex}");return False
 
-    def commit_weight_edit(self, set_idx, raw_value=None):
-        """Commit the event control value before calculating derived reps."""
+    def commit_weight_edit(self, set_idx, raw_value=None, event_name="weight_commit"):
+        self.app.record_workout_ui_trace(event_name + "_started", self.db_id, set_idx, self)
         if not hasattr(self, "set_targets") or set_idx >= len(self.set_targets):
+            self.app.record_workout_ui_trace(event_name + "_rejected_target", self.db_id, set_idx, self)
             return False
         if self.db_id not in self.app.sets or set_idx >= len(self.app.sets[self.db_id]):
+            self.app.record_workout_ui_trace(event_name + "_rejected_draft", self.db_id, set_idx, self)
             return False
-
         set_data = self.app.sets[self.db_id][set_idx]
         if raw_value is not None:
             updated = apply_direct_edit(set_data, "w", raw_value)
             set_data.clear(); set_data.update(updated)
-
+            self.app.record_workout_ui_trace(event_name + "_event_value_applied", self.db_id, set_idx, self)
         self.autosave_pending_sets()
         try:
             orig_w = float(self.set_targets[set_idx]["w"])
             orig_r = int(self.set_targets[set_idx]["r"])
-        except Exception:
+        except Exception as ex:
+            self.app.record_workout_ui_trace(event_name + "_target_error", self.db_id, set_idx, self, error=type(ex).__name__)
             return False
-
         is_bw = EXERCISE_METADATA.get(self.exercise, {}).get("equipment") == "Bodyweight"
         bw = get_user_bodyweight() if is_bw else 0.0
         raw_val = str(set_data.get("w", "")).strip()
         if self.status != STATUS_PENDING or bool(set_data.get("done")):
+            self.app.record_workout_ui_trace(event_name + "_not_pending", self.db_id, set_idx, self)
             return False
-
         if raw_val in ("", ".", "-", "-."):
             current_target = self.set_targets[set_idx]
             updated = clear_override(set_data, "w", current_target)
             updated = clear_override(updated, "r", current_target)
             set_data.clear(); set_data.update(updated)
             self.autosave_pending_sets()
-            self.refresh_weight_edit_feedback(set_idx)
+            ok = self.refresh_weight_edit_feedback(set_idx)
+            self.app.record_workout_ui_trace(event_name + "_cleared", self.db_id, set_idx, self, update_ok=ok)
             return True
-
         try:
             new_w = float(raw_val)
         except ValueError:
+            self.app.record_workout_ui_trace(event_name + "_invalid", self.db_id, set_idx, self)
             return False
-
         orig_e1rm = calculate_e1rm(orig_w, orig_r, bw)
         if orig_e1rm > 0:
             new_total_w = new_w + bw
             new_target_r = int(round(37 - (36 * new_total_w / orig_e1rm))) if new_total_w < orig_e1rm else 1
             resolved_meta = resolve_exercise_metadata(self.exercise)
-            new_target_r = max(
-                int(resolved_meta.get("min_reps", 1)),
-                min(int(resolved_meta.get("max_reps", 50)), new_target_r),
-            )
+            new_target_r = max(int(resolved_meta.get("min_reps", 1)), min(int(resolved_meta.get("max_reps", 50)), new_target_r))
             updated = apply_weight_derived_reps(set_data, new_w, new_target_r)
             set_data.clear(); set_data.update(updated)
-
+            self.app.record_workout_ui_trace(event_name + "_derived_applied", self.db_id, set_idx, self)
         self.autosave_pending_sets()
-        self.refresh_weight_edit_feedback(set_idx)
+        ok = self.refresh_weight_edit_feedback(set_idx)
+        self.app.record_workout_ui_trace(event_name + "_finished", self.db_id, set_idx, self, update_ok=ok)
         return True
 
-    def make_weight_commit_handler(self, set_idx):
+    def make_weight_commit_handler(self, set_idx, event_name):
         def commit_handler(e):
-            self.commit_weight_edit(set_idx, getattr(e.control, "value", None))
+            self.app.record_workout_ui_trace(event_name + "_received", self.db_id, set_idx, self, control=getattr(e, "control", None))
+            self.commit_weight_edit(set_idx, getattr(e.control, "value", None), event_name)
         return commit_handler
 
     def make_blur_handler(self, set_idx, key_type):
         def blur_handler(e):
-            if key_type == "w":
-                self.commit_weight_edit(set_idx, getattr(e.control, "value", None))
-                return
             self.autosave_pending_sets()
             if key_type == "rpe":
                 drafts = self.app.sets.get(self.db_id, [])
@@ -565,8 +571,8 @@ class ExerciseCard(ft.Card):
                 keyboard_type=ft.KeyboardType.NUMBER
             )
             w_f.on_change = self.make_live_updater(idx, "w")
-            w_f.on_submit = self.make_weight_commit_handler(idx)
-            w_f.on_blur = self.make_weight_commit_handler(idx)
+            w_f.on_submit = self.make_weight_commit_handler(idx, "weight_submit")
+            w_f.on_blur = self.make_weight_commit_handler(idx, "weight_blur")
 
             r_f = ft.TextField(
                 value=set_data["r"],
@@ -1112,6 +1118,7 @@ class ExerciseCard(ft.Card):
         # corresponding blur handler instead, which fires once per field.
         def live_update_event(ev):
             raw_val = ev.control.value
+            self.app.record_workout_ui_trace(key_type + "_change_received", self.db_id, set_idx, self, control=ev.control)
             if self.db_id in self.app.sets and set_idx < len(self.app.sets[self.db_id]):
                 set_data = self.app.sets[self.db_id][set_idx]
                 if key_type in ("w", "r"):
@@ -1413,6 +1420,8 @@ class ExerciseCard(ft.Card):
 class WorkoutTrackerApp:
     def __init__(self, page: ft.Page):
         self.page = page
+        self.workout_ui_trace = []
+        self.workout_ui_trace_limit = 240
         self.page.title = "IronCycle"
         self.page.theme_mode = "dark"
         self.page.padding = 6
@@ -2952,6 +2961,37 @@ class WorkoutTrackerApp:
             "2.0 diagnostics data policy: no workout values, tokens, account identifiers, or backup contents",
         ]
 
+    def record_workout_ui_trace(self, event, session_id, set_idx, card=None, control=None, **details):
+        entry = {
+            "ts": datetime.now().isoformat(timespec="milliseconds"),
+            "event": str(event),
+            "session": int(session_id) if session_id is not None else None,
+            "set": None if set_idx is None else int(set_idx) + 1,
+            "card": None if card is None else hex(id(card)),
+            "control": None if control is None else hex(id(control)),
+            "uid": None if control is None else str(getattr(control, "uid", None)),
+            "page": bool(getattr(control, "page", None)) if control is not None else None,
+        }
+        entry.update({str(k): v for k, v in details.items()})
+        self.workout_ui_trace.append(entry)
+        if len(self.workout_ui_trace) > self.workout_ui_trace_limit:
+            del self.workout_ui_trace[:-self.workout_ui_trace_limit]
+
+    def workout_ui_trace_text(self):
+        header = "IronCycle Workout UI Trace (privacy-safe; no workout values)"
+        rows = [header]
+        for item in self.workout_ui_trace:
+            rows.append(" | ".join(f"{key}={value}" for key, value in item.items()))
+        return "\n".join(rows)
+
+    async def copy_workout_ui_trace(self):
+        await self.copy_text_to_clipboard(self.workout_ui_trace_text())
+        self.show_snackbar("Workout UI trace copied.", "green300")
+
+    def clear_workout_ui_trace(self):
+        self.workout_ui_trace.clear()
+        self.show_snackbar("Workout UI trace cleared.", "cyan300")
+
     def open_diagnostics_dialog(self, e=None):
         self.close_actions_menu()
         integrity = "Unavailable"
@@ -3012,6 +3052,8 @@ class WorkoutTrackerApp:
             "Billing tokens exposed to app diagnostics: No",
             "Release channel: Google Play testing",
             "Privacy-safe support diagnostics: enabled",
+            f"Workout UI trace entries: {len(self.workout_ui_trace)}",
+            "Workout UI trace values exposed: No",
             "Support reports exclude purchase tokens, payment details, backup contents, and Microsoft account information.",
             *self.release_readiness_lines(integrity),
             f"Onboarding completed: {'Yes' if self.get_bool_setting('onboarding_completed',False) else 'No'}",
@@ -3075,7 +3117,11 @@ class WorkoutTrackerApp:
                 width=360,
                 content=ft.Text("\n".join(lines), size=11, font_family="monospace", selectable=True),
             ),
-            actions=[ft.TextButton("Close", on_click=lambda ev: self.safe_close(self.diagnostics_dialog))],
+            actions=[
+                ft.TextButton("Copy UI Trace", on_click=lambda ev: self.page.run_task(self.copy_workout_ui_trace)),
+                ft.TextButton("Clear UI Trace", on_click=lambda ev: self.clear_workout_ui_trace()),
+                ft.TextButton("Close", on_click=lambda ev: self.safe_close(self.diagnostics_dialog)),
+            ],
         )
         self.safe_open(self.diagnostics_dialog)
 

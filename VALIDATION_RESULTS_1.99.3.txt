@@ -1,0 +1,20 @@
+IronCycle 1.99.3 validation results
+
+Python compilation: PASS
+Focused privacy-safe trace suite: 6 passed
+Cumulative weight and trace contracts: 12 passed
+Complete supported pytest suite: 154 passed in 2.19s
+Application version: 1.99.3
+Database schema: 20, unchanged
+
+Automated contracts verified:
+- Bounded privacy-safe trace
+- Card construction and weight event markers
+- Mounted reps-field update start/return/exception markers
+- Diagnostics Copy UI Trace and Clear UI Trace actions
+- Event-value authority retained
+- No card replacement or structural refresh
+
+Not executed:
+- Signed Android packaging
+- Physical Android trace capture
