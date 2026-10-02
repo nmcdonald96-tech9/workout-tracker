@@ -1,0 +1,25 @@
+IronCycle 1.99.13 validation results
+
+Python compilation: PASS
+Focused display-mode stabilization suite: 7 passed
+Display-mode plus entitlement compatibility: 15 passed
+Complete supported pytest suite: 228 passed in 2.99s
+Application version: 1.99.13
+Database schema: 20, unchanged
+Source baseline: Android-tested 1.99.12
+
+Validated:
+- Selector closes before structural replacement is requested
+- Display-mode changes use deferred coalesced structural refresh
+- Inline mode rebuilds removed
+- Profile Settings persists mode through one authoritative path
+- Privacy-safe mode lifecycle trace markers
+- Portrait title, actions lane, View control, and scrollable Settings retained
+- Direct weight-derived reps repaint path unchanged
+- Frozen entitlement, backup, Billing, OneDrive, progression, and superset contracts
+
+Not executed:
+- Signed Android packaging
+- Physical post-mode-change mounted-control repaint
+- Rotation and enlarged-text device matrix
+- Play-delivered acceptance

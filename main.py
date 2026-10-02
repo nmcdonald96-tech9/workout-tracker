@@ -2263,21 +2263,27 @@ class WorkoutTrackerApp:
     def current_display_mode(self):
         if self.workout_focus_mode:return 'FOCUS'
         return 'DETAILED' if self.ui_density=='detailed' else 'STANDARD'
-    def apply_display_mode(self, mode, *, rebuild=True):
+    def apply_display_mode(self, mode, *, schedule_refresh=True, source="display_mode"):
         normalized=str(mode or 'STANDARD').upper()
         if normalized not in ('STANDARD','FOCUS','DETAILED'):
             raise ValueError('Unsupported display mode.')
+        previous=self.current_display_mode()
         self.workout_focus_mode,self.ui_density={'STANDARD':(False,'compact'),'FOCUS':(True,'compact'),'DETAILED':(False,'detailed')}[normalized]
         self.save_setting('workout_focus_mode','1' if self.workout_focus_mode else '0')
         self.save_setting('ui_density',self.ui_density)
         if hasattr(self,'display_mode_button') and self.display_mode_button:
             self.display_mode_button.content.value=f"View: {normalized.title()} ▾"
-        if rebuild:self.rebuild_entire_display()
+        self.record_workout_ui_trace("display_mode_change_requested",None,None,previous=previous,next=normalized,source=source)
+        if schedule_refresh:
+            scheduled=self.request_structural_refresh("display_mode_changed",rebuild_navigation=True,remount_canvas=True)
+            self.record_workout_ui_trace("display_mode_rebuild_scheduled" if scheduled else "display_mode_rebuild_coalesced",None,None,source=source)
         return normalized
     def open_display_mode(self,e=None):
         current=self.current_display_mode()
         def choose(m):
-            self.apply_display_mode(m,rebuild=False);self.safe_close(dialog);self.rebuild_entire_display()
+            self.safe_close(dialog)
+            self.record_workout_ui_trace("display_mode_dialog_closed",None,None,source="workout_view")
+            self.apply_display_mode(m,schedule_refresh=True,source="workout_view")
         def b(m,detail):return ft.ElevatedButton(('✓ ' if current==m else '')+m.title(),on_click=lambda ev,x=m:choose(x),width=float('inf'))
         dialog=ft.AlertDialog(title=ft.Text('Workout View'),content=ft.Column([b('STANDARD',''),b('FOCUS',''),b('DETAILED','')],tight=True),actions=[ft.TextButton('Cancel',on_click=lambda ev:self.safe_close(dialog))]);self.safe_open(dialog)
     async def maybe_open_first_setup_wizard(self):
@@ -2419,15 +2425,12 @@ class WorkoutTrackerApp:
                     cursor.execute("INSERT OR REPLACE INTO user_settings (setting_key, setting_value) VALUES ('progression_profile', ?)", (str(new_profile),))
                     cursor.execute("INSERT OR REPLACE INTO user_settings (setting_key, setting_value) VALUES ('pacing_override_user_set', '1')")
                     cursor.execute("INSERT OR REPLACE INTO user_settings (setting_key, setting_value) VALUES ('sex', ?)", (new_sex,))
-                    mode_focus, mode_density={"STANDARD":(False,"compact"),"FOCUS":(True,"compact"),"DETAILED":(False,"detailed")}[new_display_mode]
-                    cursor.execute("INSERT OR REPLACE INTO user_settings (setting_key, setting_value) VALUES ('workout_focus_mode', ?)", ("1" if mode_focus else "0",))
-                    cursor.execute("INSERT OR REPLACE INTO user_settings (setting_key, setting_value) VALUES ('ui_density', ?)", (mode_density,))
                     conn.commit()
                 invalidate_progression_settings_cache()
-                self.apply_display_mode(new_display_mode, rebuild=False)
                 self.safe_close(self.settings_dialog)
+                self.record_workout_ui_trace("display_mode_dialog_closed",None,None,source="profile_settings")
+                self.apply_display_mode(new_display_mode,schedule_refresh=True,source="profile_settings")
                 self.show_snackbar("Profile settings saved!", "green300")
-                self.rebuild_entire_display()
             except ValueError:
                 self.show_snackbar("Invalid input. Please use numbers.", "red300")
 
@@ -3143,7 +3146,7 @@ class WorkoutTrackerApp:
             f"2.0 existing-user upgrade: {'verified state detected' if existing_user else 'not applicable on this database'}",
             "2.0 trial expiration and limited mode: Android verified 1.99.9",
             "2.0 backup and restore matrix: Android verified 1.99.10",
-            "2.0 accessibility and responsive layouts: 1.99.12 corrective acceptance in progress",
+            "2.0 accessibility and responsive layouts: 1.99.13 stabilization in progress",
             "2.0 packaging reproducibility: pending acceptance",
             "2.0 Play-delivered acceptance: deferred until release candidate",
             "2.0 diagnostics data policy: no workout values, tokens, account identifiers, or backup contents",
@@ -7173,9 +7176,14 @@ class WorkoutTrackerApp:
             callback()
 
     def _apply_structural_refresh(self, request):
+        display_mode_refresh = "display_mode_changed" in request.reasons
+        if display_mode_refresh:
+            self.record_workout_ui_trace("display_mode_rebuild_started",None,None,reason_count=len(request.reasons))
         if request.remount_canvas: self.remount_main_canvas_on_rebuild = True
         if request.rebuild_navigation: self.rebuild_navigation_headers()
         self.rebuild_entire_display()
+        if display_mode_refresh:
+            self.record_workout_ui_trace("display_mode_rebuild_finished",None,None,reason_count=len(request.reasons))
 
     def request_structural_refresh(self, reason, *, rebuild_navigation=False, remount_canvas=True):
         """Coalesce structural changes and defer mounted-tree replacement."""

@@ -27,4 +27,4 @@ def test_no_card_reconciliation_experiments():
  s=(ROOT/'main.py').read_text()
  for marker in ('exercise_card_revisions','exercise_card_render_key','resolve_workout_render_key'): assert marker not in s
 def test_release_contract():
- c=(ROOT/'constants.py').read_text(); assert 'APP_VERSION = "1.99.12"' in c and 'DATABASE_SCHEMA_VERSION = 20' in c
+ c=(ROOT/'constants.py').read_text(); assert 'APP_VERSION = "1.99.13"' in c and 'DATABASE_SCHEMA_VERSION = 20' in c
