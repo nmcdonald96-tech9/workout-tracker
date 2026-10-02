@@ -23,4 +23,4 @@ def test_packaging_dependency_locks_are_retained():
  for rel in ('packages/ironcycle-billing/flutter/ironcycle_billing/pubspec.yaml','packages/ironcycle-billing/src/ironcycle_billing/flutter/ironcycle_billing/pubspec.yaml'):
   text=(ROOT/rel).read_text();assert 'jni_flutter: 1.0.3' in text and 'in_app_purchase: 3.3.0' in text and 'in_app_purchase_android: 0.5.0' in text
 def test_release_contract():
- c=(ROOT/'constants.py').read_text();assert 'APP_VERSION = "1.99.6"' in c and 'DATABASE_SCHEMA_VERSION = 20' in c
+ c=(ROOT/'constants.py').read_text();assert 'APP_VERSION = "1.99.7"' in c and 'DATABASE_SCHEMA_VERSION = 20' in c

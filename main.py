@@ -253,12 +253,12 @@ class ExerciseCard(ft.Card):
                         try:
                             e.control.update()
                         except RuntimeError:
-                            self.record_workout_ui_trace(
+                            self.app.record_workout_ui_trace(
                                 "reps_restore_update_exception", self.db_id, set_idx,
                                 self, control=e.control, error="RuntimeError",
                             )
                         else:
-                            self.record_workout_ui_trace(
+                            self.app.record_workout_ui_trace(
                                 "reps_restore_target_applied", self.db_id, set_idx,
                                 self, control=e.control,
                             )
