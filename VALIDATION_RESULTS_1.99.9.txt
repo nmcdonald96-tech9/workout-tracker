@@ -1,0 +1,25 @@
+IronCycle 1.99.9 validation results
+
+Python compilation: PASS
+Focused entitlement acceptance suite: 8 passed
+Readiness and entitlement compatibility suite: 14 passed
+Complete supported pytest suite: 198 passed in 2.47s
+Application version: 1.99.9
+Database schema: 20, unchanged
+Source baseline: Android-verified 1.99.8
+
+Validated:
+- Privacy-safe entitlement access policy matrix
+- Trial-expired premium mutation blocking
+- Trial-active and Lifetime premium access
+- Transient pending/offline preservation of already-entitled access
+- History, diagnostics, and local/cloud backup availability in every simulated state
+- Memory-only, restart-cleared simulations that cannot establish durable ownership
+- Entitlement acceptance diagnostics and closed-testing panel
+- Frozen workout interaction contracts
+
+Not executed:
+- Signed Android packaging
+- Physical Google Play purchase/restore
+- Physical offline/resume lifecycle
+- Android entitlement matrix

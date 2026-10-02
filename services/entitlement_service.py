@@ -31,6 +31,34 @@ class EntitlementSnapshot:
     simulated: bool = False
     real_state: str | None = None
 
+
+
+def entitlement_access_policy(snapshot):
+    """Privacy-safe acceptance policy derived only from an entitlement snapshot.
+
+    Viewing existing data, diagnostics, and backup/restore are always available.
+    Premium mutation is available only while trial/Lifetime access is valid, or
+    while a transient state preserves an already entitled real state.
+    """
+    state = snapshot.state
+    transient_preserved = (
+        state in (PURCHASE_CHECK_PENDING, TEMPORARILY_OFFLINE)
+        and snapshot.real_state in (TRIAL_ACTIVE, LIFETIME_UNLOCKED)
+    )
+    premium = state in (TRIAL_ACTIVE, LIFETIME_UNLOCKED) or transient_preserved
+    return {
+        "state": state,
+        "limited_mode": bool(snapshot.limited_mode),
+        "premium_mutation": bool(premium),
+        "view_history": True,
+        "diagnostics": True,
+        "local_backup_export": True,
+        "local_backup_restore": True,
+        "cloud_backup_restore": True,
+        "data_preserved": True,
+        "transient_access_preserved": bool(transient_preserved),
+    }
+
 class EntitlementService:
     FORMAT_VERSION = 1
     def __init__(self, path, trial_days=14, product_id="ironcycle_lifetime_unlock"):

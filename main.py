@@ -44,7 +44,7 @@ from app.compatibility import compatible_checkbox
 from components.session_context_panel import build_tag_controls
 from app.application import ApplicationFoundation
 from services.backup_service import BackupService
-from services.entitlement_service import (EntitlementService, TRIAL_ACTIVE, TRIAL_EXPIRED,
+from services.entitlement_service import (EntitlementService, entitlement_access_policy, TRIAL_ACTIVE, TRIAL_EXPIRED,
     LIFETIME_UNLOCKED, NOT_STARTED, PURCHASE_CHECK_PENDING, TEMPORARILY_OFFLINE)
 from onedrive_service import OneDriveService, OneDriveError, onedrive_dependency_diagnostics
 
@@ -1945,8 +1945,8 @@ class WorkoutTrackerApp:
             self.safe_close(dialog)
             self.show_snackbar(f"Entitlement simulation: {result.state}" if result.simulated else f"Returned to real entitlement: {result.state}","purple200" if result.simulated else "green300")
             self.rebuild_entire_display()
-        dialog=ft.AlertDialog(title=ft.Text("Developer Entitlement Test",weight="bold"),content=ft.Container(width=360,content=ft.Column([
-            ft.Text("TEST ONLY • Simulations stay in memory and disappear when IronCycle restarts.",size=10,color="amber300",weight="bold"),
+        dialog=ft.AlertDialog(title=ft.Text("Entitlement Acceptance Test",weight="bold"),content=ft.Container(width=360,content=ft.Column([
+            ft.Text("CLOSED TESTING ONLY • Simulations stay in memory and disappear when IronCycle restarts.",size=10,color="amber300",weight="bold"),
             ft.Text("Simulated Lifetime Unlock never writes ownership to disk. Real trial dates remain unchanged.",size=10,color="white70"),
             status,selected
         ],tight=True,spacing=7)),actions=[ft.TextButton("Cancel",on_click=lambda ev:self.safe_close(dialog)),ft.ElevatedButton("Apply Simulation",on_click=apply)]);self.safe_open(dialog)
@@ -1993,7 +1993,7 @@ class WorkoutTrackerApp:
                     
                     ft.Text("SETTINGS & DATA", size=10, weight="bold", color="cyan300"),
                     ft.ElevatedButton("🔓 Trial & Lifetime Unlock", on_click=lambda ev:[self.safe_close(self.actions_menu_dialog),self.open_lifetime_unlock_dialog()], width=float('inf'), style=btn_style),
-                    ft.ElevatedButton("🧪 Developer Entitlement Test", on_click=lambda ev:[self.safe_close(self.actions_menu_dialog),self.open_entitlement_test_panel()], width=float('inf'), style=btn_style, visible=ENTITLEMENT_TEST_CONTROLS),
+                    ft.ElevatedButton("🧪 Entitlement Acceptance Test", on_click=lambda ev:[self.safe_close(self.actions_menu_dialog),self.open_entitlement_test_panel()], width=float('inf'), style=btn_style, visible=ENTITLEMENT_TEST_CONTROLS),
                     ft.ElevatedButton("🚀 First Setup Wizard", on_click=lambda ev:[self.safe_close(self.actions_menu_dialog),self.open_first_setup_wizard()], width=float('inf'), style=btn_style),
                     ft.ElevatedButton("👤 Profile Settings", on_click=self.open_settings_dialog, width=float('inf'), style=btn_style),
                     ft.ElevatedButton("⭐ Browse & Favorite Exercises", on_click=lambda ev:[self.safe_close(self.actions_menu_dialog),self.open_canonical_exercise_browser()], width=float('inf'), style=btn_style),
@@ -2974,6 +2974,24 @@ class WorkoutTrackerApp:
         )
         self.safe_open(dialog)
 
+    def entitlement_acceptance_lines(self):
+        """Return privacy-safe trial and limited-mode acceptance diagnostics."""
+        snapshot = self.entitlement_snapshot()
+        policy = entitlement_access_policy(snapshot)
+        return [
+            "Entitlement acceptance profile: 1.99.9",
+            f"Entitlement acceptance state: {policy['state']}",
+            f"Entitlement acceptance simulation: {'active' if snapshot.simulated else 'real stored state'}",
+            f"Premium mutation access: {'allowed' if policy['premium_mutation'] else 'blocked'}",
+            f"Existing history access: {'available' if policy['view_history'] else 'blocked'}",
+            f"Local backup export: {'available' if policy['local_backup_export'] else 'blocked'}",
+            f"Local backup restore: {'available' if policy['local_backup_restore'] else 'blocked'}",
+            f"Cloud backup and restore: {'available' if policy['cloud_backup_restore'] else 'blocked'}",
+            f"Workout data preservation: {'guaranteed' if policy['data_preserved'] else 'review'}",
+            f"Transient entitled access preserved: {'yes' if policy['transient_access_preserved'] else 'not applicable'}",
+            "Entitlement test controls: enabled for 1.99.9 closed acceptance; memory-only and restart-cleared",
+        ]
+
     def release_readiness_lines(self, integrity):
         """Return one privacy-safe 2.0 acceptance report without workout values."""
         billing = self.entitlement.billing_diagnostics()
@@ -3008,7 +3026,7 @@ class WorkoutTrackerApp:
             f"2.0 exercise identity: {'pass' if checks['exercise_identity'] else 'review'}",
             "2.0 workout interaction: Android verified 1.99.7",
             f"2.0 existing-user upgrade: {'verified state detected' if existing_user else 'not applicable on this database'}",
-            "2.0 trial expiration and limited mode: pending acceptance",
+            "2.0 trial expiration and limited mode: 1.99.9 acceptance in progress",
             "2.0 backup and restore matrix: pending acceptance",
             "2.0 accessibility and responsive layouts: pending acceptance",
             "2.0 packaging reproducibility: pending acceptance",
@@ -3115,6 +3133,7 @@ class WorkoutTrackerApp:
             "Support UI trace: bounded, memory-only, privacy-safe",
             "Support reports exclude purchase tokens, payment details, backup contents, and Microsoft account information.",
             *self.release_readiness_lines(integrity),
+            *self.entitlement_acceptance_lines(),
             f"Onboarding completed: {'Yes' if self.get_bool_setting('onboarding_completed',False) else 'No'}",
             f"Automatic First Setup eligible: {'No' if self.get_bool_setting('onboarding_completed',False) else 'Only when no completed workout history exists'}",
             f"Canonical exercise catalog: {len(CANONICAL_EXERCISES)} entries / v{CATALOG_VERSION}",
