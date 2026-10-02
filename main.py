@@ -249,18 +249,18 @@ class ExerciseCard(ft.Card):
                         updated = clear_override(set_data, "r", current_target)
                         set_data.clear(); set_data.update(updated)
                         self.autosave_pending_sets()
-                        ev.control.value = str(set_data.get("r", ""))
+                        e.control.value = str(set_data.get("r", ""))
                         try:
-                            ev.control.update()
+                            e.control.update()
                         except RuntimeError:
                             self.record_workout_ui_trace(
                                 "reps_restore_update_exception", self.db_id, set_idx,
-                                self, control=ev.control, error="RuntimeError",
+                                self, control=e.control, error="RuntimeError",
                             )
                         else:
                             self.record_workout_ui_trace(
                                 "reps_restore_target_applied", self.db_id, set_idx,
-                                self, control=ev.control,
+                                self, control=e.control,
                             )
                         return
                 self.autosave_pending_sets()
