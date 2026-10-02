@@ -1,0 +1,25 @@
+IronCycle 1.99.11 validation results
+
+Python compilation: PASS
+Focused accessibility acceptance suite: 8 passed
+Complete supported pytest suite: 215 passed in 2.67s
+Application version: 1.99.11
+Database schema: 20, unchanged
+Source baseline: Android-verified 1.99.10
+
+Validated:
+- Privacy-safe viewport classification
+- Accessibility acceptance matrix completeness
+- 48 dp primary touch-target policy
+- SafeArea and scrollable-dialog contracts
+- Display mode contracts
+- Labeled and tooled acceptance actions
+- Prior entitlement and recovery gates promoted to Android verified
+- Frozen workout, entitlement, backup, OneDrive, Billing, and progression contracts
+
+Not executed:
+- Signed Android packaging
+- Physical font scaling and keyboard occlusion
+- Rotation and device diversity
+- Clean-install First Setup
+- Play-delivered acceptance

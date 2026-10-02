@@ -44,6 +44,7 @@ from app.compatibility import compatible_checkbox
 from components.session_context_panel import build_tag_controls
 from app.application import ApplicationFoundation
 from services.backup_service import BackupService
+from services.accessibility_service import classify_layout, acceptance_matrix, MIN_TOUCH_TARGET_DP
 from services.entitlement_service import (EntitlementService, entitlement_access_policy, TRIAL_ACTIVE, TRIAL_EXPIRED,
     LIFETIME_UNLOCKED, NOT_STARTED, PURCHASE_CHECK_PENDING, TEMPORARILY_OFFLINE)
 from onedrive_service import OneDriveService, OneDriveError, onedrive_dependency_diagnostics
@@ -2399,6 +2400,7 @@ class WorkoutTrackerApp:
             title=ft.Text("Profile Settings", weight="bold"),
             content=ft.Column([
                 ft.Row([self.bw_input, self.age_input]),
+                ft.ElevatedButton("Accessibility & Layout Acceptance", tooltip="Open accessibility and responsive-layout checklist", on_click=self.open_accessibility_acceptance_checklist),
                 self.sex_dropdown,
                 ft.Text("Used for strength standards comparisons.", size=10, color="white54"),
                 ft.Divider(height=10, color="transparent"),
@@ -2974,6 +2976,40 @@ class WorkoutTrackerApp:
         )
         self.safe_open(dialog)
 
+    def accessibility_acceptance_lines(self):
+        """Return privacy-safe layout acceptance information for this viewport."""
+        layout = classify_layout(getattr(self.page, "width", 0), getattr(self.page, "height", 0))
+        return [
+            "Accessibility and layout acceptance profile: 1.99.11",
+            f"Viewport class: {layout.width_class} / {layout.orientation} / {layout.height_class}",
+            f"Viewport size available: {'yes' if layout.width and layout.height else 'not exposed'}",
+            f"Minimum primary touch target contract: {layout.minimum_touch_target_dp} dp",
+            "Safe-area shell: enabled",
+            "Scrollable constrained dialogs: required",
+            "Display modes under acceptance: Standard, Focus, Detailed",
+            "Status communication contract: text and state labels supplement color",
+            "Icon action contract: visible text label or tooltip required",
+            "Numeric input contract: Android keyboard, submit, blur, and restoration",
+            "Accessibility diagnostics data policy: viewport class only; no device identifier",
+        ]
+
+    def open_accessibility_acceptance_checklist(self, e=None):
+        layout_lines = self.accessibility_acceptance_lines()
+        test_lines = [f"☐ {item}" for item in acceptance_matrix()]
+        body = "\n".join(layout_lines + ["", "DEVICE MATRIX"] + test_lines)
+        dialog = ft.AlertDialog(
+            title=ft.Text("Accessibility & Layout Acceptance", weight="bold"),
+            content=ft.Container(width=400, height=500, content=ft.Column([
+                ft.Text("CLOSED TESTING • Repeat the checklist at default and enlarged Android text size.", size=10, color="amber300", weight="bold"),
+                ft.Text(body, size=11, selectable=True),
+            ], scroll="auto", spacing=8)),
+            actions=[
+                ft.TextButton("Copy Checklist", tooltip="Copy accessibility checklist", on_click=lambda ev: self.page.run_task(self.copy_text_with_message, body, "Accessibility checklist copied.")),
+                ft.TextButton("Close", tooltip="Close accessibility checklist", on_click=lambda ev: self.safe_close(dialog)),
+            ],
+        )
+        self.safe_open(dialog)
+
     def backup_recovery_acceptance_lines(self):
         """Return privacy-safe recovery acceptance contracts without backup contents."""
         return [
@@ -3063,9 +3099,9 @@ class WorkoutTrackerApp:
             f"2.0 exercise identity: {'pass' if checks['exercise_identity'] else 'review'}",
             "2.0 workout interaction: Android verified 1.99.7",
             f"2.0 existing-user upgrade: {'verified state detected' if existing_user else 'not applicable on this database'}",
-            "2.0 trial expiration and limited mode: 1.99.9 acceptance in progress",
-            "2.0 backup and restore matrix: 1.99.10 acceptance in progress",
-            "2.0 accessibility and responsive layouts: pending acceptance",
+            "2.0 trial expiration and limited mode: Android verified 1.99.9",
+            "2.0 backup and restore matrix: Android verified 1.99.10",
+            "2.0 accessibility and responsive layouts: 1.99.11 acceptance in progress",
             "2.0 packaging reproducibility: pending acceptance",
             "2.0 Play-delivered acceptance: deferred until release candidate",
             "2.0 diagnostics data policy: no workout values, tokens, account identifiers, or backup contents",
@@ -3172,6 +3208,7 @@ class WorkoutTrackerApp:
             *self.release_readiness_lines(integrity),
             *self.entitlement_acceptance_lines(),
             *self.backup_recovery_acceptance_lines(),
+            *self.accessibility_acceptance_lines(),
             f"Onboarding completed: {'Yes' if self.get_bool_setting('onboarding_completed',False) else 'No'}",
             f"Automatic First Setup eligible: {'No' if self.get_bool_setting('onboarding_completed',False) else 'Only when no completed workout history exists'}",
             f"Canonical exercise catalog: {len(CANONICAL_EXERCISES)} entries / v{CATALOG_VERSION}",

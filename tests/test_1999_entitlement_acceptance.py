@@ -55,4 +55,4 @@ def test_workout_interaction_contracts_remain_frozen():
         assert marker in main
 
 def test_release_contract():
-    c=(ROOT/'constants.py').read_text(); assert 'APP_VERSION = "1.99.10"' in c and 'DATABASE_SCHEMA_VERSION = 20' in c
+    c=(ROOT/'constants.py').read_text(); assert 'APP_VERSION = "1.99.11"' in c and 'DATABASE_SCHEMA_VERSION = 20' in c
