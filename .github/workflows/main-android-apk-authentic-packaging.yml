@@ -234,15 +234,12 @@ jobs:
         run: |
           set -euo pipefail
           APK_PATH="$(find build/apk -type f -name '*.apk' -print -quit)"
-          AAB_PATH="$(find build/aab -type f -name '*.aab' -print -quit)"
           test -n "$APK_PATH"
-          test -n "$AAB_PATH"
           APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner -print | sort -V | tail -n 1)"
           AAPT="$(find "$ANDROID_HOME/build-tools" -type f -name aapt -print | sort -V | tail -n 1)"
           test -x "$APKSIGNER"
           test -x "$AAPT"
           echo "APK_PATH=$APK_PATH" >> "$GITHUB_ENV"
-          echo "AAB_PATH=$AAB_PATH" >> "$GITHUB_ENV"
           echo "APKSIGNER=$APKSIGNER" >> "$GITHUB_ENV"
           echo "AAPT=$AAPT" >> "$GITHUB_ENV"
 
