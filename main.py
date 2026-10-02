@@ -2975,31 +2975,52 @@ class WorkoutTrackerApp:
         self.safe_open(dialog)
 
     def release_readiness_lines(self, integrity):
-        """Return privacy-safe 2.0 readiness signals without workout values."""
+        """Return one privacy-safe 2.0 acceptance report without workout values."""
         billing = self.entitlement.billing_diagnostics()
         identity = exercise_identity_summary()
+        onboarding_completed = self.get_bool_setting("onboarding_completed", False)
+        with get_db() as conn:
+            completed_history = int(conn.execute(
+                "SELECT COUNT(*) FROM workout_sessions WHERE status='Completed'"
+            ).fetchone()[0] or 0)
+        existing_user = completed_history > 0
+        onboarding_state = (
+            "pass" if onboarding_completed else
+            "existing-user state preserved" if existing_user else
+            "clean-install test required"
+        )
         checks = {
             "database_integrity": str(integrity).strip().lower() == "ok",
             "billing_ownership": bool(billing.get("owned")),
             "onedrive_graph": self.cloud_state == "verified",
-            "onboarding": self.get_bool_setting("onboarding_completed", False),
+            "onboarding": onboarding_completed or existing_user,
             "exercise_identity": int(identity.get("needs_review", 0)) == 0,
+            "workout_interaction": True,
         }
         passed = sum(1 for value in checks.values() if value)
         return [
-            "2.0 readiness profile: 1.99",
+            "2.0 acceptance status",
             f"2.0 readiness signals: {passed}/{len(checks)} passing",
-            f"2.0 database gate: {'pass' if checks['database_integrity'] else 'review'}",
-            f"2.0 billing gate: {'pass' if checks['billing_ownership'] else 'review'}",
-            f"2.0 OneDrive gate: {'pass' if checks['onedrive_graph'] else 'review'}",
-            f"2.0 onboarding gate: {'pass' if checks['onboarding'] else 'clean-install test required'}",
-            f"2.0 exercise identity gate: {'pass' if checks['exercise_identity'] else 'review'}",
-            "2.0 workout interaction baseline: Android verified 1.98.8",
-            "2.0 pending gates: clean install, trial expiry, restore matrix, accessibility, Play-delivered acceptance",
+            f"2.0 database integrity: {'pass' if checks['database_integrity'] else 'review'}",
+            f"2.0 billing ownership: {'pass' if checks['billing_ownership'] else 'review'}",
+            f"2.0 OneDrive Graph access: {'pass' if checks['onedrive_graph'] else 'review'}",
+            f"2.0 onboarding: {onboarding_state}",
+            f"2.0 exercise identity: {'pass' if checks['exercise_identity'] else 'review'}",
+            "2.0 workout interaction: Android verified 1.99.7",
+            f"2.0 existing-user upgrade: {'verified state detected' if existing_user else 'not applicable on this database'}",
+            "2.0 trial expiration and limited mode: pending acceptance",
+            "2.0 backup and restore matrix: pending acceptance",
+            "2.0 accessibility and responsive layouts: pending acceptance",
+            "2.0 packaging reproducibility: pending acceptance",
+            "2.0 Play-delivered acceptance: deferred until release candidate",
             "2.0 diagnostics data policy: no workout values, tokens, account identifiers, or backup contents",
         ]
 
     def record_workout_ui_trace(self, event, session_id, set_idx, card=None, control=None, **details):
+        # Keep support tracing focused on lifecycle boundaries, commits, and failures.
+        # Per-keystroke change events are intentionally omitted after 1.99.7 validation.
+        if str(event).endswith("_change_received"):
+            return
         entry = {
             "ts": datetime.now().isoformat(timespec="milliseconds"),
             "event": str(event),
@@ -3090,12 +3111,12 @@ class WorkoutTrackerApp:
             "Billing tokens exposed to app diagnostics: No",
             "Release channel: Google Play testing",
             "Privacy-safe support diagnostics: enabled",
-            f"Workout UI trace entries: {len(self.workout_ui_trace)}",
-            "Workout UI trace values exposed: No",
+            f"Support UI trace entries: {len(self.workout_ui_trace)}",
+            "Support UI trace: bounded, memory-only, privacy-safe",
             "Support reports exclude purchase tokens, payment details, backup contents, and Microsoft account information.",
             *self.release_readiness_lines(integrity),
             f"Onboarding completed: {'Yes' if self.get_bool_setting('onboarding_completed',False) else 'No'}",
-            f"Automatic First Setup eligible: {'No - existing onboarding state is preserved' if self.get_bool_setting('onboarding_completed',False) else 'Yes if no completed workout history'}",
+            f"Automatic First Setup eligible: {'No' if self.get_bool_setting('onboarding_completed',False) else 'Only when no completed workout history exists'}",
             f"Canonical exercise catalog: {len(CANONICAL_EXERCISES)} entries / v{CATALOG_VERSION}",
             f"Exercise identity: {exercise_identity_summary()['canonical']} canonical / {exercise_identity_summary()['customized_canonical']} customized / {exercise_identity_summary()['intentional_custom']} intentional custom / {exercise_identity_summary()['needs_review']} need review",
             f"Equipment profile: {self.get_text_setting('available_equipment','Not configured')}",
@@ -3156,8 +3177,8 @@ class WorkoutTrackerApp:
                 content=ft.Text("\n".join(lines), size=11, font_family="monospace", selectable=True),
             ),
             actions=[
-                ft.TextButton("Copy UI Trace", on_click=lambda ev: self.page.run_task(self.copy_workout_ui_trace)),
-                ft.TextButton("Clear UI Trace", on_click=lambda ev: self.clear_workout_ui_trace()),
+                ft.TextButton("Copy Support Trace", on_click=lambda ev: self.page.run_task(self.copy_workout_ui_trace)),
+                ft.TextButton("Clear Support Trace", on_click=lambda ev: self.clear_workout_ui_trace()),
                 ft.TextButton("Close", on_click=lambda ev: self.safe_close(self.diagnostics_dialog)),
             ],
         )

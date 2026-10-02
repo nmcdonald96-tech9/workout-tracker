@@ -11,8 +11,8 @@ def test_trace_captures_card_event_and_control_lifecycle():
  for marker in ('card_created','card_built','weight_submit','weight_blur','_derived_applied','reps_update_started','reps_update_returned','reps_update_exception'): assert marker in s
 def test_trace_buttons_are_available_in_diagnostics():
  s=(ROOT/'main.py').read_text()
- assert 'Copy UI Trace' in s and 'Clear UI Trace' in s
- assert 'Workout UI trace values exposed: No' in s
+ assert 'Copy Support Trace' in s and 'Clear Support Trace' in s
+ assert 'Support UI trace: bounded, memory-only, privacy-safe' in s
 def test_weight_event_authority_is_preserved():
  b=method('commit_weight_edit','make_weight_commit_handler')
  assert 'apply_direct_edit(set_data, "w", raw_value)' in b
@@ -21,4 +21,4 @@ def test_no_card_replacement_or_structural_refresh_in_weight_commit():
  b=method('commit_weight_edit','make_weight_commit_handler')
  assert 'replace_exercise_card_in_place' not in b and 'request_structural_refresh' not in b
 def test_release_contract():
- c=(ROOT/'constants.py').read_text();assert 'APP_VERSION = "1.99.7"' in c and 'DATABASE_SCHEMA_VERSION = 20' in c
+ c=(ROOT/'constants.py').read_text();assert 'APP_VERSION = "1.99.8"' in c and 'DATABASE_SCHEMA_VERSION = 20' in c

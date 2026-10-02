@@ -35,6 +35,6 @@ def test_verified_interactions_remain_present():
  done=method('make_set_done_handler','make_live_updater')
  assert 'CompletionAction.LOG_EXERCISE' in done and 'self.app.advance_group_flow' in done
 def test_readiness_diagnostics_remain_present():
- assert '2.0 readiness profile: 1.99' in method('release_readiness_lines','open_diagnostics_dialog')
+ assert '2.0 acceptance status' in method('release_readiness_lines','open_diagnostics_dialog')
 def test_release_contract():
- c=(ROOT/'constants.py').read_text();assert 'APP_VERSION = "1.99.7"' in c and 'DATABASE_SCHEMA_VERSION = 20' in c
+ c=(ROOT/'constants.py').read_text();assert 'APP_VERSION = "1.99.8"' in c and 'DATABASE_SCHEMA_VERSION = 20' in c

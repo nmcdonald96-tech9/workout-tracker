@@ -1,0 +1,25 @@
+IronCycle 1.99.8 validation results
+
+Python compilation: PASS
+Focused 2.0 acceptance consolidation suite: 5 passed
+Readiness, trace, and acceptance compatibility suites: 25 passed
+Complete supported pytest suite: 190 passed in 2.97s
+Application version: 1.99.8
+Database schema: 20, unchanged
+Source baseline: Android-verified 1.99.7
+
+Validated:
+- One consolidated privacy-safe 2.0 acceptance report
+- Existing-history onboarding classification
+- Android-verified 1.99.7 workout baseline
+- Reduced per-keystroke support trace noise
+- Support trace copy/clear actions
+- Frozen workout contracts
+- Removal of two obsolete transfer artifacts
+
+Not executed:
+- Signed Android packaging
+- Trial expiry physical acceptance
+- Full restore matrix
+- Accessibility device matrix
+- Play-delivered acceptance
