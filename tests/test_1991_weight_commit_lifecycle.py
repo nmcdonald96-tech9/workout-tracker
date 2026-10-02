@@ -37,4 +37,4 @@ def test_verified_interactions_remain_present():
 def test_readiness_diagnostics_remain_present():
  assert '2.0 readiness profile: 1.99' in method('release_readiness_lines','open_diagnostics_dialog')
 def test_release_contract():
- c=(ROOT/'constants.py').read_text();assert 'APP_VERSION = "1.99.4"' in c and 'DATABASE_SCHEMA_VERSION = 20' in c
+ c=(ROOT/'constants.py').read_text();assert 'APP_VERSION = "1.99.5"' in c and 'DATABASE_SCHEMA_VERSION = 20' in c

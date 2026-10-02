@@ -26,5 +26,5 @@ def test_packaging_removes_repository_metadata_before_flet_build():
 
 def test_release_remains_1988_schema_20():
     text = (ROOT / "constants.py").read_text(encoding="utf-8")
-    assert 'APP_VERSION = "1.99.4"' in text
+    assert 'APP_VERSION = "1.99.5"' in text
     assert "DATABASE_SCHEMA_VERSION = 20" in text

@@ -239,6 +239,33 @@ class ExerciseCard(ft.Card):
 
     def make_blur_handler(self, set_idx, key_type):
         def blur_handler(e):
+            if key_type == "r":
+                drafts = self.app.sets.get(self.db_id, [])
+                if set_idx < len(drafts):
+                    set_data = drafts[set_idx]
+                    raw_reps = str(set_data.get("r", "")).strip()
+                    if raw_reps == "" and set_idx < len(self.set_targets):
+                        current_target = self.set_targets[set_idx]
+                        updated = clear_override(set_data, "r", current_target)
+                        set_data.clear(); set_data.update(updated)
+                        self.autosave_pending_sets()
+                        ev.control.value = str(set_data.get("r", ""))
+                        try:
+                            ev.control.update()
+                        except RuntimeError:
+                            self.record_workout_ui_trace(
+                                "reps_restore_update_exception", self.db_id, set_idx,
+                                self, control=ev.control, error="RuntimeError",
+                            )
+                        else:
+                            self.record_workout_ui_trace(
+                                "reps_restore_target_applied", self.db_id, set_idx,
+                                self, control=ev.control,
+                            )
+                        return
+                self.autosave_pending_sets()
+                return
+
             self.autosave_pending_sets()
             if key_type == "rpe":
                 drafts = self.app.sets.get(self.db_id, [])
@@ -577,7 +604,7 @@ class ExerciseCard(ft.Card):
             r_f = ft.TextField(
                 value=set_data["r"],
                 label="REPS",
-                hint_text=str(r_hint),
+                hint_text="",
                 hint_style=ft.TextStyle(color="white54", size=12),
                 label_style=ft.TextStyle(color="cyan200", size=10, weight="bold"),
                 expand=2,
