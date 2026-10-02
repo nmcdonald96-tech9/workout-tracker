@@ -23,13 +23,28 @@ jobs:
       - name: Check out selected branch
         uses: actions/checkout@v4
         with:
-          fetch-depth: 1
+          fetch-depth: 0
+          persist-credentials: false
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.10"
 
+      - name: Capture immutable source identity and reproducibility evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -z "$(git status --porcelain)"
+          mkdir -p release-evidence
+          git rev-parse HEAD > release-evidence/SOURCE_COMMIT.txt
+          git show -s --format=%cI HEAD > release-evidence/SOURCE_COMMIT_DATE.txt
+          git ls-files -z | LC_ALL=C sort -z | xargs -0 sha256sum > release-evidence/SOURCE_FILE_SHA256.txt
+          git archive --format=tar --prefix=IronCycle-source/ HEAD | gzip -n -9 > release-evidence/IronCycle-source.tar.gz
+          sha256sum release-evidence/IronCycle-source.tar.gz > release-evidence/SOURCE_ARCHIVE_SHA256.txt
+          cp release-evidence/IronCycle-source.tar.gz "$RUNNER_TEMP/source-copy.tar.gz"
+          cmp --silent release-evidence/IronCycle-source.tar.gz "$RUNNER_TEMP/source-copy.tar.gz"
+          echo "SOURCE_COMMIT=$(cat release-evidence/SOURCE_COMMIT.txt)" >> "$GITHUB_ENV"
       - name: Validate and normalize repository layout on runner
         shell: bash
         run: |
@@ -150,6 +165,8 @@ jobs:
           ANDROID_VERSION_CODE=$((1300000 + GITHUB_RUN_NUMBER))
           echo "APP_VERSION=$APP_VERSION" >> "$GITHUB_ENV"
           echo "ANDROID_VERSION_CODE=$ANDROID_VERSION_CODE" >> "$GITHUB_ENV"
+          grep -q 'ENTITLEMENT_TEST_CONTROLS = False' constants.py
+          printf 'version_name=%s\nversion_code=%s\nsource_commit=%s\n' "$APP_VERSION" "$ANDROID_VERSION_CODE" "$SOURCE_COMMIT" > release-evidence/BUILD_IDENTITY.txt
 
       - name: Validate signing secrets and restore keystore
         shell: bash
@@ -345,6 +362,30 @@ jobs:
           cp "$AAB_PATH" "$VERIFIED_AAB"
           echo "VERIFIED_AAB=$VERIFIED_AAB" >> "$GITHUB_ENV"
 
+      - name: Create release artifact inventory and hashes
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f "$VERIFIED_APK"
+          test -f "$VERIFIED_AAB"
+          sha256sum "$VERIFIED_APK" "$VERIFIED_AAB" > release-evidence/ANDROID_ARTIFACT_SHA256.txt
+          {
+            echo "source_commit=$SOURCE_COMMIT"
+            echo "version_name=$APP_VERSION"
+            echo "version_code=$ANDROID_VERSION_CODE"
+            echo "package_id=$EXPECTED_PACKAGE_ID"
+            echo "apk=$(basename "$VERIFIED_APK")"
+            echo "aab=$(basename "$VERIFIED_AAB")"
+            echo "workflow=${GITHUB_WORKFLOW}"
+            echo "run_id=${GITHUB_RUN_ID}"
+            echo "run_attempt=${GITHUB_RUN_ATTEMPT}"
+            echo "runner_image=ubuntu-24.04"
+            echo "python=3.10"
+            echo "flutter=3.41.7"
+            echo "flet=0.86.5"
+            echo "entitlement_test_controls=false"
+          } > release-evidence/ANDROID_ARTIFACT_INVENTORY.txt
+          find release-evidence -type f -maxdepth 1 -printf '%f\n' | LC_ALL=C sort > release-evidence/EVIDENCE_FILE_LIST.txt
       - name: Create verification report
         shell: bash
         run: |
@@ -352,6 +393,7 @@ jobs:
             echo "IronCycle authentic-layout APK and AAB packaging verification"
             echo "Branch: $GITHUB_REF_NAME"
             echo "Commit: $GITHUB_SHA"
+            echo "Immutable source commit: $SOURCE_COMMIT"
             echo "Version: $APP_VERSION"
             echo "Version code: $ANDROID_VERSION_CODE"
             echo "Root pyproject.toml: absent during build"
@@ -361,6 +403,9 @@ jobs:
             echo "Billing extension evidence: verified"
             echo "Permanent signer and package identity: verified"
             echo "Google Play AAB signature and bundle structure: verified"
+            echo "Closed-testing entitlement controls: disabled"
+            echo "Source archive and tracked-file manifest: generated"
+            echo "APK and AAB SHA-256 inventory: generated"
             echo
             cat "$RUNNER_TEMP/apk-verify.txt"
             echo
@@ -379,6 +424,7 @@ jobs:
             ${{ env.VERIFIED_APK }}
             ${{ env.VERIFIED_AAB }}
             IronCycle_Authentic_Packaging_Verification.txt
+            release-evidence/
           if-no-files-found: error
           retention-days: 30
 

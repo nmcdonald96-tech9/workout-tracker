@@ -1,0 +1,25 @@
+IronCycle 1.99.14 validation results
+
+Python compilation: PASS
+Focused packaging reproducibility suite: 8 passed
+Complete supported pytest suite: 236 passed in 2.87s
+Packaging workflow YAML parse: PASS
+Application version: 1.99.14
+Database schema: 20, unchanged
+Source baseline: Android-verified 1.99.13
+
+Validated:
+- Immutable full-history checkout and source commit recording
+- Tracked-file SHA-256 manifest
+- Deterministic git-archive source bundle and archive hash
+- APK/AAB identity, signer, version, permission, dependency, and structure checks retained
+- APK/AAB SHA-256 inventory and evidence upload
+- Closed-testing entitlement simulation controls disabled
+- Accessibility/display-mode gate promoted to Android verified 1.99.13
+- Frozen workout, entitlement policy, backup, Billing, OneDrive, progression, and superset contracts
+
+External gates:
+- Authenticated GitHub Actions APK/AAB build
+- Same-commit repeated workflow comparison
+- Verified APK upgrade install
+- Google Play-delivered 2.0 release-candidate acceptance

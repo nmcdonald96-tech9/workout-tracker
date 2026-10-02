@@ -3146,9 +3146,9 @@ class WorkoutTrackerApp:
             f"2.0 existing-user upgrade: {'verified state detected' if existing_user else 'not applicable on this database'}",
             "2.0 trial expiration and limited mode: Android verified 1.99.9",
             "2.0 backup and restore matrix: Android verified 1.99.10",
-            "2.0 accessibility and responsive layouts: 1.99.13 stabilization in progress",
-            "2.0 packaging reproducibility: pending acceptance",
-            "2.0 Play-delivered acceptance: deferred until release candidate",
+            "2.0 accessibility and responsive layouts: Android verified 1.99.13",
+            "2.0 packaging reproducibility: 1.99.14 acceptance in progress",
+            "2.0 Play-delivered acceptance: pending 2.0 release candidate",
             "2.0 diagnostics data policy: no workout values, tokens, account identifiers, or backup contents",
         ]
 

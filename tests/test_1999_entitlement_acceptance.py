@@ -39,7 +39,7 @@ def test_simulations_never_persist_or_create_ownership(tmp_path):
 
 def test_acceptance_controls_and_diagnostics_are_present():
     constants=(ROOT/'constants.py').read_text();main=(ROOT/'main.py').read_text()
-    assert 'ENTITLEMENT_TEST_CONTROLS = True' in constants
+    assert 'ENTITLEMENT_TEST_CONTROLS = False' in constants
     assert 'Entitlement Acceptance Test' in main
     assert 'entitlement_acceptance_lines' in main
     assert 'Local backup export:' in main and 'Workout data preservation:' in main
@@ -55,4 +55,4 @@ def test_workout_interaction_contracts_remain_frozen():
         assert marker in main
 
 def test_release_contract():
-    c=(ROOT/'constants.py').read_text(); assert 'APP_VERSION = "1.99.13"' in c and 'DATABASE_SCHEMA_VERSION = 20' in c
+    c=(ROOT/'constants.py').read_text(); assert 'APP_VERSION = "1.99.14"' in c and 'DATABASE_SCHEMA_VERSION = 20' in c
