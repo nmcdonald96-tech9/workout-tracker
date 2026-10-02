@@ -34,5 +34,6 @@ def test_catalog_linked_identity_label(tmp_path, monkeypatch):
 def test_surface_contract_keeps_stable_option_keys():
  source=open("main.py",encoding="utf-8").read()
  assert "ft.dropdown.Option(key=ex, text=database.exercise_display_name(ex))" in source
- assert "ft.Text(database.exercise_display_name(self.exercise)" in source
+ assert "database.exercise_display_name(self.exercise)" in source
+ assert "exercise_title = ft.Text(" in source
  assert "database.exercise_identity_label(ex)" in source

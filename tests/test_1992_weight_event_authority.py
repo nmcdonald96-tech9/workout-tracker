@@ -22,4 +22,4 @@ def test_no_structural_refresh_or_card_replacement():
  assert 'request_structural_refresh' not in b
  assert 'replace_exercise_card_in_place' not in b
 def test_release_contract():
- c=(ROOT/'constants.py').read_text();assert 'APP_VERSION = "1.99.11"' in c and 'DATABASE_SCHEMA_VERSION = 20' in c
+ c=(ROOT/'constants.py').read_text();assert 'APP_VERSION = "1.99.12"' in c and 'DATABASE_SCHEMA_VERSION = 20' in c

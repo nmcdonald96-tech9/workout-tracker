@@ -118,6 +118,6 @@ def test_return_to_pending_retains_drafts_clears_completed_only_and_reconciles()
 
 def test_release_contract_and_architectural_boundary():
     constants=(ROOT/'constants.py').read_text(); service=(ROOT/'services/completed_revision_service.py').read_text(); main=(ROOT/'main.py').read_text()
-    assert 'APP_VERSION = "1.99.11"' in constants and 'DATABASE_SCHEMA_VERSION = 20' in constants
+    assert 'APP_VERSION = "1.99.12"' in constants and 'DATABASE_SCHEMA_VERSION = 20' in constants
     assert 'import flet' not in service and 'from services.completed_revision_service import' in main
     assert 'UPDATE workout_sessions SET status=? WHERE id=?' not in main[main.index('    def _reopen_completed'):main.index('    def confirm_revise_completed')]

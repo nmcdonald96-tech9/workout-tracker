@@ -21,4 +21,4 @@ def test_no_card_replacement_or_structural_refresh_in_weight_commit():
  b=method('commit_weight_edit','make_weight_commit_handler')
  assert 'replace_exercise_card_in_place' not in b and 'request_structural_refresh' not in b
 def test_release_contract():
- c=(ROOT/'constants.py').read_text();assert 'APP_VERSION = "1.99.11"' in c and 'DATABASE_SCHEMA_VERSION = 20' in c
+ c=(ROOT/'constants.py').read_text();assert 'APP_VERSION = "1.99.12"' in c and 'DATABASE_SCHEMA_VERSION = 20' in c

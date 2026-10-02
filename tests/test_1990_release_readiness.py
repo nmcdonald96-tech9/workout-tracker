@@ -8,7 +8,7 @@ def test_readiness_diagnostics_are_privacy_safe_and_actionable():
  for prohibited in ('purchase_token','access_token','refresh_token','payment_details','backup_contents','set_data[','rpe_raw'): assert prohibited not in b
  assert 'trial expiration and limited mode: Android verified 1.99.9' in b
  assert 'backup and restore matrix: Android verified 1.99.10' in b
- assert 'accessibility and responsive layouts: 1.99.11 acceptance in progress' in b
+ assert 'accessibility and responsive layouts: 1.99.12 corrective acceptance in progress' in b
  assert 'Play-delivered acceptance: deferred until release candidate' in b
 def test_diagnostics_includes_readiness_section():
  s=(ROOT/'main.py').read_text();a=s.index('    def open_diagnostics_dialog(');b=s.index('    async def copy_text_to_clipboard(',a);b=s[a:b]
@@ -26,4 +26,4 @@ def test_packaging_dependency_locks_are_retained():
  for rel in ('packages/ironcycle-billing/flutter/ironcycle_billing/pubspec.yaml','packages/ironcycle-billing/src/ironcycle_billing/flutter/ironcycle_billing/pubspec.yaml'):
   text=(ROOT/rel).read_text();assert 'jni_flutter: 1.0.3' in text and 'in_app_purchase: 3.3.0' in text and 'in_app_purchase_android: 0.5.0' in text
 def test_release_contract():
- c=(ROOT/'constants.py').read_text();assert 'APP_VERSION = "1.99.11"' in c and 'DATABASE_SCHEMA_VERSION = 20' in c
+ c=(ROOT/'constants.py').read_text();assert 'APP_VERSION = "1.99.12"' in c and 'DATABASE_SCHEMA_VERSION = 20' in c

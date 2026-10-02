@@ -1,0 +1,26 @@
+IronCycle 1.99.12 validation results
+
+Python compilation: PASS
+Focused portrait/display-mode suite: 6 passed
+Display-name and focused compatibility suite: 9 passed
+Complete supported pytest suite: 221 passed in 3.33s
+Application version: 1.99.12
+Database schema: 20, unchanged
+Source baseline: Android-tested 1.99.11
+
+Validated:
+- Fixed exercise actions lane and two-line title ellipsis
+- Separate wrapping status metadata
+- Visible main-workout display mode control
+- One authoritative Standard/Focus/Detailed mapping
+- Unified Profile Settings selector
+- Responsive profile fields
+- Viewport-aware scrollable Profile Settings content
+- Footer clearance and mode persistence contracts
+- Frozen workout, entitlement, backup, Billing, OneDrive, and progression contracts
+
+Not executed:
+- Signed Android packaging
+- Physical portrait and enlarged-text rendering
+- Dropdown overlay and rotation
+- Play-delivered acceptance

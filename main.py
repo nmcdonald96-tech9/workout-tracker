@@ -742,22 +742,34 @@ class ExerciseCard(ft.Card):
             padding=4
         )
 
+        exercise_title = ft.Text(
+            database.exercise_display_name(self.exercise),
+            size=14, weight="bold", color="white",
+            max_lines=2, overflow=ft.TextOverflow.ELLIPSIS,
+            tooltip=database.exercise_display_name(self.exercise),
+        )
+        exercise_actions_button = ft.TextButton(
+            content=ft.Text("⋯", size=18, color="cyan300"),
+            tooltip="Exercise actions",
+            width=44, height=44,
+            style=ft.ButtonStyle(padding=2),
+            on_click=self.open_exercise_actions,
+        )
         title_zone = ft.Column([
-            # Top Floor: Title, Swap Button, Status Chip
+            # The title expands only inside its lane; the 44dp actions lane is fixed.
             ft.Row([
-                ft.Row([
-                    ft.Text(database.exercise_display_name(self.exercise), size=14, weight="bold", color="white"),
-                    ft.TextButton(content=ft.Text("⋯", size=18, color="cyan300"), style=ft.ButtonStyle(padding=2), on_click=self.open_exercise_actions)
-                ], spacing=2, expand=True),
-                ft.Row([
-                    ft.Container(
-                        content=ft.Text(f"Prev #{(self.context or {}).get('previous_week_order')}", size=9, weight="bold", color="amber200"),
-                        bgcolor="amber900", border_radius=10, padding=4,
-                        visible=bool(self.context and self.context.get("previous_week_order"))
-                    ),
-                    status_chip
-                ], spacing=5)
-            ], alignment="spaceBetween"),
+                ft.Container(content=exercise_title, expand=True),
+                ft.Container(content=exercise_actions_button, width=44),
+            ], spacing=4, vertical_alignment=ft.CrossAxisAlignment.START),
+            # Status metadata gets its own row so long titles cannot cover actions.
+            ft.Row([
+                ft.Container(
+                    content=ft.Text(f"Prev #{(self.context or {}).get('previous_week_order')}", size=9, weight="bold", color="amber200"),
+                    bgcolor="amber900", border_radius=10, padding=4,
+                    visible=bool(self.context and self.context.get("previous_week_order"))
+                ),
+                status_chip
+            ], spacing=5, wrap=True),
             
         ], spacing=4)
         
@@ -1777,7 +1789,16 @@ class WorkoutTrackerApp:
             self.meso_nav_row,
             ft.Container(content=self.btn_menu, padding=4),
         ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN, vertical_alignment=ft.CrossAxisAlignment.CENTER, spacing=2)
-        self.nav_toggle_row = ft.Row([self.nav_collapse_button], alignment=ft.MainAxisAlignment.START, spacing=0)
+        self.display_mode_button = ft.TextButton(
+            content=ft.Text(f"View: {self.current_display_mode().title()} ▾", size=10, color="cyan300"),
+            tooltip="Change workout display mode",
+            on_click=self.open_display_mode,
+        )
+        self.nav_toggle_row = ft.Row(
+            [self.nav_collapse_button, self.display_mode_button],
+            alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+            spacing=4,
+        )
         self.sticky_workout_header_host = ft.Container()
         self.week_header_row = ft.Row([self.week_nav_row], alignment=ft.MainAxisAlignment.START, vertical_alignment=ft.CrossAxisAlignment.CENTER)
         self.day_header_row = ft.Row([self.day_nav_row], alignment=ft.MainAxisAlignment.START, vertical_alignment=ft.CrossAxisAlignment.CENTER)
@@ -2242,10 +2263,21 @@ class WorkoutTrackerApp:
     def current_display_mode(self):
         if self.workout_focus_mode:return 'FOCUS'
         return 'DETAILED' if self.ui_density=='detailed' else 'STANDARD'
+    def apply_display_mode(self, mode, *, rebuild=True):
+        normalized=str(mode or 'STANDARD').upper()
+        if normalized not in ('STANDARD','FOCUS','DETAILED'):
+            raise ValueError('Unsupported display mode.')
+        self.workout_focus_mode,self.ui_density={'STANDARD':(False,'compact'),'FOCUS':(True,'compact'),'DETAILED':(False,'detailed')}[normalized]
+        self.save_setting('workout_focus_mode','1' if self.workout_focus_mode else '0')
+        self.save_setting('ui_density',self.ui_density)
+        if hasattr(self,'display_mode_button') and self.display_mode_button:
+            self.display_mode_button.content.value=f"View: {normalized.title()} ▾"
+        if rebuild:self.rebuild_entire_display()
+        return normalized
     def open_display_mode(self,e=None):
         current=self.current_display_mode()
         def choose(m):
-            self.workout_focus_mode,self.ui_density={'STANDARD':(False,'compact'),'FOCUS':(True,'compact'),'DETAILED':(False,'detailed')}[m];self.save_setting('workout_focus_mode','1' if self.workout_focus_mode else '0');self.save_setting('ui_density',self.ui_density);self.safe_close(dialog);self.rebuild_entire_display()
+            self.apply_display_mode(m,rebuild=False);self.safe_close(dialog);self.rebuild_entire_display()
         def b(m,detail):return ft.ElevatedButton(('✓ ' if current==m else '')+m.title(),on_click=lambda ev,x=m:choose(x),width=float('inf'))
         dialog=ft.AlertDialog(title=ft.Text('Workout View'),content=ft.Column([b('STANDARD',''),b('FOCUS',''),b('DETAILED','')],tight=True),actions=[ft.TextButton('Cancel',on_click=lambda ev:self.safe_close(dialog))]);self.safe_open(dialog)
     async def maybe_open_first_setup_wizard(self):
@@ -2333,11 +2365,15 @@ class WorkoutTrackerApp:
         current_age = get_user_age()
         current_profile = get_user_progression_profile()
         current_sex = get_user_sex()
-        self.focus_mode_switch = ft.Switch(label="Workout focus mode", value=self.workout_focus_mode)
-        self.density_dropdown = ft.Dropdown(
-            label="Display density",
-            value=self.ui_density,
-            options=[ft.dropdown.Option("comfortable"), ft.dropdown.Option("compact")],
+        self.display_mode_dropdown = ft.Dropdown(
+            label="Display mode",
+            value=self.current_display_mode(),
+            options=[
+                ft.dropdown.Option(key="STANDARD", text="Standard"),
+                ft.dropdown.Option(key="FOCUS", text="Focus"),
+                ft.dropdown.Option(key="DETAILED", text="Detailed"),
+            ],
+            tooltip="Choose Standard, Focus, or Detailed workout display",
         )
         
         self.bw_input = ft.TextField(label="Bodyweight (Lbs)", value=str(current_bw), keyboard_type=ft.KeyboardType.NUMBER, expand=True)
@@ -2375,8 +2411,7 @@ class WorkoutTrackerApp:
                 new_age = int(self.age_input.value)
                 new_profile = int(self.profile_slider.value)
                 new_sex = self.sex_dropdown.value or "Male"
-                new_focus_mode = bool(self.focus_mode_switch.value)
-                new_density = self.density_dropdown.value or "comfortable"
+                new_display_mode = str(self.display_mode_dropdown.value or "STANDARD").upper() or "comfortable"
                 with get_db() as conn:
                     cursor = conn.cursor()
                     cursor.execute("INSERT OR REPLACE INTO user_settings (setting_key, setting_value) VALUES ('bodyweight', ?)", (str(new_bw),))
@@ -2384,12 +2419,12 @@ class WorkoutTrackerApp:
                     cursor.execute("INSERT OR REPLACE INTO user_settings (setting_key, setting_value) VALUES ('progression_profile', ?)", (str(new_profile),))
                     cursor.execute("INSERT OR REPLACE INTO user_settings (setting_key, setting_value) VALUES ('pacing_override_user_set', '1')")
                     cursor.execute("INSERT OR REPLACE INTO user_settings (setting_key, setting_value) VALUES ('sex', ?)", (new_sex,))
-                    cursor.execute("INSERT OR REPLACE INTO user_settings (setting_key, setting_value) VALUES ('workout_focus_mode', ?)", ("1" if new_focus_mode else "0",))
-                    cursor.execute("INSERT OR REPLACE INTO user_settings (setting_key, setting_value) VALUES ('ui_density', ?)", (new_density,))
+                    mode_focus, mode_density={"STANDARD":(False,"compact"),"FOCUS":(True,"compact"),"DETAILED":(False,"detailed")}[new_display_mode]
+                    cursor.execute("INSERT OR REPLACE INTO user_settings (setting_key, setting_value) VALUES ('workout_focus_mode', ?)", ("1" if mode_focus else "0",))
+                    cursor.execute("INSERT OR REPLACE INTO user_settings (setting_key, setting_value) VALUES ('ui_density', ?)", (mode_density,))
                     conn.commit()
                 invalidate_progression_settings_cache()
-                self.workout_focus_mode = new_focus_mode
-                self.ui_density = new_density
+                self.apply_display_mode(new_display_mode, rebuild=False)
                 self.safe_close(self.settings_dialog)
                 self.show_snackbar("Profile settings saved!", "green300")
                 self.rebuild_entire_display()
@@ -2398,22 +2433,29 @@ class WorkoutTrackerApp:
 
         self.settings_dialog = ft.AlertDialog(
             title=ft.Text("Profile Settings", weight="bold"),
-            content=ft.Column([
-                ft.Row([self.bw_input, self.age_input]),
-                ft.ElevatedButton("Accessibility & Layout Acceptance", tooltip="Open accessibility and responsive-layout checklist", on_click=self.open_accessibility_acceptance_checklist),
-                self.sex_dropdown,
-                ft.Text("Used for strength standards comparisons.", size=10, color="white54"),
-                ft.Divider(height=10, color="transparent"),
-                ft.Text("Pacing Override", size=13, weight="bold", color="white"),
-                ft.Text("Auto is recommended. Override only when you intentionally want to bypass age-based pacing.", size=11, color="white54"),
-                self.slider_label,
-                self.profile_slider,
-                ft.Divider(height=10, color="transparent"),
-                ft.Text("Workout Display", size=13, weight="bold", color="white"),
-                ft.Text("Focus mode condenses secondary details while preserving targets, plate feedback, set entry, and logging.", size=11, color="white54"),
-                self.focus_mode_switch,
-                self.density_dropdown
-            ], tight=True),
+            content=ft.Container(
+                width=420,
+                height=max(320, min(560, float(getattr(self.page, "height", 720) or 720) - 180)),
+                content=ft.Column([
+                    ft.ResponsiveRow([
+                        ft.Container(self.bw_input, col={"xs":12,"sm":6}),
+                        ft.Container(self.age_input, col={"xs":12,"sm":6}),
+                    ], spacing=6, run_spacing=6),
+                    ft.ElevatedButton("Accessibility & Layout Acceptance", tooltip="Open accessibility and responsive-layout checklist", on_click=self.open_accessibility_acceptance_checklist),
+                    self.sex_dropdown,
+                    ft.Text("Used for strength standards comparisons.", size=10, color="white54"),
+                    ft.Divider(height=10, color="transparent"),
+                    ft.Text("Pacing Override", size=13, weight="bold", color="white"),
+                    ft.Text("Auto is recommended. Override only when you intentionally want to bypass age-based pacing.", size=11, color="white54"),
+                    self.slider_label,
+                    self.profile_slider,
+                    ft.Divider(height=10, color="transparent"),
+                    ft.Text("Workout Display", size=13, weight="bold", color="white"),
+                    ft.Text("Choose one synchronized mode. Standard is compact, Focus hides secondary controls, and Detailed shows expanded guidance.", size=11, color="white54"),
+                    self.display_mode_dropdown,
+                    ft.Container(height=32),
+                ], spacing=8, scroll="auto"),
+            ),
             actions=[
                 ft.TextButton("Cancel", on_click=lambda ev: self.safe_close(self.settings_dialog)),
                 ft.ElevatedButton("Save", on_click=save_settings, style=ft.ButtonStyle(bgcolor="blue700", color="white"))
@@ -3101,7 +3143,7 @@ class WorkoutTrackerApp:
             f"2.0 existing-user upgrade: {'verified state detected' if existing_user else 'not applicable on this database'}",
             "2.0 trial expiration and limited mode: Android verified 1.99.9",
             "2.0 backup and restore matrix: Android verified 1.99.10",
-            "2.0 accessibility and responsive layouts: 1.99.11 acceptance in progress",
+            "2.0 accessibility and responsive layouts: 1.99.12 corrective acceptance in progress",
             "2.0 packaging reproducibility: pending acceptance",
             "2.0 Play-delivered acceptance: deferred until release candidate",
             "2.0 diagnostics data policy: no workout values, tokens, account identifiers, or backup contents",
