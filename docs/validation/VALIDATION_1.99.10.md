@@ -1,0 +1,3 @@
+# IronCycle 1.99.10 validation
+
+Automated validation covers non-destructive current-backup inspection, metadata extraction, malformed/corrupt/wrong-database rejection, restore pipeline contracts, legacy verification, pre-restore rollback, post-migration verification, entitlement isolation, OneDrive upload/list/download and redirect contracts, interrupted restore guards, privacy-safe diagnostics, frozen workout/entitlement contracts, Python compilation, and the complete supported suite. Schema 20 and backup format are unchanged. Physical Android, network interruption, and destructive restore checks remain device acceptance gates.

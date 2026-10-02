@@ -27,4 +27,4 @@ def test_complete_handler_is_untouched_by_modal_patch():
  assert 'self.app.advance_group_flow(self.db_id,set_idx+1)' in b
  assert 'CompletionAction.LOG_EXERCISE' in b
 def test_release_contract():
- c=(ROOT/'constants.py').read_text(); assert 'APP_VERSION = "1.99.9"' in c and 'DATABASE_SCHEMA_VERSION = 20' in c
+ c=(ROOT/'constants.py').read_text(); assert 'APP_VERSION = "1.99.10"' in c and 'DATABASE_SCHEMA_VERSION = 20' in c

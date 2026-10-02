@@ -1,0 +1,27 @@
+IronCycle 1.99.10 validation results
+
+Python compilation: PASS
+Focused backup/recovery acceptance suite: 9 passed
+Readiness and recovery compatibility suite: 15 passed
+Complete supported pytest suite: 207 passed in 3.54s
+Application version: 1.99.10
+Database schema: 20, unchanged
+Backup format: unchanged
+Source baseline: Android-verified 1.99.9
+
+Validated:
+- Non-destructive current ICBACKUP inspection and metadata
+- Empty, malformed, corrupt, and wrong-database rejection
+- Legacy restore verification contract
+- Pre-restore rollback snapshot and post-migration integrity contracts
+- Entitlement isolation from workout backups
+- OneDrive upload/list/download and Graph 302 Location contracts
+- Interrupted cloud restore guard
+- Privacy-safe acceptance diagnostics
+- Frozen workout and entitlement contracts
+
+Not executed:
+- Signed Android packaging
+- Destructive Android restore matrix
+- Physical network interruption
+- Play-delivered acceptance

@@ -2974,6 +2974,43 @@ class WorkoutTrackerApp:
         )
         self.safe_open(dialog)
 
+    def backup_recovery_acceptance_lines(self):
+        """Return privacy-safe recovery acceptance contracts without backup contents."""
+        return [
+            "Backup recovery acceptance profile: 1.99.10",
+            "Current ICBACKUP create and restore: enabled",
+            "Legacy TXT restore verification: enabled",
+            "Invalid or damaged backup rejection: enabled",
+            "Pre-restore rollback snapshot: enabled",
+            "Restore-before-migration verification: enabled",
+            "Post-migration integrity verification: enabled",
+            "Entitlement isolation from workout backups: enforced",
+            "OneDrive upload/list/download: enabled",
+            "Graph 302 Location downloads: enabled",
+            "Interrupted cloud restore guard: enabled",
+            "Recovery-point order: newest first",
+            "Backup diagnostics data policy: metadata and status only; no backup contents",
+        ]
+
+    def open_backup_acceptance_checklist(self, e=None):
+        lines = self.backup_recovery_acceptance_lines()
+        dialog = ft.AlertDialog(
+            title=ft.Text("Backup & Recovery Acceptance", weight="bold"),
+            content=ft.Container(width=380, height=460, content=ft.Column([
+                ft.Text("CLOSED TESTING • Use a disposable recovery copy for destructive restore checks.", size=10, color="amber300", weight="bold"),
+                ft.Text("\n".join(lines), size=11, font_family="monospace", selectable=True),
+            ], scroll="auto", spacing=8)),
+            actions=[
+                ft.TextButton("Copy Checklist", on_click=lambda ev: self.page.run_task(self.copy_text_with_message, "\n".join(lines), "Backup acceptance checklist copied.")),
+                ft.TextButton("Close", on_click=lambda ev: self.safe_close(dialog)),
+            ],
+        )
+        self.safe_open(dialog)
+
+    async def copy_text_with_message(self, text, message):
+        await self.copy_text_to_clipboard(text)
+        self.show_snackbar(message, "green300")
+
     def entitlement_acceptance_lines(self):
         """Return privacy-safe trial and limited-mode acceptance diagnostics."""
         snapshot = self.entitlement_snapshot()
@@ -3027,7 +3064,7 @@ class WorkoutTrackerApp:
             "2.0 workout interaction: Android verified 1.99.7",
             f"2.0 existing-user upgrade: {'verified state detected' if existing_user else 'not applicable on this database'}",
             "2.0 trial expiration and limited mode: 1.99.9 acceptance in progress",
-            "2.0 backup and restore matrix: pending acceptance",
+            "2.0 backup and restore matrix: 1.99.10 acceptance in progress",
             "2.0 accessibility and responsive layouts: pending acceptance",
             "2.0 packaging reproducibility: pending acceptance",
             "2.0 Play-delivered acceptance: deferred until release candidate",
@@ -3134,6 +3171,7 @@ class WorkoutTrackerApp:
             "Support reports exclude purchase tokens, payment details, backup contents, and Microsoft account information.",
             *self.release_readiness_lines(integrity),
             *self.entitlement_acceptance_lines(),
+            *self.backup_recovery_acceptance_lines(),
             f"Onboarding completed: {'Yes' if self.get_bool_setting('onboarding_completed',False) else 'No'}",
             f"Automatic First Setup eligible: {'No' if self.get_bool_setting('onboarding_completed',False) else 'Only when no completed workout history exists'}",
             f"Canonical exercise catalog: {len(CANONICAL_EXERCISES)} entries / v{CATALOG_VERSION}",
@@ -4014,6 +4052,7 @@ class WorkoutTrackerApp:
     def open_backup_manager(self,e=None):
         self.close_actions_menu();style=ft.ButtonStyle(padding=10)
         dialog=ft.AlertDialog(title=ft.Text("Backup Manager",weight="bold"),content=ft.Container(width=390,height=500,content=ft.Column([
+            ft.ElevatedButton("Backup & Recovery Acceptance", on_click=self.open_backup_acceptance_checklist),
             ft.Text("CLOUD BACKUP",size=10,weight="bold",color="cyan300"),
             ft.ElevatedButton("OneDrive Cloud Backup",on_click=lambda ev:[self.safe_close(dialog),self.open_onedrive_cloud_backup()],width=float('inf'),style=style),
             ft.Divider(),

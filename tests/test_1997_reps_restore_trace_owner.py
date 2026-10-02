@@ -31,5 +31,5 @@ def test_target_restore_and_blank_hint_remain():
 
 def test_release_contract():
     constants = (ROOT / "constants.py").read_text(encoding="utf-8")
-    assert 'APP_VERSION = "1.99.9"' in constants
+    assert 'APP_VERSION = "1.99.10"' in constants
     assert "DATABASE_SCHEMA_VERSION = 20" in constants

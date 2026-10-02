@@ -36,3 +36,34 @@ class BackupService:
         missing=REQUIRED_TABLES-found
         if missing: raise ValueError("Not a valid workout backup. Missing tables: "+", ".join(sorted(missing)))
         return True
+    def inspect_backup_string(self, text):
+        """Decode and validate a backup without changing the live database."""
+        import tempfile
+        raw = self.decode(text)
+        fd, path = tempfile.mkstemp(prefix="ironcycle-backup-inspect-", suffix=".db")
+        os.close(fd)
+        try:
+            with open(path, "wb") as handle:
+                handle.write(raw)
+            self.validate_database(path)
+            with sqlite3.connect(path) as conn:
+                settings = dict(conn.execute(
+                    "SELECT setting_key, setting_value FROM user_settings "
+                    "WHERE setting_key IN ('backup_app_version','backup_schema_version','backup_created_at')"
+                ).fetchall())
+                integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
+            return {
+                "ok": True,
+                "integrity": str(integrity),
+                "app_version": settings.get("backup_app_version"),
+                "schema_version": settings.get("backup_schema_version"),
+                "created_at_present": bool(settings.get("backup_created_at")),
+                "entitlement_embedded": False,
+                "decoded_bytes": len(raw),
+            }
+        finally:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+
