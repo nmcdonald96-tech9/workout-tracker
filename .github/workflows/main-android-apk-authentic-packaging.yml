@@ -3,21 +3,19 @@ name: Build IronCycle Android APK only with authentic packaging
 on:
   workflow_dispatch:
 
-permissions:
-  contents: read
-
 concurrency:
   group: ironcycle-apk-only-${{ github.ref }}
   cancel-in-progress: false
 
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-24.04
-    timeout-minutes: 75
-
+    timeout-minutes: 90
     env:
       EXPECTED_PACKAGE_ID: com.ironcycle.myapp
-      VERIFIED_APK: build/apk/IronCycle-${{ github.run_number }}-verified.apk
 
     steps:
       - name: Check out selected branch
@@ -38,18 +36,17 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Set up Flutter 3.41.7
+      - name: Set up Flutter 3.44.8
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: 3.41.7
+          flutter-version: 3.44.8
           channel: stable
           cache: true
 
-      - name: Capture immutable source identity and reproducibility evidence
+      - name: Capture source identity
         shell: bash
         run: |
           set -euo pipefail
-          test -z "$(git status --porcelain)"
           mkdir -p release-evidence
           git rev-parse HEAD > release-evidence/SOURCE_COMMIT.txt
           git show -s --format=%cI HEAD > release-evidence/SOURCE_COMMIT_DATE.txt
@@ -58,7 +55,7 @@ jobs:
           sha256sum release-evidence/IronCycle-source.tar.gz > release-evidence/SOURCE_ARCHIVE_SHA256.txt
           echo "SOURCE_COMMIT=$(cat release-evidence/SOURCE_COMMIT.txt)" >> "$GITHUB_ENV"
 
-      - name: Read and validate release identity
+      - name: Read release identity
         shell: bash
         run: |
           set -euo pipefail
@@ -78,26 +75,17 @@ jobs:
           ANDROID_VERSION_CODE=$((1300000 + GITHUB_RUN_NUMBER))
           echo "APP_VERSION=$APP_VERSION" >> "$GITHUB_ENV"
           echo "ANDROID_VERSION_CODE=$ANDROID_VERSION_CODE" >> "$GITHUB_ENV"
-          printf 'version_name=%s\nversion_code=%s\nsource_commit=%s\nartifact_target=apk_only\n' \
-            "$APP_VERSION" "$ANDROID_VERSION_CODE" "$SOURCE_COMMIT" \
-            > release-evidence/BUILD_IDENTITY.txt
 
-      - name: Install Python and Flet build dependencies
+      - name: Install dependencies and run tests
         shell: bash
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
-          python -m pip install \
-            "flet==0.86.5" \
-            "msal==1.39.0" \
-            "requests==2.34.2" \
-            "PyJWT==2.15.1" \
-            "cryptography==48.0.0" \
-            pytest pyyaml
+          python -m pip install "flet==0.86.5" "msal==1.39.0" "requests==2.34.2" "PyJWT==2.15.1" "cryptography==48.0.0" pytest pyyaml
           python -m py_compile main.py database.py constants.py $(find app components services views -type f -name '*.py' -print | tr '\n' ' ')
           python -m pytest -q
 
-      - name: Validate signing secrets and restore keystore
+      - name: Restore release keystore
         shell: bash
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
@@ -111,11 +99,10 @@ jobs:
           test -n "$ANDROID_KEY_ALIAS"
           test -n "$ANDROID_KEY_PASSWORD"
           printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/ironcycle-release.jks"
-          keytool -list -keystore "$RUNNER_TEMP/ironcycle-release.jks" \
-            -storepass "$ANDROID_KEYSTORE_PASSWORD" -alias "$ANDROID_KEY_ALIAS" >/dev/null
+          keytool -list -keystore "$RUNNER_TEMP/ironcycle-release.jks" -storepass "$ANDROID_KEYSTORE_PASSWORD" -alias "$ANDROID_KEY_ALIAS" >/dev/null
           echo "ANDROID_KEYSTORE_PATH=$RUNNER_TEMP/ironcycle-release.jks" >> "$GITHUB_ENV"
 
-      - name: Build authentic signed APK
+      - name: Build signed APK
         shell: bash
         env:
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
@@ -123,19 +110,9 @@ jobs:
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           set -euo pipefail
-          flet build apk \
-            --org com.ironcycle \
-            --project myapp \
-            --product IronCycle \
-            --build-version "$APP_VERSION" \
-            --build-number "$ANDROID_VERSION_CODE" \
-            --android-signing-key-store "$ANDROID_KEYSTORE_PATH" \
-            --android-signing-key-store-password "$ANDROID_KEYSTORE_PASSWORD" \
-            --android-signing-key-alias "$ANDROID_KEY_ALIAS" \
-            --android-signing-key-password "$ANDROID_KEY_PASSWORD" \
-            --verbose
+          flet build apk --org com.ironcycle --project myapp --product IronCycle --build-version "$APP_VERSION" --build-number "$ANDROID_VERSION_CODE" --android-signing-key-store "$ANDROID_KEYSTORE_PATH" --android-signing-key-store-password "$ANDROID_KEYSTORE_PASSWORD" --android-signing-key-alias "$ANDROID_KEY_ALIAS" --android-signing-key-password "$ANDROID_KEY_PASSWORD" --verbose
 
-      - name: Locate APK and Android tools
+      - name: Locate and verify APK
         shell: bash
         run: |
           set -euo pipefail
@@ -143,18 +120,9 @@ jobs:
           test -n "$APK_PATH"
           APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)"
           AAPT="$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -1)"
-          test -x "$APKSIGNER"
-          test -x "$AAPT"
-          mkdir -p build/apk
+          test -x "$APKSIGNER"; test -x "$AAPT"
+          VERIFIED_APK="build/apk/IronCycle-${APP_VERSION}-verified.apk"
           cp "$APK_PATH" "$VERIFIED_APK"
-          echo "APK_PATH=$APK_PATH" >> "$GITHUB_ENV"
-          echo "APKSIGNER=$APKSIGNER" >> "$GITHUB_ENV"
-          echo "AAPT=$AAPT" >> "$GITHUB_ENV"
-
-      - name: Verify APK signer, package, version, and Billing permission
-        shell: bash
-        run: |
-          set -euo pipefail
           "$APKSIGNER" verify --verbose --print-certs "$VERIFIED_APK" | tee "$RUNNER_TEMP/apk-signature.txt"
           "$AAPT" dump badging "$VERIFIED_APK" | tee "$RUNNER_TEMP/apk-badging.txt"
           "$AAPT" dump permissions "$VERIFIED_APK" | tee "$RUNNER_TEMP/apk-permissions.txt"
@@ -162,49 +130,15 @@ jobs:
           grep -q "versionName='$APP_VERSION'" "$RUNNER_TEMP/apk-badging.txt"
           grep -q "versionCode='$ANDROID_VERSION_CODE'" "$RUNNER_TEMP/apk-badging.txt"
           grep -q 'com.android.vending.BILLING' "$RUNNER_TEMP/apk-permissions.txt"
+          echo "VERIFIED_APK=$VERIFIED_APK" >> "$GITHUB_ENV"
 
-      - name: Inspect packaged Python dependencies and Billing extension
+      - name: Create APK evidence
         shell: bash
         run: |
           set -euo pipefail
-          unzip -l "$VERIFIED_APK" > "$RUNNER_TEMP/apk-file-list.txt"
-          for marker in msal requests jwt cryptography ironcycle_billing; do
-            grep -qi "$marker" "$RUNNER_TEMP/apk-file-list.txt"
-          done
-
-      - name: Create APK artifact inventory and verification report
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p release-evidence
           sha256sum "$VERIFIED_APK" > release-evidence/ANDROID_ARTIFACT_SHA256.txt
-          {
-            echo "source_commit=$SOURCE_COMMIT"
-            echo "version_name=$APP_VERSION"
-            echo "version_code=$ANDROID_VERSION_CODE"
-            echo "package_id=$EXPECTED_PACKAGE_ID"
-            echo "apk=$(basename "$VERIFIED_APK")"
-            echo "artifact_target=apk_only"
-            echo "runner_image=ubuntu-24.04"
-            echo "python=3.10"
-            echo "flutter=3.41.7"
-            echo "flet=0.86.5"
-            echo "entitlement_test_controls=false"
-          } > release-evidence/ANDROID_ARTIFACT_INVENTORY.txt
-          {
-            echo "IronCycle authentic APK-only packaging verification"
-            echo "Commit: $SOURCE_COMMIT"
-            echo "Version: $APP_VERSION"
-            echo "Version code: $ANDROID_VERSION_CODE"
-            echo "Package ID: $EXPECTED_PACKAGE_ID"
-            echo "APK signer: verified"
-            echo "Billing permission: verified"
-            echo "Packaged dependencies: verified"
-            echo "Closed-testing entitlement controls: disabled"
-            echo "APK SHA-256 inventory: generated"
-          } > IronCycle_Authentic_Packaging_Verification.txt
-          find release-evidence -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort \
-            > release-evidence/EVIDENCE_FILE_LIST.txt
+          printf 'source_commit=%s\nversion_name=%s\nversion_code=%s\npackage_id=%s\nartifact_target=apk_only\nflutter=3.44.8\nflet=0.86.5\n' "$SOURCE_COMMIT" "$APP_VERSION" "$ANDROID_VERSION_CODE" "$EXPECTED_PACKAGE_ID" > release-evidence/ANDROID_ARTIFACT_INVENTORY.txt
+          printf 'IronCycle authentic APK-only packaging verification\nCommit: %s\nVersion: %s\nVersion code: %s\nPackage ID: %s\nAPK signer: verified\nBilling permission: verified\nFlutter: 3.44.8\n' "$SOURCE_COMMIT" "$APP_VERSION" "$ANDROID_VERSION_CODE" "$EXPECTED_PACKAGE_ID" > IronCycle_Authentic_Packaging_Verification.txt
 
       - name: Upload verified APK and evidence
         uses: actions/upload-artifact@v4

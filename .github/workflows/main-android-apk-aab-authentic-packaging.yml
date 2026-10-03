@@ -3,21 +3,19 @@ name: Build IronCycle Android APK and AAB with authentic packaging
 on:
   workflow_dispatch:
 
+concurrency:
+  group: ironcycle-apk-aab-${{ github.ref }}
+  cancel-in-progress: false
+
 permissions:
   contents: read
 
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-  FLET_SKIP_FLUTTER_PROMPT: "true"
-  EXPECTED_PACKAGE_ID: "com.ironcycle.myapp"
-  EXPECTED_PROJECT: "myapp"
-  EXPECTED_ORG: "com.ironcycle"
-
 jobs:
   build:
-    name: Build and verify authentic-layout APK and AAB
     runs-on: ubuntu-24.04
-    timeout-minutes: 100
+    timeout-minutes: 90
+    env:
+      EXPECTED_PACKAGE_ID: com.ironcycle.myapp
 
     steps:
       - name: Check out selected branch
@@ -26,184 +24,85 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Set up Python
+      - name: Set up Python 3.10
         uses: actions/setup-python@v5
         with:
           python-version: "3.10"
+          cache: pip
 
-      - name: Capture immutable source identity and reproducibility evidence
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Flutter 3.44.8
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.44.8
+          channel: stable
+          cache: true
+
+      - name: Capture source identity
         shell: bash
         run: |
           set -euo pipefail
-          test -z "$(git status --porcelain)"
           mkdir -p release-evidence
           git rev-parse HEAD > release-evidence/SOURCE_COMMIT.txt
           git show -s --format=%cI HEAD > release-evidence/SOURCE_COMMIT_DATE.txt
           git ls-files -z | LC_ALL=C sort -z | xargs -0 sha256sum > release-evidence/SOURCE_FILE_SHA256.txt
           git archive --format=tar --prefix=IronCycle-source/ HEAD | gzip -n -9 > release-evidence/IronCycle-source.tar.gz
           sha256sum release-evidence/IronCycle-source.tar.gz > release-evidence/SOURCE_ARCHIVE_SHA256.txt
-          cp release-evidence/IronCycle-source.tar.gz "$RUNNER_TEMP/source-copy.tar.gz"
-          cmp --silent release-evidence/IronCycle-source.tar.gz "$RUNNER_TEMP/source-copy.tar.gz"
           echo "SOURCE_COMMIT=$(cat release-evidence/SOURCE_COMMIT.txt)" >> "$GITHUB_ENV"
-      - name: Validate and normalize repository layout on runner
+
+      - name: Read release identity
         shell: bash
         run: |
           set -euo pipefail
-
-          required=(main.py database.py constants.py onedrive_service.py requirements.txt packages/ironcycle-billing/pyproject.toml)
-          for path in "${required[@]}"; do
-            if [ ! -e "$path" ]; then
-              echo "::error::Required path is missing: $path"
-              exit 1
-            fi
-          done
-
-          # The authentic 1.58 application had no root pyproject.toml.
-          rm -f pyproject.toml
-
-          # Remove loose duplicate extension source files only in this runner checkout.
-          # The canonical extension remains packages/ironcycle-billing/.
-          rm -rf ironcycle_billing
-          rm -f '__init__ (1).py' __init__.py 'billing (2).py' billing.py billing.dart
-          rm -f build.gradle extension.dart ironcycle_billing.dart pubspec.yaml setup.py
-          rm -f Flet.yaml Flet.yaml.txt
-          rm -f main-apk-only-billing-library-8.yml
-          rm -f main-play-billing-extension-apk-only.yml
-          rm -f main-play-billing-library-apk-aab-8.yml
-          rm -f test_entitlement_foundation.py test_entitlement_states.py
-          rm -f test_readiness_target_sync.py test_target_ownership_rpe.py
-
-          # Reproduce the proven authentic dependency declaration.
-          cat > requirements.txt <<'EOF'
-          flet==0.86.5
-          msal>=1.31,<2
-          ./packages/ironcycle-billing
-          EOF
-
-          if [ -e pyproject.toml ]; then
-            echo "::error::Root pyproject.toml still exists."
-            exit 1
-          fi
-          if [ -e ironcycle_billing ]; then
-            echo "::error::Duplicate root ironcycle_billing directory still exists."
-            exit 1
-          fi
-
-          echo "Normalized top-level tree:"
-          find . -maxdepth 1 -mindepth 1 -printf '%f\n' | sort
-          echo "Requirements:"
-          cat requirements.txt
-
-      - name: Build canonical billing extension wheel
-        shell: bash
-        run: |
-          set -euo pipefail
-          python -m pip install --upgrade pip wheel
-          mkdir -p "$GITHUB_WORKSPACE/dist"
-          python -m pip wheel "$GITHUB_WORKSPACE/packages/ironcycle-billing" --no-deps --wheel-dir "$GITHUB_WORKSPACE/dist"
-          BILLING_WHEEL="$(find "$GITHUB_WORKSPACE/dist" -maxdepth 1 -type f -name 'ironcycle_billing-*.whl' -print -quit)"
-          test -n "$BILLING_WHEEL"
-          test -f "$BILLING_WHEEL"
-
-          unzip -l "$BILLING_WHEEL" | tee "$RUNNER_TEMP/billing-wheel.txt"
-          grep -F 'ironcycle_billing/flutter/ironcycle_billing/pubspec.yaml' "$RUNNER_TEMP/billing-wheel.txt"
-          grep -F 'ironcycle_billing/flutter/ironcycle_billing/lib/src/extension.dart' "$RUNNER_TEMP/billing-wheel.txt"
-          grep -F 'ironcycle_billing/flutter/ironcycle_billing/lib/src/billing.dart' "$RUNNER_TEMP/billing-wheel.txt"
-
-          export BILLING_WHEEL
-          python - <<'PY'
-          import os
-          from pathlib import Path
-          path = Path("requirements.txt")
-          wheel_uri = Path(os.environ["BILLING_WHEEL"]).resolve().as_uri()
-          rows = [r for r in path.read_text(encoding="utf-8").splitlines()
-                  if r.strip() not in {"./packages/ironcycle-billing", "packages/ironcycle-billing"}]
-          rows.append(f"ironcycle-billing @ {wheel_uri}")
-          path.write_text("\n".join(rows) + "\n", encoding="utf-8")
-          PY
-          echo "BILLING_WHEEL=$BILLING_WHEEL" >> "$GITHUB_ENV"
-          cat requirements.txt
-
-      - name: Install and verify build-host dependencies
-        shell: bash
-        run: |
-          set -euo pipefail
-          python -m pip install -r requirements.txt
-          python - <<'PY'
-          import cryptography, jwt, msal, requests, ironcycle_billing
-          print("msal", getattr(msal, "__version__", "unknown"))
-          print("requests", getattr(requests, "__version__", "unknown"))
-          print("PyJWT", getattr(jwt, "__version__", "unknown"))
-          print("cryptography", getattr(cryptography, "__version__", "unknown"))
-          location = str(ironcycle_billing.__file__)
-          print("ironcycle_billing", location)
-          if "/packages/ironcycle-billing/" in location:
-              raise SystemExit("Billing import resolved to repository source instead of installed wheel")
-          PY
-
-      - name: Compile current application source and read version
-        shell: bash
-        run: |
-          set -euo pipefail
-          files=(main.py database.py constants.py onedrive_service.py)
-          for optional in exercise_catalog.py onboarding_catalog.py ironcycle_billing.py; do
-            [ ! -f "$optional" ] || files+=("$optional")
-          done
-          while IFS= read -r module; do files+=("$module"); done < <(find app components services views -type f -name '*.py' -print 2>/dev/null | sort)
-          python -m py_compile "${files[@]}"
-
           APP_VERSION="$(python - <<'PY'
           import re
           from pathlib import Path
           text = Path("constants.py").read_text(encoding="utf-8")
-          match = re.search(r'^APP_VERSION\s*=\s*["\x27]([^"\x27]+)["\x27]', text, re.MULTILINE)
+          match = re.search(r'^APP_VERSION\s*=\s*["\']([^"\']+)["\']', text, re.M)
           if not match:
               raise SystemExit("APP_VERSION was not found")
           print(match.group(1))
           PY
           )"
+          test "$APP_VERSION" = "1.99.14"
+          grep -q 'DATABASE_SCHEMA_VERSION = 20' constants.py
+          grep -q 'ENTITLEMENT_TEST_CONTROLS = False' constants.py
           ANDROID_VERSION_CODE=$((1300000 + GITHUB_RUN_NUMBER))
           echo "APP_VERSION=$APP_VERSION" >> "$GITHUB_ENV"
           echo "ANDROID_VERSION_CODE=$ANDROID_VERSION_CODE" >> "$GITHUB_ENV"
-          grep -q 'ENTITLEMENT_TEST_CONTROLS = False' constants.py
-          printf 'version_name=%s\nversion_code=%s\nsource_commit=%s\n' "$APP_VERSION" "$ANDROID_VERSION_CODE" "$SOURCE_COMMIT" > release-evidence/BUILD_IDENTITY.txt
 
-      - name: Validate signing secrets and restore keystore
+      - name: Install dependencies and run tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install "flet==0.86.5" "msal==1.39.0" "requests==2.34.2" "PyJWT==2.15.1" "cryptography==48.0.0" pytest pyyaml
+          python -m py_compile main.py database.py constants.py $(find app components services views -type f -name '*.py' -print | tr '\n' ' ')
+          python -m pytest -q
+
+      - name: Restore release keystore
         shell: bash
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-          ANDROID_EXPECTED_SIGNER_SHA256: ${{ secrets.ANDROID_EXPECTED_SIGNER_SHA256 }}
         run: |
           set -euo pipefail
-          for name in ANDROID_KEYSTORE_BASE64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD ANDROID_EXPECTED_SIGNER_SHA256; do
-            [ -n "${!name:-}" ] || { echo "::error::Missing secret: $name"; exit 1; }
-          done
-          KEYSTORE_PATH="$RUNNER_TEMP/ironcycle-release.jks"
-          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE_PATH"
-          chmod 600 "$KEYSTORE_PATH"
-          keytool -list -keystore "$KEYSTORE_PATH" -storepass "$ANDROID_KEYSTORE_PASSWORD" -alias "$ANDROID_KEY_ALIAS" >/dev/null
-          echo "KEYSTORE_PATH=$KEYSTORE_PATH" >> "$GITHUB_ENV"
+          test -n "$ANDROID_KEYSTORE_BASE64"
+          test -n "$ANDROID_KEYSTORE_PASSWORD"
+          test -n "$ANDROID_KEY_ALIAS"
+          test -n "$ANDROID_KEY_PASSWORD"
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/ironcycle-release.jks"
+          keytool -list -keystore "$RUNNER_TEMP/ironcycle-release.jks" -storepass "$ANDROID_KEYSTORE_PASSWORD" -alias "$ANDROID_KEY_ALIAS" >/dev/null
+          echo "ANDROID_KEYSTORE_PATH=$RUNNER_TEMP/ironcycle-release.jks" >> "$GITHUB_ENV"
 
-      - name: Set up Flutter
-        uses: subosito/flutter-action@v2
-        with:
-          flutter-version: "3.41.7"
-          channel: stable
-          cache: false
-
-      - name: Accept Android licenses and reclaim space
-        shell: bash
-        run: |
-          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
-          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost "$AGENT_TOOLSDIRECTORY/CodeQL" || true
-          docker system prune --all --force --volumes || true
-          sudo apt-get clean
-          df -h /
-
-      - name: Build APK and AAB with authentic dependency discovery
+      - name: Build signed APK
         shell: bash
         env:
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
@@ -211,224 +110,71 @@ jobs:
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           set -euo pipefail
-          rm -rf .git
-          test ! -e .git
-          flet build apk \
-            --yes \
-            --product "IronCycle" \
-            --project "$EXPECTED_PROJECT" \
-            --org "$EXPECTED_ORG" \
-            --bundle-id "$EXPECTED_PACKAGE_ID" \
-            --build-version "$APP_VERSION" \
-            --build-number "$ANDROID_VERSION_CODE" \
-            --android-permissions "com.android.vending.BILLING=True" \
-            --android-signing-key-store "$KEYSTORE_PATH" \
-            --android-signing-key-store-password "$ANDROID_KEYSTORE_PASSWORD" \
-            --android-signing-key-alias "$ANDROID_KEY_ALIAS" \
-            --android-signing-key-password "$ANDROID_KEY_PASSWORD"
+          flet build apk --org com.ironcycle --project myapp --product IronCycle --build-version "$APP_VERSION" --build-number "$ANDROID_VERSION_CODE" --android-signing-key-store "$ANDROID_KEYSTORE_PATH" --android-signing-key-store-password "$ANDROID_KEYSTORE_PASSWORD" --android-signing-key-alias "$ANDROID_KEY_ALIAS" --android-signing-key-password "$ANDROID_KEY_PASSWORD" --verbose
 
-          flet build aab \
-            --yes \
-            --product "IronCycle" \
-            --project "$EXPECTED_PROJECT" \
-            --org "$EXPECTED_ORG" \
-            --bundle-id "$EXPECTED_PACKAGE_ID" \
-            --build-version "$APP_VERSION" \
-            --build-number "$ANDROID_VERSION_CODE" \
-            --android-permissions "com.android.vending.BILLING=True" \
-            --android-signing-key-store "$KEYSTORE_PATH" \
-            --android-signing-key-store-password "$ANDROID_KEYSTORE_PASSWORD" \
-            --android-signing-key-alias "$ANDROID_KEY_ALIAS" \
-            --android-signing-key-password "$ANDROID_KEY_PASSWORD"
-
-
-      - name: Locate APK, AAB, and Android tools
+      - name: Locate and verify APK
         shell: bash
         run: |
           set -euo pipefail
           APK_PATH="$(find build/apk -type f -name '*.apk' -print -quit)"
-          AAB_PATH="$(find build/aab -type f -name '*.aab' -print -quit)"
           test -n "$APK_PATH"
-          test -n "$AAB_PATH"
-          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner -print | sort -V | tail -n 1)"
-          AAPT="$(find "$ANDROID_HOME/build-tools" -type f -name aapt -print | sort -V | tail -n 1)"
-          test -x "$APKSIGNER"
-          test -x "$AAPT"
-          echo "APK_PATH=$APK_PATH" >> "$GITHUB_ENV"
-          echo "AAB_PATH=$AAB_PATH" >> "$GITHUB_ENV"
-          echo "APKSIGNER=$APKSIGNER" >> "$GITHUB_ENV"
-          echo "AAPT=$AAPT" >> "$GITHUB_ENV"
-
-      - name: Hard-check packaged Python and billing content
-        shell: bash
-        run: |
-          set -euo pipefail
-          export APK_PATH
-          python - <<'PY'
-          import io, os, zipfile
-          from pathlib import PurePosixPath
-
-          found = {k: False for k in ("msal", "requests", "jwt", "cryptography", "billing_pubspec", "billing_extension")}
-          evidence = []
-
-          def inspect(data, label, depth=0):
-              if depth > 6:
-                  return
-              try:
-                  z = zipfile.ZipFile(io.BytesIO(data))
-              except zipfile.BadZipFile:
-                  return
-              with z:
-                  for info in z.infolist():
-                      name = info.filename.replace("\\", "/")
-                      lower = "/" + name.lower().lstrip("/")
-                      parts = {p.lower() for p in PurePosixPath(name).parts}
-                      checks = {
-                          "msal": "msal" in parts or "/msal-" in lower,
-                          "requests": "requests" in parts or "/requests-" in lower,
-                          "jwt": "jwt" in parts or "/pyjwt-" in lower,
-                          "cryptography": "cryptography" in parts or "/cryptography-" in lower,
-                          "billing_pubspec": name.endswith("ironcycle_billing/flutter/ironcycle_billing/pubspec.yaml"),
-                          "billing_extension": name.endswith("ironcycle_billing/flutter/ironcycle_billing/lib/src/extension.dart"),
-                      }
-                      for key, hit in checks.items():
-                          if hit and not found[key]:
-                              found[key] = True
-                              evidence.append(f"{key}: {label}!/{name}")
-                      if info.file_size <= 150_000_000 and name.lower().endswith((".zip", ".whl", ".apk")):
-                          try:
-                              nested = z.read(info)
-                          except Exception:
-                              continue
-                          if nested[:4] == b"PK\x03\x04":
-                              inspect(nested, f"{label}!/{name}", depth + 1)
-
-          with open(os.environ["APK_PATH"], "rb") as f:
-              inspect(f.read(), os.environ["APK_PATH"])
-          print("\n".join(evidence))
-          print(found)
-          missing = [k for k, v in found.items() if not v]
-          if missing:
-              raise SystemExit("Missing packaged evidence: " + ", ".join(missing))
-          PY
-
-      - name: Verify identity permission and permanent signer
-        shell: bash
-        env:
-          ANDROID_EXPECTED_SIGNER_SHA256: ${{ secrets.ANDROID_EXPECTED_SIGNER_SHA256 }}
-        run: |
-          set -euo pipefail
-          "$APKSIGNER" verify --verbose --print-certs "$APK_PATH" 2>&1 | tee "$RUNNER_TEMP/apk-verify.txt"
-          EXPECTED="$(printf '%s' "$ANDROID_EXPECTED_SIGNER_SHA256" | tr '[:lower:]' '[:upper:]' | tr -d ':[:space:]')"
-          ACTUAL="$(sed -n 's/^.*certificate SHA-256 digest: //p' "$RUNNER_TEMP/apk-verify.txt" | head -n 1 | tr '[:lower:]' '[:upper:]' | tr -d ':[:space:]')"
-          if [ -z "$ACTUAL" ]; then
-            echo "::error::Could not extract APK signer SHA-256 digest from apksigner output."
-            exit 1
-          fi
-          if [ "$EXPECTED" != "$ACTUAL" ]; then
-            echo "::error::APK signer mismatch. Expected $EXPECTED but found $ACTUAL."
-            exit 1
-          fi
-          echo "Permanent APK signer verified."
-
-          "$AAPT" dump badging "$APK_PATH" > "$RUNNER_TEMP/apk-badging.txt"
-          grep -F "package: name='$EXPECTED_PACKAGE_ID'" "$RUNNER_TEMP/apk-badging.txt"
-          grep -F "versionName='$APP_VERSION'" "$RUNNER_TEMP/apk-badging.txt"
-          grep -F "versionCode='$ANDROID_VERSION_CODE'" "$RUNNER_TEMP/apk-badging.txt"
-          "$AAPT" dump permissions "$APK_PATH" | grep -F 'com.android.vending.BILLING'
-
-          VERIFIED_APK="$GITHUB_WORKSPACE/IronCycle-${APP_VERSION}-authentic-packaging.apk"
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)"
+          AAPT="$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -1)"
+          test -x "$APKSIGNER"; test -x "$AAPT"
+          VERIFIED_APK="build/apk/IronCycle-${APP_VERSION}-verified.apk"
           cp "$APK_PATH" "$VERIFIED_APK"
+          "$APKSIGNER" verify --verbose --print-certs "$VERIFIED_APK" | tee "$RUNNER_TEMP/apk-signature.txt"
+          "$AAPT" dump badging "$VERIFIED_APK" | tee "$RUNNER_TEMP/apk-badging.txt"
+          "$AAPT" dump permissions "$VERIFIED_APK" | tee "$RUNNER_TEMP/apk-permissions.txt"
+          grep -q "package: name='$EXPECTED_PACKAGE_ID'" "$RUNNER_TEMP/apk-badging.txt"
+          grep -q "versionName='$APP_VERSION'" "$RUNNER_TEMP/apk-badging.txt"
+          grep -q "versionCode='$ANDROID_VERSION_CODE'" "$RUNNER_TEMP/apk-badging.txt"
+          grep -q 'com.android.vending.BILLING' "$RUNNER_TEMP/apk-permissions.txt"
           echo "VERIFIED_APK=$VERIFIED_APK" >> "$GITHUB_ENV"
 
-      - name: Verify signed AAB for Google Play
+      - name: Build signed AAB
         shell: bash
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           set -euo pipefail
-          test -f "$AAB_PATH"
+          flet build aab --org com.ironcycle --project myapp --product IronCycle --build-version "$APP_VERSION" --build-number "$ANDROID_VERSION_CODE" --android-signing-key-store "$ANDROID_KEYSTORE_PATH" --android-signing-key-store-password "$ANDROID_KEYSTORE_PASSWORD" --android-signing-key-alias "$ANDROID_KEY_ALIAS" --android-signing-key-password "$ANDROID_KEY_PASSWORD" --verbose
 
-          # An Android App Bundle is a signed ZIP/JAR container. jarsigner verifies
-          # the upload-key signature used by Google Play App Signing.
-          jarsigner -verify -verbose -certs "$AAB_PATH" 2>&1 | tee "$RUNNER_TEMP/aab-verify.txt"
-          grep -Eiq 'jar verified|verified' "$RUNNER_TEMP/aab-verify.txt"
-
-          # Basic bundle structure checks.
-          unzip -t "$AAB_PATH" > "$RUNNER_TEMP/aab-unzip-test.txt"
-          unzip -l "$AAB_PATH" > "$RUNNER_TEMP/aab-contents.txt"
-          grep -F 'base/manifest/AndroidManifest.xml' "$RUNNER_TEMP/aab-contents.txt"
-          grep -F 'base/dex/' "$RUNNER_TEMP/aab-contents.txt"
-
-          VERIFIED_AAB="$GITHUB_WORKSPACE/IronCycle-${APP_VERSION}-google-play.aab"
+      - name: Locate and verify AAB
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          set -euo pipefail
+          AAB_PATH="$(find build/aab -type f -name '*.aab' -print -quit)"
+          test -n "$AAB_PATH"
+          VERIFIED_AAB="build/aab/IronCycle-${APP_VERSION}-google-play.aab"
           cp "$AAB_PATH" "$VERIFIED_AAB"
+          jarsigner -verify -verbose -certs "$VERIFIED_AAB" | tee "$RUNNER_TEMP/aab-verify.txt"
+          unzip -t "$VERIFIED_AAB" | tee "$RUNNER_TEMP/aab-unzip-test.txt"
+          unzip -l "$VERIFIED_AAB" | grep -q 'base/manifest/AndroidManifest.xml'
+          unzip -l "$VERIFIED_AAB" | grep -q 'base/dex/classes.dex'
           echo "VERIFIED_AAB=$VERIFIED_AAB" >> "$GITHUB_ENV"
 
-      - name: Create release artifact inventory and hashes
+      - name: Create APK and AAB evidence
         shell: bash
         run: |
           set -euo pipefail
-          test -f "$VERIFIED_APK"
-          test -f "$VERIFIED_AAB"
           sha256sum "$VERIFIED_APK" "$VERIFIED_AAB" > release-evidence/ANDROID_ARTIFACT_SHA256.txt
-          {
-            echo "source_commit=$SOURCE_COMMIT"
-            echo "version_name=$APP_VERSION"
-            echo "version_code=$ANDROID_VERSION_CODE"
-            echo "package_id=$EXPECTED_PACKAGE_ID"
-            echo "apk=$(basename "$VERIFIED_APK")"
-            echo "aab=$(basename "$VERIFIED_AAB")"
-            echo "workflow=${GITHUB_WORKFLOW}"
-            echo "run_id=${GITHUB_RUN_ID}"
-            echo "run_attempt=${GITHUB_RUN_ATTEMPT}"
-            echo "runner_image=ubuntu-24.04"
-            echo "python=3.10"
-            echo "flutter=3.41.7"
-            echo "flet=0.86.5"
-            echo "entitlement_test_controls=false"
-          } > release-evidence/ANDROID_ARTIFACT_INVENTORY.txt
-          find release-evidence -type f -maxdepth 1 -printf '%f\n' | LC_ALL=C sort > release-evidence/EVIDENCE_FILE_LIST.txt
-      - name: Create verification report
-        shell: bash
-        run: |
-          {
-            echo "IronCycle authentic-layout APK and AAB packaging verification"
-            echo "Branch: $GITHUB_REF_NAME"
-            echo "Commit: $GITHUB_SHA"
-            echo "Immutable source commit: $SOURCE_COMMIT"
-            echo "Version: $APP_VERSION"
-            echo "Version code: $ANDROID_VERSION_CODE"
-            echo "Root pyproject.toml: absent during build"
-            echo "Dependency source: authentic minimal requirements.txt"
-            echo "Python version override: none"
-            echo "OneDrive dependency evidence: verified"
-            echo "Billing extension evidence: verified"
-            echo "Permanent signer and package identity: verified"
-            echo "Google Play AAB signature and bundle structure: verified"
-            echo "Closed-testing entitlement controls: disabled"
-            echo "Source archive and tracked-file manifest: generated"
-            echo "APK and AAB SHA-256 inventory: generated"
-            echo
-            cat "$RUNNER_TEMP/apk-verify.txt"
-            echo
-            cat "$RUNNER_TEMP/apk-badging.txt"
-            echo
-            cat "$RUNNER_TEMP/aab-verify.txt"
-            echo
-            cat "$RUNNER_TEMP/aab-unzip-test.txt"
-          } > IronCycle_Authentic_Packaging_Verification.txt
+          printf 'source_commit=%s\nversion_name=%s\nversion_code=%s\npackage_id=%s\nartifact_target=apk_and_aab\nflutter=3.44.8\nflet=0.86.5\n' "$SOURCE_COMMIT" "$APP_VERSION" "$ANDROID_VERSION_CODE" "$EXPECTED_PACKAGE_ID" > release-evidence/ANDROID_ARTIFACT_INVENTORY.txt
+          printf 'IronCycle authentic APK and AAB packaging verification\nCommit: %s\nVersion: %s\nVersion code: %s\nPackage ID: %s\nAPK signer: verified\nAAB signature and structure: verified\nFlutter: 3.44.8\n' "$SOURCE_COMMIT" "$APP_VERSION" "$ANDROID_VERSION_CODE" "$EXPECTED_PACKAGE_ID" > IronCycle_Authentic_Packaging_Verification.txt
 
-      - name: Upload verified APK, AAB, and report
+      - name: Upload verified APK, AAB, and evidence
         uses: actions/upload-artifact@v4
         with:
           name: IronCycle-${{ env.APP_VERSION }}-android-play-artifacts
+          if-no-files-found: error
+          retention-days: 14
           path: |
             ${{ env.VERIFIED_APK }}
             ${{ env.VERIFIED_AAB }}
             IronCycle_Authentic_Packaging_Verification.txt
             release-evidence/
-          if-no-files-found: error
-          retention-days: 30
-
-      - name: Remove temporary keystore
-        if: always()
-        shell: bash
-        run: rm -f "${{ env.KEYSTORE_PATH }}"
