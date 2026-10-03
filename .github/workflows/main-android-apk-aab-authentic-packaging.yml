@@ -53,6 +53,8 @@ jobs:
           git ls-files -z | LC_ALL=C sort -z | xargs -0 sha256sum > release-evidence/SOURCE_FILE_SHA256.txt
           git archive --format=tar --prefix=IronCycle-source/ HEAD | gzip -n -9 > release-evidence/IronCycle-source.tar.gz
           sha256sum release-evidence/IronCycle-source.tar.gz > release-evidence/SOURCE_ARCHIVE_SHA256.txt
+          cp release-evidence/IronCycle-source.tar.gz "$RUNNER_TEMP/source-copy.tar.gz"
+          cmp --silent release-evidence/IronCycle-source.tar.gz "$RUNNER_TEMP/source-copy.tar.gz"
           echo "SOURCE_COMMIT=$(cat release-evidence/SOURCE_COMMIT.txt)" >> "$GITHUB_ENV"
 
       - name: Read release identity
@@ -84,6 +86,25 @@ jobs:
           python -m pip install "flet==0.86.5" "msal==1.39.0" "requests==2.34.2" "PyJWT==2.15.1" "cryptography==48.0.0" pytest pyyaml
           python -m py_compile main.py database.py constants.py $(find app components services views -type f -name '*.py' -print | tr '\n' ' ')
           python -m pytest -q
+          python - <<'PY'
+          import cryptography, jwt, msal, requests
+          print("msal", msal.__version__)
+          print("requests", requests.__version__)
+          print("jwt", jwt.__version__)
+          print("cryptography", cryptography.__version__)
+          PY
+          billing_pubspec="packages/ironcycle-billing/flutter/ironcycle_billing/pubspec.yaml"
+          billing_extension="packages/ironcycle-billing"
+          test -f "$billing_pubspec"
+          test -d "$billing_extension"
+          grep -q 'jni_flutter: 1.0.3' "$billing_pubspec"
+
+      - name: Remove repository metadata before Flet packaging
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf .git
+          test ! -e .git
 
       - name: Restore release keystore
         shell: bash
