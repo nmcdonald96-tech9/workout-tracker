@@ -1,0 +1,23 @@
+IronCycle 1.99.15 validation results
+
+Python compilation: PASS
+Focused packaging acceptance/status suite: 5 passed
+Complete supported pytest suite: 241 passed in 3.87s
+Application version: 1.99.15
+Database schema: 20, unchanged
+Source baseline: Android APK-verified 1.99.14 current source
+
+Validated:
+- Diagnostics accurately state entitlement controls are disabled
+- APK authentic packaging promoted to Android verified 1.99.14
+- Combined AAB/repeat-build and Play-delivered gates remain pending
+- Flutter 3.44.8 workflows target 1.99.15
+- Absolute Billing wheel staging and distribution metadata verification retained
+- APK-only workflow remains AAB-free
+- Combined workflow retains APK/AAB build, signing, structure, hashes, and evidence
+- Frozen workout, entitlement policy, backup, Billing runtime, OneDrive, progression, and schema contracts
+
+External gates:
+- Authenticated combined APK/AAB build
+- Same-commit repeat-build evidence comparison
+- Google Play-delivered 2.0 release-candidate acceptance

@@ -32,4 +32,4 @@ def test_weight_repaint_path_remains_direct_and_non_structural():
  assert 'reps_update_exception' in b
  assert 'request_structural_refresh' not in b
 def test_release_contract():
- c=(ROOT/'constants.py').read_text();assert 'APP_VERSION = "1.99.14"' in c and 'DATABASE_SCHEMA_VERSION = 20' in c
+ c=(ROOT/'constants.py').read_text();assert 'APP_VERSION = "1.99.15"' in c and 'DATABASE_SCHEMA_VERSION = 20' in c

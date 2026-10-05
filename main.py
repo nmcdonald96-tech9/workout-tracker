@@ -3107,7 +3107,7 @@ class WorkoutTrackerApp:
             f"Cloud backup and restore: {'available' if policy['cloud_backup_restore'] else 'blocked'}",
             f"Workout data preservation: {'guaranteed' if policy['data_preserved'] else 'review'}",
             f"Transient entitled access preserved: {'yes' if policy['transient_access_preserved'] else 'not applicable'}",
-            "Entitlement test controls: enabled for 1.99.9 closed acceptance; memory-only and restart-cleared",
+            "Entitlement test controls: disabled for release-candidate builds; 1.99.9 closed acceptance completed",
         ]
 
     def release_readiness_lines(self, integrity):
@@ -3147,7 +3147,7 @@ class WorkoutTrackerApp:
             "2.0 trial expiration and limited mode: Android verified 1.99.9",
             "2.0 backup and restore matrix: Android verified 1.99.10",
             "2.0 accessibility and responsive layouts: Android verified 1.99.13",
-            "2.0 packaging reproducibility: 1.99.14 acceptance in progress",
+            "2.0 packaging reproducibility: APK Android verified 1.99.14; combined AAB and repeat-build acceptance pending",
             "2.0 Play-delivered acceptance: pending 2.0 release candidate",
             "2.0 diagnostics data policy: no workout values, tokens, account identifiers, or backup contents",
         ]

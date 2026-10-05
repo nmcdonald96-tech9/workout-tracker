@@ -6,7 +6,7 @@ WORKFLOW=ROOT/'.github/workflows/main-android-apk-aab-authentic-packaging.yml'
 def source():return WORKFLOW.read_text()
 def test_release_contract_and_rc_controls():
  c=(ROOT/'constants.py').read_text()
- assert 'APP_VERSION = "1.99.14"' in c and 'DATABASE_SCHEMA_VERSION = 20' in c
+ assert 'APP_VERSION = "1.99.15"' in c and 'DATABASE_SCHEMA_VERSION = 20' in c
  assert 'ENTITLEMENT_TEST_CONTROLS = False' in c
 
 def test_workflow_is_valid_yaml_and_immutable_checkout():
@@ -38,7 +38,7 @@ def test_evidence_uploaded_with_apk_and_aab():
 def test_verified_gates_and_pending_play_rc():
  m=(ROOT/'main.py').read_text()
  assert 'accessibility and responsive layouts: Android verified 1.99.13' in m
- assert 'packaging reproducibility: 1.99.14 acceptance in progress' in m
+ assert 'packaging reproducibility: APK Android verified 1.99.14; combined AAB and repeat-build acceptance pending' in m
  assert 'Play-delivered acceptance: pending 2.0 release candidate' in m
 
 def test_frozen_product_contracts_remain():
