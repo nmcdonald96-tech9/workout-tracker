@@ -125,18 +125,19 @@ jobs:
           grep -q '^\./vendor/ironcycle_billing-0.1.1-.*\.whl$' requirements.txt
           python -m pip install --no-deps -r requirements.txt
           python - <<'PY'
-          import importlib.resources as resources
-          import ironcycle_billing
-          root = resources.files("ironcycle_billing")
-          required = (
-              root / "flutter/ironcycle_billing/pubspec.yaml",
-              root / "flutter/ironcycle_billing/lib/src/billing.dart",
-              root / "flutter/ironcycle_billing/lib/src/extension.dart",
-          )
-          for path in required:
-              if not path.is_file():
-                  raise SystemExit(f"Missing packaged Billing asset: {path}")
-              print(f"Billing asset verified: {path}")
+          from importlib.metadata import distribution
+          dist = distribution("ironcycle-billing")
+          names = {str(path) for path in (dist.files or ())}
+          required = {
+              "ironcycle_billing/flutter/ironcycle_billing/pubspec.yaml",
+              "ironcycle_billing/flutter/ironcycle_billing/lib/src/billing.dart",
+              "ironcycle_billing/flutter/ironcycle_billing/lib/src/extension.dart",
+          }
+          missing = sorted(required - names)
+          if missing:
+              raise SystemExit(f"Missing installed Billing assets: {missing}")
+          for name in sorted(required):
+              print(f"Billing distribution asset verified: {name}")
           PY
 
       - name: Remove repository metadata before Flet packaging
