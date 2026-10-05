@@ -119,10 +119,11 @@ jobs:
           requests==2.34.2
           PyJWT==2.15.1
           cryptography==48.0.0
-          ./vendor/$BILLING_WHEEL_NAME
+          $GITHUB_WORKSPACE/vendor/$BILLING_WHEEL_NAME
           REQ
           ! grep -q '^\./packages/ironcycle-billing$' requirements.txt
-          grep -q '^\./vendor/ironcycle_billing-0.1.1-.*\.whl$' requirements.txt
+          grep -q "^$GITHUB_WORKSPACE/vendor/ironcycle_billing-0.1.1-.*\.whl$" requirements.txt
+          test -f "$GITHUB_WORKSPACE/vendor/$BILLING_WHEEL_NAME"
           python -m pip install --no-deps -r requirements.txt
           python - <<'PY'
           from importlib.metadata import distribution
