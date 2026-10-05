@@ -99,6 +99,46 @@ jobs:
           test -d "$billing_extension"
           grep -q 'jni_flutter: 1.0.3' "$billing_pubspec"
 
+      - name: Stage local Billing extension for isolated Flet packaging
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf vendor
+          mkdir -p vendor release-evidence
+          python -m pip wheel --no-deps --wheel-dir vendor ./packages/ironcycle-billing
+          BILLING_WHEEL="$(find vendor -maxdepth 1 -type f -name 'ironcycle_billing-0.1.1-*.whl' -print -quit)"
+          test -n "$BILLING_WHEEL"
+          unzip -l "$BILLING_WHEEL" | tee release-evidence/BILLING_WHEEL_CONTENTS.txt
+          grep -q 'ironcycle_billing/flutter/ironcycle_billing/pubspec.yaml' release-evidence/BILLING_WHEEL_CONTENTS.txt
+          grep -q 'ironcycle_billing/flutter/ironcycle_billing/lib/src/billing.dart' release-evidence/BILLING_WHEEL_CONTENTS.txt
+          sha256sum "$BILLING_WHEEL" > release-evidence/BILLING_WHEEL_SHA256.txt
+          BILLING_WHEEL_NAME="$(basename "$BILLING_WHEEL")"
+          cat > requirements.txt <<REQ
+          flet==0.86.5
+          msal==1.39.0
+          requests==2.34.2
+          PyJWT==2.15.1
+          cryptography==48.0.0
+          ./vendor/$BILLING_WHEEL_NAME
+          REQ
+          ! grep -q '^\./packages/ironcycle-billing$' requirements.txt
+          grep -q '^\./vendor/ironcycle_billing-0.1.1-.*\.whl$' requirements.txt
+          python -m pip install --no-deps -r requirements.txt
+          python - <<'PY'
+          import importlib.resources as resources
+          import ironcycle_billing
+          root = resources.files("ironcycle_billing")
+          required = (
+              root / "flutter/ironcycle_billing/pubspec.yaml",
+              root / "flutter/ironcycle_billing/lib/src/billing.dart",
+              root / "flutter/ironcycle_billing/lib/src/extension.dart",
+          )
+          for path in required:
+              if not path.is_file():
+                  raise SystemExit(f"Missing packaged Billing asset: {path}")
+              print(f"Billing asset verified: {path}")
+          PY
+
       - name: Remove repository metadata before Flet packaging
         shell: bash
         run: |
