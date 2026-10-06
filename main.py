@@ -119,6 +119,36 @@ class ExerciseCard(ft.Card):
                 self.autosave_pending_sets()
         return rpe_handler
 
+    def request_local_card_refresh(self, reason):
+        """Coalesce one deferred card-only replacement without moving the workout viewport."""
+        if getattr(self, "_local_card_refresh_scheduled", False):
+            self.app.record_workout_ui_trace(
+                "local_card_refresh_coalesced", self.db_id, None, self, reason=reason,
+            )
+            return True
+        self._local_card_refresh_scheduled = True
+
+        async def refresh_after_event():
+            await asyncio.sleep(0)
+            try:
+                self.app.record_workout_ui_trace(
+                    "local_card_refresh_started", self.db_id, None, self, reason=reason,
+                )
+                refreshed = self.app.replace_exercise_card_in_place(self)
+                self.app.record_workout_ui_trace(
+                    "local_card_refresh_finished", self.db_id, None, self,
+                    reason=reason, refreshed=bool(refreshed),
+                )
+            finally:
+                self._local_card_refresh_scheduled = False
+
+        runner = getattr(getattr(self.app, "page", None), "run_task", None)
+        if not callable(runner):
+            self._local_card_refresh_scheduled = False
+            return False
+        runner(refresh_after_event)
+        return True
+
     def open_swap_dialog(self, e):
         with get_db() as conn:
             cursor = conn.cursor()
@@ -167,30 +197,35 @@ class ExerciseCard(ft.Card):
         self.app.safe_open(swap_dialog)
 
     def refresh_weight_edit_feedback(self, set_idx):
-        """Repaint weight-derived feedback from the model without mutating mounted controls.
-
-        Flet controls can be frozen or belong to an older card after a deferred
-        workout rebuild. The authoritative draft is already updated before this
-        method runs, so queue one coalesced remount and let the new card read the
-        current reps and plate feedback from that draft.
-        """
-        drafts = self.app.sets.get(self.db_id, [])
-        if set_idx >= len(drafts):
+        """Refresh current controls when safe; otherwise replace only this card."""
+        try:
+            draft = self.app.sets[self.db_id][set_idx]
+        except (KeyError, IndexError):
             self.app.record_workout_ui_trace(
                 "reps_update_rejected_draft", self.db_id, set_idx, self,
             )
             return False
-        self.app.record_workout_ui_trace(
-            "reps_update_refresh_requested", self.db_id, set_idx, self,
-        )
-        scheduled = self.app.request_structural_refresh(
-            "weight_edit_feedback", rebuild_navigation=False, remount_canvas=True,
-        )
-        self.app.record_workout_ui_trace(
-            "reps_update_refresh_queued", self.db_id, set_idx, self,
-            scheduled=bool(scheduled),
-        )
-        return bool(scheduled)
+        try:
+            field = self.reps_fields[set_idx]
+            self.app.record_workout_ui_trace(
+                "reps_update_started", self.db_id, set_idx, self, control=field,
+            )
+            field.value = str(draft.get("r", ""))
+            field.update()
+            plate = calculate_plates_per_side(self.exercise, draft.get("w", 0))
+            self.plate_feedback_label.value = f"Set {set_idx + 1}: {plate}" if plate else ""
+            self.plate_container.visible = bool(plate)
+            self.plate_container.update()
+            self.app.record_workout_ui_trace(
+                "reps_update_returned", self.db_id, set_idx, self, control=field,
+            )
+            return True
+        except (RuntimeError, IndexError) as ex:
+            self.app.record_workout_ui_trace(
+                "reps_update_local_refresh", self.db_id, set_idx, self,
+                error=type(ex).__name__,
+            )
+            return self.request_local_card_refresh("weight_edit_feedback")
 
     def commit_weight_edit(self, set_idx, raw_value=None, event_name="weight_commit"):
         self.app.record_workout_ui_trace(event_name + "_started", self.db_id, set_idx, self)
@@ -264,18 +299,13 @@ class ExerciseCard(ft.Card):
                         updated = clear_override(set_data, "r", current_target)
                         set_data.clear(); set_data.update(updated)
                         self.autosave_pending_sets()
-                        # The blur event control may already be frozen while focus
-                        # transfers to RPE. Never assign to or update that mounted
-                        # control. A deferred, coalesced remount rehydrates the row
-                        # from the authoritative draft after the event yields.
-                        scheduled = self.app.request_structural_refresh(
-                            "reps_restore_target",
-                            rebuild_navigation=False,
-                            remount_canvas=True,
-                        )
+                        # Focus is transferring away from this TextField. The event
+                        # control can already be frozen, so restore only the model.
+                        # The next safe card refresh reads the restored target.
+                        self._pending_reps_visual_refresh = True
                         self.app.record_workout_ui_trace(
                             "reps_restore_target_applied", self.db_id, set_idx,
-                            self, scheduled=bool(scheduled),
+                            self, visual_refresh_pending=True,
                         )
                         return
                 self.autosave_pending_sets()
@@ -288,6 +318,9 @@ class ExerciseCard(ft.Card):
                 raw_rpe = str(draft.get("rpe", "")).strip()
                 if raw_rpe and self.normalize_rpe(raw_rpe) is None:
                     self.app.show_snackbar(RPE_ERROR, "red300")
+                if getattr(self, "_pending_reps_visual_refresh", False):
+                    self._pending_reps_visual_refresh = False
+                    self.request_local_card_refresh("reps_restore_after_rpe")
         return blur_handler
 
     def build_card(self):

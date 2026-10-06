@@ -1,4 +1,4 @@
-IronCycle 1.99.16 changed-file inventory
+IronCycle 1.99.16 revised changed-file inventory
 - constants.py
 - main.py
 - .github/workflows/main-android-apk-authentic-packaging.yml
@@ -30,7 +30,7 @@ IronCycle 1.99.16 changed-file inventory
 - tests/test_19913_display_mode_rebuild.py
 - tests/test_19914_packaging_reproducibility.py
 - tests/test_19915_packaging_acceptance_status.py
-- tests/test_19916_frozen_reps_lifecycle.py
+- tests/test_19916_localized_reps_sync.py
 - tests/test_1991_weight_commit_lifecycle.py
 - tests/test_1992_weight_event_authority.py
 - tests/test_1993_workout_ui_trace.py

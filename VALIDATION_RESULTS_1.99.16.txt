@@ -1,21 +1,20 @@
-IronCycle 1.99.16 validation results
+IronCycle 1.99.16 revised validation results
 
 Python compilation: PASS
-Focused reps lifecycle suite: 24 passed
-Complete supported pytest suite: 247 passed in 2.31s
+Focused localized reps synchronization suite: 20 passed
+Complete supported pytest suite: 248 passed in 2.09s
 Application version: 1.99.16
 Database schema: 20, unchanged
 Source baseline: Google Play-tested 1.99.15
 
 Validated:
-- Blank reps blur restores model ownership without mutating the frozen event control
-- Weight-derived reps repaint avoids stored mounted-control references
-- Authoritative model and autosave complete before deferred repaint
-- Coalesced structural refresh yields before remount
-- Existing display, workout, entitlement, Billing, OneDrive, backup, and packaging contracts
+- Blank reps blur restores the authoritative model without event-control mutation or canvas remount
+- RPE is saved before deferred card-only restoration repaint
+- Weight-derived reps retain the immediate fast path and use one-card replacement only on frozen/stale fallback
+- Local refresh coalesces and preserves the existing workout ListView identity
+- Existing workout, display, entitlement, Billing, OneDrive, backup, and packaging contracts
 
 Required Android acceptance:
-- Set 2 blank reps to RPE exact reproduction
-- Mid-workout Set 2 repeated weight-derived reps without History round trip
-- RPE input/persistence, scroll retention, lifecycle, and integrity checks
+- No error, flash, scroll reset, active-set reset, focus loss, or Done-state change
+- Mid-workout repeated weight-derived reps without History round trip
 - APK/AAB, repeated-build, and Play-delivered hotfix verification

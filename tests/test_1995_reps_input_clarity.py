@@ -21,8 +21,7 @@ def test_blank_reps_restore_authoritative_target_on_blur():
     assert 'if raw_reps == "" and set_idx < len(self.set_targets):' in block
     assert 'clear_override(set_data, "r", current_target)' in block
     assert 'e.control.value = str(set_data.get("r", ""))' not in block
-    assert 'request_structural_refresh(' in block
-    assert '"reps_restore_target"' in block
+    assert 'self._pending_reps_visual_refresh = True' in block
     assert 'self.autosave_pending_sets()' in block
 
 def test_nonblank_reps_are_not_replaced_by_blur():

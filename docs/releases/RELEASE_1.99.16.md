@@ -1,9 +1,9 @@
 # IronCycle 1.99.16
 
-## Android reps control lifecycle hotfix
+## Localized reps synchronization and frozen-control hotfix
 
-- Fixes the deterministic Android crash when blank reps blur into RPE and the mounted reps field is frozen.
-- Replaces direct mutation of mounted or stale reps and plate controls with a deferred, coalesced workout remount sourced from the authoritative draft model.
-- Repairs the related intermittent condition where weight-derived reps could remain visually stale until leaving for History and returning.
-- Preserves manual reps ownership, blank-reps target restoration, autosave, scroll retention, display modes, Billing, OneDrive, backups, and schema 20.
-- No feature, entitlement-policy, progression, superset, backup-format, or database migration changes.
+- Blank reps blur restores authoritative target ownership without mutating the frozen event TextField.
+- The restored value is repainted only after RPE blur through a deferred, card-only replacement, preserving RPE entry and the workout ListView.
+- Weight-derived reps retain the immediate mounted-control fast path; frozen or stale references fall back to a deferred replacement of only the affected exercise card.
+- The hotfix does not remount the workout canvas, reset scroll, reactivate Set 1, or alter completed-set state.
+- Schema remains 20; no feature, progression, entitlement, Billing, OneDrive, backup, or superset changes.

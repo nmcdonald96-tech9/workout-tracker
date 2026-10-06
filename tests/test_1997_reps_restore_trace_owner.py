@@ -18,8 +18,7 @@ def test_exercise_card_routes_trace_through_app_owner():
 def test_reps_restore_still_uses_actual_event_parameter():
     block = blur_block()
     assert 'e.control.value = str(set_data.get("r", ""))' not in block
-    assert 'request_structural_refresh(' in block
-    assert '"reps_restore_target"' in block
+    assert 'self._pending_reps_visual_refresh = True' in block
     assert "e.control.update()" not in block
     assert "ev.control" not in block
 

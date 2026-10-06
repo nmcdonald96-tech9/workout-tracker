@@ -8,7 +8,7 @@ def test_trace_is_bounded_and_privacy_safe():
  for prohibited in ('raw_value','draft.get("w"','draft.get("r"','rpe','exercise'): assert prohibited not in b
 def test_trace_captures_card_event_and_control_lifecycle():
  s=(ROOT/'main.py').read_text()
- for marker in ('card_created','card_built','weight_submit','weight_blur','_derived_applied','reps_update_refresh_requested','reps_update_refresh_queued','reps_restore_target_applied'): assert marker in s
+ for marker in ('card_created','card_built','weight_submit','weight_blur','_derived_applied','reps_update_started','reps_update_returned','reps_update_local_refresh','local_card_refresh_finished'): assert marker in s
 def test_trace_buttons_are_available_in_diagnostics():
  s=(ROOT/'main.py').read_text()
  assert 'Copy Support Trace' in s and 'Clear Support Trace' in s

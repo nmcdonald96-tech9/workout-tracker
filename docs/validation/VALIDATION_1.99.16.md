@@ -1,3 +1,3 @@
 # IronCycle 1.99.16 validation
 
-Automated coverage asserts that blank-reps blur performs model restoration and deferred remount without mutating the event control; weight-derived feedback no longer touches stored field references; model/autosave precede repaint requests; the existing structural coordinator yields before remount; schema stays 20; and verified packaging contracts remain intact. Android acceptance remains required for the exact blur-to-RPE and mid-workout Set 2 stale-reps reproductions.
+Automated validation rejects direct blank-reps event-control mutation and full-canvas refresh, requires model/autosave before a deferred card-only refresh, preserves the immediate weight repaint fast path with a frozen/stale fallback, verifies one-card ListView replacement, and retains schema 20 and packaging contracts. Android acceptance must confirm no flash, scroll reset, Set 1 reactivation, focus loss, or Done-state regression.
