@@ -19,12 +19,13 @@ def test_repeated_edit_math_has_stable_baseline():
   return int(round(37-(36*new_w/orig_e1rm))) if new_w<orig_e1rm else 1
  assert derived(300.0)==1
  assert derived(150.0)>1
-def test_weight_feedback_path_remains_immediate():
+def test_weight_feedback_path_uses_safe_deferred_remount():
  b=method('refresh_weight_edit_feedback','commit_weight_edit')
- assert 'field=self.reps_fields[set_idx]' in b and 'field.update()' in b
- assert 'self.plate_container.update()' in b
+ assert 'self.reps_fields[set_idx]' not in b and '.update()' not in b
+ assert 'request_structural_refresh(' in b and '"weight_edit_feedback"' in b
+ assert 'remount_canvas=True' in b
 def test_no_card_reconciliation_experiments():
  s=(ROOT/'main.py').read_text()
  for marker in ('exercise_card_revisions','exercise_card_render_key','resolve_workout_render_key'): assert marker not in s
 def test_release_contract():
- c=(ROOT/'constants.py').read_text(); assert 'APP_VERSION = "1.99.15"' in c and 'DATABASE_SCHEMA_VERSION = 20' in c
+ c=(ROOT/'constants.py').read_text(); assert 'APP_VERSION = "1.99.16"' in c and 'DATABASE_SCHEMA_VERSION = 20' in c

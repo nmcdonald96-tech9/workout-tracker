@@ -6,7 +6,7 @@ WORKFLOW=ROOT/'.github/workflows/main-android-apk-aab-authentic-packaging.yml'
 def source():return WORKFLOW.read_text()
 def test_release_contract_and_rc_controls():
  c=(ROOT/'constants.py').read_text()
- assert 'APP_VERSION = "1.99.15"' in c and 'DATABASE_SCHEMA_VERSION = 20' in c
+ assert 'APP_VERSION = "1.99.16"' in c and 'DATABASE_SCHEMA_VERSION = 20' in c
  assert 'ENTITLEMENT_TEST_CONTROLS = False' in c
 
 def test_workflow_is_valid_yaml_and_immutable_checkout():

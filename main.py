@@ -166,17 +166,31 @@ class ExerciseCard(ft.Card):
         )
         self.app.safe_open(swap_dialog)
 
-    def refresh_weight_edit_feedback(self,set_idx):
-        try:
-            draft=self.app.sets[self.db_id][set_idx]
-            field=self.reps_fields[set_idx]
-            self.app.record_workout_ui_trace("reps_update_started", self.db_id, set_idx, self, control=field)
-            field.value=str(draft.get("r",""));field.update()
-            self.app.record_workout_ui_trace("reps_update_returned", self.db_id, set_idx, self, control=field)
-            plate=calculate_plates_per_side(self.exercise,draft.get("w",0));self.plate_feedback_label.value=f"Set {set_idx+1}: {plate}" if plate else "";self.plate_container.visible=bool(plate);self.plate_container.update();return True
-        except Exception as ex:
-            self.app.record_workout_ui_trace("reps_update_exception", self.db_id, set_idx, self, error=type(ex).__name__)
-            print(f"[weight_edit_feedback] {ex}");return False
+    def refresh_weight_edit_feedback(self, set_idx):
+        """Repaint weight-derived feedback from the model without mutating mounted controls.
+
+        Flet controls can be frozen or belong to an older card after a deferred
+        workout rebuild. The authoritative draft is already updated before this
+        method runs, so queue one coalesced remount and let the new card read the
+        current reps and plate feedback from that draft.
+        """
+        drafts = self.app.sets.get(self.db_id, [])
+        if set_idx >= len(drafts):
+            self.app.record_workout_ui_trace(
+                "reps_update_rejected_draft", self.db_id, set_idx, self,
+            )
+            return False
+        self.app.record_workout_ui_trace(
+            "reps_update_refresh_requested", self.db_id, set_idx, self,
+        )
+        scheduled = self.app.request_structural_refresh(
+            "weight_edit_feedback", rebuild_navigation=False, remount_canvas=True,
+        )
+        self.app.record_workout_ui_trace(
+            "reps_update_refresh_queued", self.db_id, set_idx, self,
+            scheduled=bool(scheduled),
+        )
+        return bool(scheduled)
 
     def commit_weight_edit(self, set_idx, raw_value=None, event_name="weight_commit"):
         self.app.record_workout_ui_trace(event_name + "_started", self.db_id, set_idx, self)
@@ -250,19 +264,19 @@ class ExerciseCard(ft.Card):
                         updated = clear_override(set_data, "r", current_target)
                         set_data.clear(); set_data.update(updated)
                         self.autosave_pending_sets()
-                        e.control.value = str(set_data.get("r", ""))
-                        try:
-                            e.control.update()
-                        except RuntimeError:
-                            self.app.record_workout_ui_trace(
-                                "reps_restore_update_exception", self.db_id, set_idx,
-                                self, control=e.control, error="RuntimeError",
-                            )
-                        else:
-                            self.app.record_workout_ui_trace(
-                                "reps_restore_target_applied", self.db_id, set_idx,
-                                self, control=e.control,
-                            )
+                        # The blur event control may already be frozen while focus
+                        # transfers to RPE. Never assign to or update that mounted
+                        # control. A deferred, coalesced remount rehydrates the row
+                        # from the authoritative draft after the event yields.
+                        scheduled = self.app.request_structural_refresh(
+                            "reps_restore_target",
+                            rebuild_navigation=False,
+                            remount_canvas=True,
+                        )
+                        self.app.record_workout_ui_trace(
+                            "reps_restore_target_applied", self.db_id, set_idx,
+                            self, scheduled=bool(scheduled),
+                        )
                         return
                 self.autosave_pending_sets()
                 return

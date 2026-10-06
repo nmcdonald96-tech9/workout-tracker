@@ -22,7 +22,7 @@ def test_real_entitlement_transition_still_rebuilds():
 def test_diagnostic_trace_is_retained():
     source = (ROOT / "main.py").read_text(encoding="utf-8")
     assert 'Copy Support Trace' in source
-    assert 'reps_update_exception' in source
+    assert 'reps_update_refresh_queued' in source
     assert 'card_created' in source
 
 def test_weight_logic_is_not_changed_by_startup_patch():
@@ -37,5 +37,5 @@ def test_weight_logic_is_not_changed_by_startup_patch():
 
 def test_release_contract():
     constants = (ROOT / "constants.py").read_text(encoding="utf-8")
-    assert 'APP_VERSION = "1.99.15"' in constants
+    assert 'APP_VERSION = "1.99.16"' in constants
     assert 'DATABASE_SCHEMA_VERSION = 20' in constants

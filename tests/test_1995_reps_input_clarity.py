@@ -20,7 +20,9 @@ def test_blank_reps_restore_authoritative_target_on_blur():
     assert 'if key_type == "r":' in block
     assert 'if raw_reps == "" and set_idx < len(self.set_targets):' in block
     assert 'clear_override(set_data, "r", current_target)' in block
-    assert 'e.control.value = str(set_data.get("r", ""))' in block
+    assert 'e.control.value = str(set_data.get("r", ""))' not in block
+    assert 'request_structural_refresh(' in block
+    assert '"reps_restore_target"' in block
     assert 'self.autosave_pending_sets()' in block
 
 def test_nonblank_reps_are_not_replaced_by_blur():
@@ -32,7 +34,8 @@ def test_nonblank_reps_are_not_replaced_by_blur():
 def test_restore_is_traced_without_exposing_values():
     source = (ROOT / "main.py").read_text(encoding="utf-8")
     assert 'reps_restore_target_applied' in source
-    assert 'reps_restore_update_exception' in source
+    assert 'reps_restore_update_exception' not in source
+    assert 'reps_restore_target_applied' in source
 
 def test_startup_deduplication_and_weight_logic_remain_active():
     source = (ROOT / "main.py").read_text(encoding="utf-8")
@@ -42,5 +45,5 @@ def test_startup_deduplication_and_weight_logic_remain_active():
 
 def test_release_contract():
     constants = (ROOT / "constants.py").read_text(encoding="utf-8")
-    assert 'APP_VERSION = "1.99.15"' in constants
+    assert 'APP_VERSION = "1.99.16"' in constants
     assert 'DATABASE_SCHEMA_VERSION = 20' in constants

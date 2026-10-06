@@ -19,4 +19,4 @@ def test_workout_behavior_is_frozen():
  s=(ROOT/'main.py').read_text()
  for marker in ('apply_weight_derived_reps','reps_restore_target_applied','startup_billing_rebuild_coalesced','CompletionAction.LOG_EXERCISE','close_week_day_selector'):assert marker in s
 def test_release_contract():
- c=(ROOT/'constants.py').read_text();assert 'APP_VERSION = "1.99.15"' in c and 'DATABASE_SCHEMA_VERSION = 20' in c
+ c=(ROOT/'constants.py').read_text();assert 'APP_VERSION = "1.99.16"' in c and 'DATABASE_SCHEMA_VERSION = 20' in c

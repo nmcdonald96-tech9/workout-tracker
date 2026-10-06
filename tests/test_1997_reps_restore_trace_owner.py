@@ -11,14 +11,16 @@ def blur_block():
 
 def test_exercise_card_routes_trace_through_app_owner():
     block = blur_block()
-    assert block.count("self.app.record_workout_ui_trace(") == 2
+    assert block.count("self.app.record_workout_ui_trace(") == 1
     assert "self.record_workout_ui_trace(" not in block
 
 
 def test_reps_restore_still_uses_actual_event_parameter():
     block = blur_block()
-    assert 'e.control.value = str(set_data.get("r", ""))' in block
-    assert "e.control.update()" in block
+    assert 'e.control.value = str(set_data.get("r", ""))' not in block
+    assert 'request_structural_refresh(' in block
+    assert '"reps_restore_target"' in block
+    assert "e.control.update()" not in block
     assert "ev.control" not in block
 
 
@@ -31,5 +33,5 @@ def test_target_restore_and_blank_hint_remain():
 
 def test_release_contract():
     constants = (ROOT / "constants.py").read_text(encoding="utf-8")
-    assert 'APP_VERSION = "1.99.15"' in constants
+    assert 'APP_VERSION = "1.99.16"' in constants
     assert "DATABASE_SCHEMA_VERSION = 20" in constants

@@ -1,0 +1,21 @@
+IronCycle 1.99.16 validation results
+
+Python compilation: PASS
+Focused reps lifecycle suite: 24 passed
+Complete supported pytest suite: 247 passed in 2.31s
+Application version: 1.99.16
+Database schema: 20, unchanged
+Source baseline: Google Play-tested 1.99.15
+
+Validated:
+- Blank reps blur restores model ownership without mutating the frozen event control
+- Weight-derived reps repaint avoids stored mounted-control references
+- Authoritative model and autosave complete before deferred repaint
+- Coalesced structural refresh yields before remount
+- Existing display, workout, entitlement, Billing, OneDrive, backup, and packaging contracts
+
+Required Android acceptance:
+- Set 2 blank reps to RPE exact reproduction
+- Mid-workout Set 2 repeated weight-derived reps without History round trip
+- RPE input/persistence, scroll retention, lifecycle, and integrity checks
+- APK/AAB, repeated-build, and Play-delivered hotfix verification

@@ -26,10 +26,11 @@ def test_portrait_fixes_remain():
  s=(ROOT/'main.py').read_text()
  for marker in ('ft.TextOverflow.ELLIPSIS','tooltip="Exercise actions"','View: {self.current_display_mode().title()} ▾','label="Display mode"','scroll="auto"'):
   assert marker in s
-def test_weight_repaint_path_remains_direct_and_non_structural():
+def test_weight_repaint_path_uses_coalesced_structural_refresh():
  b=block('    def refresh_weight_edit_feedback(', '    def make_blur_handler(')
- assert 'field.update()' in b
- assert 'reps_update_exception' in b
- assert 'request_structural_refresh' not in b
+ assert 'field.update()' not in b
+ assert 'reps_update_refresh_queued' in b
+ assert 'self.reps_fields[' not in b
+ assert 'request_structural_refresh' in b
 def test_release_contract():
- c=(ROOT/'constants.py').read_text();assert 'APP_VERSION = "1.99.15"' in c and 'DATABASE_SCHEMA_VERSION = 20' in c
+ c=(ROOT/'constants.py').read_text();assert 'APP_VERSION = "1.99.16"' in c and 'DATABASE_SCHEMA_VERSION = 20' in c
