@@ -291,13 +291,26 @@ class ExerciseCard(ft.Card):
         return commit_handler
 
     def make_rpe_focus_handler(self, set_idx):
-        """Finish the same-row weight commit as focus arrives at RPE."""
+        """Finish a pending weight commit without replacing manual reps."""
         def focus_handler(e):
             self.app.record_workout_ui_trace(
                 "rpe_focus_received", self.db_id, set_idx, self,
                 control=getattr(e, "control", None),
             )
-            if set_idx < len(self.weight_fields):
+            drafts = self.app.sets.get(self.db_id, [])
+            draft = drafts[set_idx] if set_idx < len(drafts) else None
+            reps_are_user_owned = (
+                draft is not None
+                and normalize_reps_source(draft.get("r_source")) == "user"
+            )
+            if reps_are_user_owned:
+                self.app.record_workout_ui_trace(
+                    "weight_rpe_focus_skipped_manual_reps",
+                    self.db_id,
+                    set_idx,
+                    self,
+                )
+            elif set_idx < len(self.weight_fields):
                 weight_field = self.weight_fields[set_idx]
                 self.commit_weight_edit(
                     set_idx,
