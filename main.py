@@ -874,9 +874,50 @@ class ExerciseCard(ft.Card):
         if self.set_progression_diagnostics:
             first_diag = self.set_progression_diagnostics[0]
             current_ref = recent_session_sets[0] if recent_session_sets else (self.tgt_w, self.tgt_r)
-            clarity = progression_clarity(effective_settings, current_ref[0], current_ref[1], first_diag.get("next_weight", self.tgt_w), first_diag.get("next_reps", self.tgt_r), first_diag.get("reason_code"))
-            decision_label={'progress':'Advanced','hold':'Held','reduce':'Reduced','resume_normal':'Resumed normal'}.get(str(first_diag.get('decision','hold')),str(first_diag.get('decision','hold')).replace('_',' ').title());chips_row.controls.append(make_helper_chip(f"Progression: {decision_label}", "bluegrey900", "cyan100"))
-        
+            clarity = progression_clarity(
+                effective_settings,
+                current_ref[0],
+                current_ref[1],
+                first_diag.get("next_weight", self.tgt_w),
+                first_diag.get("next_reps", self.tgt_r),
+                first_diag.get("reason_code"),
+            )
+            decision = str(first_diag.get("decision", "hold"))
+            readiness_reduction_active = (
+                bool(self.context)
+                and bool(self.context.get("readiness_logged"))
+                and self.status == STATUS_PENDING
+                and self.app.current_week != "Deload"
+                and bool(self.normal_set_targets)
+                and bool(self.set_targets)
+                and self.normal_set_targets[0] != self.set_targets[0]
+            )
+            if readiness_reduction_active:
+                decision_label = "Paused"
+            else:
+                decision_label = {
+                    "progress": "Advanced",
+                    "hold": "Held",
+                    "reduce": "Reduced",
+                    "resume_normal": "Resumed normal",
+                }.get(decision, decision.replace("_", " ").title())
+
+            chips_row.controls.append(
+                make_helper_chip(
+                    f"Progression: {decision_label}",
+                    "bluegrey900",
+                    "cyan100",
+                )
+            )
+            if readiness_reduction_active:
+                chips_row.controls.append(
+                    make_helper_chip(
+                        "Normal target preserved; resumes when readiness clears.",
+                        "bluegrey900",
+                        "cyan100",
+                    )
+                )
+
         if self.mov_type == "Compound" and self.app.current_week != "Deload" and self.status == STATUS_PENDING:
             w1 = snap_weight(adj_w * WARMUP_PERCENT_1, eq_type)
             w2 = snap_weight(adj_w * WARMUP_PERCENT_2, eq_type)
