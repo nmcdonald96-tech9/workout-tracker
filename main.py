@@ -217,19 +217,6 @@ class ExerciseCard(ft.Card):
             self.plate_container.visible = bool(plate)
             self.plate_container.update()
 
-            # Android can acknowledge child updates while deferring their paint
-            # until the next focus event. Flush the application page before
-            # weight blur yields to RPE focus. This is not a structural refresh.
-            page = getattr(self.app, "page", None)
-            if page is not None:
-                self.app.record_workout_ui_trace(
-                    "reps_page_flush_started", self.db_id, set_idx, self,
-                )
-                page.update()
-                self.app.record_workout_ui_trace(
-                    "reps_page_flush_returned", self.db_id, set_idx, self,
-                )
-
             self.app.record_workout_ui_trace(
                 "reps_update_returned", self.db_id, set_idx, self, control=field,
             )
@@ -302,6 +289,23 @@ class ExerciseCard(ft.Card):
             self.app.record_workout_ui_trace(event_name + "_received", self.db_id, set_idx, self, control=getattr(e, "control", None))
             self.commit_weight_edit(set_idx, getattr(e.control, "value", None), event_name)
         return commit_handler
+
+    def make_rpe_focus_handler(self, set_idx):
+        """Finish the same-row weight commit as focus arrives at RPE."""
+        def focus_handler(e):
+            self.app.record_workout_ui_trace(
+                "rpe_focus_received", self.db_id, set_idx, self,
+                control=getattr(e, "control", None),
+            )
+            if set_idx < len(self.weight_fields):
+                weight_field = self.weight_fields[set_idx]
+                self.commit_weight_edit(
+                    set_idx,
+                    getattr(weight_field, "value", None),
+                    "weight_rpe_focus",
+                )
+            self.maybe_show_rpe_guide(e)
+        return focus_handler
 
     def make_blur_handler(self, set_idx, key_type):
         def blur_handler(e):
@@ -699,7 +703,7 @@ class ExerciseCard(ft.Card):
                 keyboard_type=ft.KeyboardType.NUMBER
             )
             rpe_f.on_change = self.make_rpe_updater(idx)
-            rpe_f.on_focus = self.maybe_show_rpe_guide
+            rpe_f.on_focus = self.make_rpe_focus_handler(idx)
             rpe_f.on_blur = self.make_blur_handler(idx, "rpe")
 
             self.weight_fields.append(w_f)
