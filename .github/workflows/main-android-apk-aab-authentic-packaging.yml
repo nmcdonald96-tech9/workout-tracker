@@ -71,7 +71,7 @@ jobs:
           print(match.group(1))
           PY
           )"
-          test "$APP_VERSION" = "1.99.16"
+          test "$APP_VERSION" = "2.0.0"
           grep -q 'DATABASE_SCHEMA_VERSION = 20' constants.py
           grep -q 'ENTITLEMENT_TEST_CONTROLS = False' constants.py
           ANDROID_VERSION_CODE=$((1300000 + GITHUB_RUN_NUMBER))

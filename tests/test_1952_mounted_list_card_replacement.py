@@ -87,5 +87,5 @@ def test_compact_skipped_card_retained():
 def test_release_contract():
     constants = (ROOT / "constants.py").read_text(encoding="utf-8")
 
-    assert 'APP_VERSION = "1.99.16"' in constants
+    assert 'APP_VERSION = "2.0.0"' in constants
     assert 'DATABASE_SCHEMA_VERSION = 20' in constants

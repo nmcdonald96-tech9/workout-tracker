@@ -5,7 +5,7 @@ def method(a,b):
  x=S.index(f'    def {a}(');y=S.index(f'    def {b}(',x);return S[x:y]
 
 def test_release_contract():
- c=(ROOT/'constants.py').read_text();assert 'APP_VERSION = "1.99.16"' in c;assert 'DATABASE_SCHEMA_VERSION = 20' in c;assert 'ENTITLEMENT_TEST_CONTROLS = False' in c
+ c=(ROOT/'constants.py').read_text();assert 'APP_VERSION = "2.0.0"' in c;assert 'DATABASE_SCHEMA_VERSION = 20' in c;assert 'ENTITLEMENT_TEST_CONTROLS = False' in c
 
 def test_blank_reps_blur_is_model_only_and_never_remounts_canvas():
  b=method('make_blur_handler','build_card');r=b[b.index('if key_type == "r":'):b.index('if key_type == "rpe":')]
@@ -38,4 +38,4 @@ def test_in_place_replacement_preserves_listview_identity():
 
 def test_workflows_target_hotfix():
  for n in ('main-android-apk-authentic-packaging.yml','main-android-apk-aab-authentic-packaging.yml'):
-  t=(ROOT/'.github/workflows'/n).read_text();assert 'test "$APP_VERSION" = "1.99.16"' in t;assert 'flutter-version: 3.44.8' in t
+  t=(ROOT/'.github/workflows'/n).read_text();assert 'test "$APP_VERSION" = "2.0.0"' in t;assert 'flutter-version: 3.44.8' in t

@@ -3,7 +3,7 @@ ROOT=Path(__file__).resolve().parents[1]
 
 def test_release_contract():
  c=(ROOT/'constants.py').read_text()
- assert 'APP_VERSION = "1.99.16"' in c
+ assert 'APP_VERSION = "2.0.0"' in c
  assert 'DATABASE_SCHEMA_VERSION = 20' in c
  assert 'ENTITLEMENT_TEST_CONTROLS = False' in c
 
@@ -16,7 +16,7 @@ def test_diagnostics_match_release_candidate_reality():
 def test_both_workflows_target_current_version_and_toolchain():
  for name in ('main-android-apk-authentic-packaging.yml','main-android-apk-aab-authentic-packaging.yml'):
   s=(ROOT/'.github/workflows'/name).read_text()
-  assert 'test "$APP_VERSION" = "1.99.16"' in s
+  assert 'test "$APP_VERSION" = "2.0.0"' in s
   assert 'flutter-version: 3.44.8' in s
   assert '$GITHUB_WORKSPACE/vendor/$BILLING_WHEEL_NAME' in s
   assert 'distribution("ironcycle-billing")' in s
