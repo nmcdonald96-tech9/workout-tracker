@@ -197,7 +197,7 @@ class ExerciseCard(ft.Card):
         self.app.safe_open(swap_dialog)
 
     def refresh_weight_edit_feedback(self, set_idx):
-        """Refresh current controls when safe; otherwise replace only this card."""
+        """Synchronize derived reps now; retain a deferred card-only stale fallback."""
         try:
             draft = self.app.sets[self.db_id][set_idx]
         except (KeyError, IndexError):
@@ -216,6 +216,20 @@ class ExerciseCard(ft.Card):
             self.plate_feedback_label.value = f"Set {set_idx + 1}: {plate}" if plate else ""
             self.plate_container.visible = bool(plate)
             self.plate_container.update()
+
+            # Android can acknowledge child updates while deferring their paint
+            # until the next focus event. Flush the application page before
+            # weight blur yields to RPE focus. This is not a structural refresh.
+            page = getattr(self.app, "page", None)
+            if page is not None:
+                self.app.record_workout_ui_trace(
+                    "reps_page_flush_started", self.db_id, set_idx, self,
+                )
+                page.update()
+                self.app.record_workout_ui_trace(
+                    "reps_page_flush_returned", self.db_id, set_idx, self,
+                )
+
             self.app.record_workout_ui_trace(
                 "reps_update_returned", self.db_id, set_idx, self, control=field,
             )
@@ -225,6 +239,8 @@ class ExerciseCard(ft.Card):
                 "reps_update_local_refresh", self.db_id, set_idx, self,
                 error=type(ex).__name__,
             )
+            # Keep the event-safe deferred, one-card fallback. Never remount the
+            # workout canvas or replace the RPE destination synchronously.
             return self.request_local_card_refresh("weight_edit_feedback")
 
     def commit_weight_edit(self, set_idx, raw_value=None, event_name="weight_commit"):
