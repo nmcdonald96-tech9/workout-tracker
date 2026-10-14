@@ -2810,7 +2810,23 @@ class WorkoutTrackerApp:
         )
         self.safe_open(self.length_dialog)
 
-    def open_exercise_progression_editor(self, exercise_name, source_card=None):
+    async def _open_library_progression_editor(self, exercise_name):
+        await asyncio.sleep(0)
+        self.open_exercise_progression_editor(exercise_name, return_to_library=True)
+
+    def open_dictionary_progression_editor(self, e=None):
+        exercise_name = self.dict_dropdown.value if hasattr(self, "dict_dropdown") else None
+        if not exercise_name:
+            self.show_snackbar("Select an exercise first.", "red300")
+            return
+        self.safe_close(getattr(self, "dict_dialog", None))
+        self.page.run_task(self._open_library_progression_editor, exercise_name)
+
+    async def _return_to_exercise_library(self, exercise_name):
+        await asyncio.sleep(0)
+        self.menu_manage_dict(selected_exercise=exercise_name)
+
+    def open_exercise_progression_editor(self, exercise_name, source_card=None, return_to_library=False):
         with get_db() as conn:
             row=conn.execute("SELECT progression_mode,progression_step,reduction_steps,rep_ceiling,reduction_threshold,max_progress_rpe,max_progression_weight,movement_type,equipment FROM exercise_dict WHERE name=?",(exercise_name,)).fetchone()
             latest=conn.execute("SELECT target_weight,target_reps FROM workout_sessions WHERE exercise=? ORDER BY id DESC LIMIT 1",(exercise_name,)).fetchone()
@@ -2856,24 +2872,32 @@ class WorkoutTrackerApp:
                 try:control.update()
                 except Exception:pass
         for control in (mode,step,reduction,ceiling,threshold,max_rpe,max_weight):control.on_change=refresh
+        def finish_editor():
+            self.safe_close(dialog)
+            if return_to_library:
+                self.page.run_task(self._return_to_exercise_library, exercise_name)
+            else:
+                self.sets.clear();self.rebuild_entire_display()
+        def cancel(ev=None):
+            finish_editor()
         def save(ev=None):
             try:
                 saved=values_from_controls()
                 with get_db() as conn:
                     conn.execute("UPDATE exercise_dict SET progression_mode=?,progression_step=?,reduction_steps=?,rep_ceiling=?,reduction_threshold=?,max_progress_rpe=?,max_progression_weight=? WHERE name=?",(*saved,exercise_name));conn.commit()
                 invalidate_progression_settings_cache(exercise_name)
-                self.safe_close(dialog);self.show_snackbar(f"Progression settings saved for {exercise_name}.","green300")
-                self.sets.clear();self.rebuild_entire_display()
+                self.show_snackbar(f"Progression settings saved for {exercise_name}.","green300")
+                finish_editor()
             except Exception as err:self.show_snackbar(str(err),"red300")
         def reset(ev=None):
             with get_db() as conn:
                 conn.execute("UPDATE exercise_dict SET progression_mode='default',progression_step=NULL,reduction_steps=NULL,rep_ceiling=NULL,reduction_threshold=NULL,max_progress_rpe=NULL,max_progression_weight=NULL WHERE name=?",(exercise_name,));conn.commit()
-            invalidate_progression_settings_cache(exercise_name);self.safe_close(dialog);self.show_snackbar(f"{exercise_name} restored to inherited progression defaults.","green300");self.sets.clear();self.rebuild_entire_display()
+            invalidate_progression_settings_cache(exercise_name);self.show_snackbar(f"{exercise_name} restored to inherited progression defaults.","green300");finish_editor()
         current_text=f"Current target: {float(latest[0]):g} lb × {int(latest[1])}" if latest else "Current target: no session target available"
-        dialog=ft.AlertDialog(title=ft.Text(f"Modify Progression: {exercise_name}",size=15,weight="bold"),content=ft.Container(width=370,height=500,content=ft.Column([ft.Text(current_text,size=10,color="white70"),mode,step,reduction,ceiling,threshold,max_rpe,max_weight,ft.Text("The maximum limits automatic prescriptions. Completed sets and historical targets are never changed.",size=9,color="amber200"),preview,simulation],scroll="auto",spacing=7)),actions=[ft.TextButton("Reset Defaults",on_click=reset),ft.TextButton("Cancel",on_click=lambda ev:self.safe_close(dialog)),ft.ElevatedButton("Save",on_click=save)])
+        dialog=ft.AlertDialog(title=ft.Text(f"Modify Progression: {exercise_name}",size=15,weight="bold"),content=ft.Container(width=370,height=500,content=ft.Column([ft.Text(current_text,size=10,color="white70"),mode,step,reduction,ceiling,threshold,max_rpe,max_weight,ft.Text("The maximum limits automatic prescriptions. Completed sets and historical targets are never changed.",size=9,color="amber200"),preview,simulation],scroll="auto",spacing=7)),actions=[ft.TextButton("Reset Defaults",on_click=reset),ft.TextButton("Cancel",on_click=cancel),ft.ElevatedButton("Save",on_click=save)])
         refresh();self.safe_open(dialog)
 
-    def menu_manage_dict(self, e=None):
+    def menu_manage_dict(self, e=None, selected_exercise=None):
         try:
             self.close_actions_menu()
             ex_dict = self.load_exercise_dict()
@@ -2892,6 +2916,8 @@ class WorkoutTrackerApp:
                 options=options
             )
             self.dict_dropdown.on_select = self.on_dict_ex_change
+            if selected_exercise in self.current_dict_mapping:
+                self.dict_dropdown.value = selected_exercise
             self.dict_restore_name_button = ft.TextButton("Restore Exercise Name", disabled=True, on_click=self.restore_dictionary_display_name)
             
             cat_options = [ft.dropdown.Option(key=c, text=c) for c in ["Chest", "Back", "Shoulders", "Quads", "Hamstrings", "Glutes", "Calves", "Biceps", "Triceps", "Forearms", "Abs", "General", "Custom"]]
@@ -2928,13 +2954,15 @@ class WorkoutTrackerApp:
                     ft.Text("Exercise Progression", size=12, weight="bold", color="cyan300"),
                     ft.Text("Read-only summary. Use Open Progression Editor to make changes.", size=10, color="white54"),
                     self.dict_progression_preview, self.dict_progression_simulation,
-                    ft.Row([ft.TextButton("Reset Defaults", on_click=self.reset_dictionary_progression), ft.ElevatedButton("Open Progression Editor", on_click=lambda ev: self.open_exercise_progression_editor(self.dict_dropdown.value) if self.dict_dropdown.value else self.show_snackbar("Select an exercise first.", "red300"), style=ft.ButtonStyle(bgcolor="purple700", color="white"))], alignment="spaceBetween"),
+                    ft.Row([ft.TextButton("Reset Defaults", on_click=self.reset_dictionary_progression), ft.ElevatedButton("Open Progression Editor", on_click=self.open_dictionary_progression_editor, style=ft.ButtonStyle(bgcolor="purple700", color="white"))], alignment="spaceBetween"),
                     ft.Divider(height=6, color="white10"), self.dict_rename_field,
                     ft.Row([self.dict_restore_name_button, ft.ElevatedButton("Change Display Name", style=ft.ButtonStyle(bgcolor="teal700", color="white"), on_click=self.rename_dictionary_exercise, expand=True)], spacing=6),
                     ft.Divider(height=6, color="white10"),
                     ft.Row([ft.TextButton("Cancel", on_click=self.close_dict_dialog), ft.TextButton("Delete", icon="delete", icon_color="red400", on_click=self.confirm_delete_dictionary_exercise)], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
                 ], tight=True, spacing=6, scroll="auto")), content_padding=16, inset_padding=12)
             self.safe_open(self.dict_dialog)
+            if selected_exercise:
+                self.on_dict_ex_change(None)
 
         except Exception as ex:
             error_msg = f"DICT CRASH: {str(ex)}\n\n{traceback.format_exc()}"

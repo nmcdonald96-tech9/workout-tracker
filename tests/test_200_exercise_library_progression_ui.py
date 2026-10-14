@@ -10,7 +10,7 @@ def test_library_progression_section_is_read_only():
 def test_library_keeps_one_authoritative_progression_editor_action():
     block=method('menu_manage_dict','on_dict_ex_change')
     assert block.count('Open Progression Editor')==2
-    assert 'self.open_exercise_progression_editor(self.dict_dropdown.value)' in block and 'Reset Defaults' in block
+    assert 'on_click=self.open_dictionary_progression_editor' in block and 'Reset Defaults' in block
 def test_selection_updates_only_read_only_progression_controls():
     block=method('on_dict_ex_change','reset_dictionary_progression')
     assert 'mode_text = "Custom overrides" if mode == "custom" else "Inherited defaults"' in block
