@@ -1,5 +1,5 @@
 """MSAL-backed OneDrive App Folder transport for IronCycle 1.42.0."""
-import hashlib, json, os, threading, time, urllib.error, urllib.parse, urllib.request
+import hashlib, json, os, tempfile, threading, time, urllib.error, urllib.parse, urllib.request
 from datetime import datetime, timezone
 MSAL_IMPORT_ERROR=None
 try:
@@ -14,6 +14,30 @@ GRAPH="https://graph.microsoft.com/v1.0"
 SCOPES=["Files.ReadWrite.AppFolder", "User.Read"]
 VERIFY_URI_FALLBACK="https://microsoft.com/devicelogin"
 CACHE_FORMAT_VERSION=6
+
+
+def _atomic_write_text(path, text):
+ directory=os.path.dirname(path) or "."
+ os.makedirs(directory,exist_ok=True)
+ temp_path=None
+ try:
+  fd,temp_path=tempfile.mkstemp(prefix=".ironcycle-",suffix=".tmp",dir=directory,text=True)
+  try:
+   try:os.fchmod(fd,0o600)
+   except (AttributeError,OSError):pass
+   with os.fdopen(fd,"w",encoding="utf-8") as handle:
+    handle.write(text);handle.flush();os.fsync(handle.fileno())
+   os.replace(temp_path,path);temp_path=None
+   try:os.chmod(path,0o600)
+   except OSError:pass
+  except Exception:
+   try:os.close(fd)
+   except OSError:pass
+   raise
+ finally:
+  if temp_path:
+   try:os.remove(temp_path)
+   except FileNotFoundError:pass
 
 
 def onedrive_dependency_diagnostics():
@@ -67,7 +91,7 @@ class OneDriveService:
   return self.app
  def _save(self):
   if self.cache.has_state_changed:
-   os.makedirs(os.path.dirname(self.cache_path),exist_ok=True);open(self.cache_path,'w',encoding='utf-8').write(self.cache.serialize())
+   _atomic_write_text(self.cache_path,self.cache.serialize())
  def clear_pending(self):
   try:os.remove(self.pending_path)
   except FileNotFoundError:pass
@@ -86,7 +110,7 @@ class OneDriveService:
   if self.pending_flow():return self.pending_flow()
   f=self._get_app('device_flow_start').initiate_device_flow(scopes=SCOPES)
   if 'user_code' not in f:raise OneDriveError(f.get('error_description') or 'Microsoft sign-in could not start.')
-  f['verification_uri']=f.get('verification_uri') or VERIFY_URI_FALLBACK;f['expires_at']=int(time.time())+int(f.get('expires_in',900));os.makedirs(os.path.dirname(self.pending_path),exist_ok=True);json.dump(f,open(self.pending_path,'w',encoding='utf-8'));return f
+  f['verification_uri']=f.get('verification_uri') or VERIFY_URI_FALLBACK;f['expires_at']=int(time.time())+int(f.get('expires_in',900));_atomic_write_text(self.pending_path,json.dumps(f));return f
  def complete_device_flow(self):
   if not self._flow_lock.acquire(blocking=False):return {'state':'already_running'}
   try:

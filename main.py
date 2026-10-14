@@ -4603,9 +4603,9 @@ class WorkoutTrackerApp:
                         <body>
                             <div class="container">
                                 <h2>🛰️ Send Backup to App</h2>
-                                <p>Select your compressed .txt backup file to wirelessly beam it to your device.</p>
+                                <p>Select an IronCycle .icbackup file or a legacy compressed .txt backup to send to your device.</p>
                                 <form action="/upload?t={token}" method="POST" enctype="multipart/form-data">
-                                    <input type="file" name="backup_file" accept=".txt" required>
+                                    <input type="file" name="backup_file" accept=".icbackup,.txt" required>
                                     <button type="submit">Upload & Restore</button>
                                 </form>
                             </div>
@@ -4627,7 +4627,7 @@ class WorkoutTrackerApp:
                             if content_len > MAX_BACKUP_TEXT_BYTES:
                                 self.send_response(413) # 413 Payload Too Large
                                 self.end_headers()
-                                error_html = "<h2>❌ Transfer Failed</h2><p>File is too large (Maximum 10MB). Please select a valid backup text file.</p>"
+                                error_html = "<h2>❌ Transfer Failed</h2><p>File is too large (Maximum 10MB). Please select a valid .icbackup or legacy .txt backup file.</p>"
                                 self.wfile.write(error_html.encode("utf-8"))
                                 return
 
