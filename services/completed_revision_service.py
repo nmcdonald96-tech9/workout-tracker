@@ -260,7 +260,45 @@ def _later_key(week, day, order, sid):
     w=10**6 if str(week)=="Deload" else int(week) if str(week).isdigit() else 10**6-1
     return (w,days.get(str(day),99),int(order or sid),int(sid))
 
-def _sync_future(conn, snapshot, next_weight, next_reps, *, restore=False):
+def _setting_int(conn, key: str, default: int) -> int:
+    row = conn.execute(
+        "SELECT setting_value FROM user_settings WHERE setting_key=?", (key,)
+    ).fetchone()
+    try:
+        return int(row[0]) if row else default
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
+def _revision_progression_context(conn, snapshot):
+    row = conn.execute(
+        "SELECT COALESCE(NULLIF(equipment,''),'Other') FROM exercise_dict WHERE name=?",
+        (snapshot.exercise,),
+    ).fetchone()
+    equipment_type = str(row[0]) if row else "Other"
+    return {
+        "equipment_type": equipment_type,
+        "is_bodyweight": equipment_type == "Bodyweight",
+        "bodyweight": float(snapshot.historical_bodyweight_snapshot or 0.0),
+        "age": _setting_int(conn, "age", 43),
+        "profile": _setting_int(conn, "progression_profile", 0),
+    }
+
+
+def _validated_targets(next_targets):
+    targets=[]
+    for index,target in enumerate(next_targets or (),start=1):
+        if not isinstance(target,dict) or "w" not in target or "r" not in target:
+            raise ValueError(f"Progression target {index} is invalid.")
+        targets.append((_finite(target["w"],f"Target {index} weight"),
+                        _finite(target["r"],f"Target {index} reps",integer=True)))
+    if not targets:
+        raise ValueError("Progression did not return any future targets.")
+    return tuple(targets)
+
+
+def _sync_future(conn, snapshot, next_targets, *, restore=False):
+    targets=_validated_targets(next_targets)
     rows=conn.execute("""SELECT id,week,day_of_week,COALESCE(workout_order,id),target_weight,target_reps
       FROM workout_sessions WHERE exercise=? AND meso_number=? AND status='Pending' AND id<>?""",
       (snapshot.exercise,snapshot.meso_number,snapshot.session_id)).fetchall()
@@ -268,14 +306,22 @@ def _sync_future(conn, snapshot, next_weight, next_reps, *, restore=False):
     eligible=[r for r in rows if _later_key(r[1],r[2],r[3],r[0])>origin]
     updated=[]; skipped=[]
     for sid,week,day,order,tw,tr in eligible:
-        set_rows=conn.execute("SELECT weight_source,reps_source FROM workout_sets WHERE session_id=? ORDER BY set_number",(sid,)).fetchall()
-        weight_owned=all(normalize_weight_source(x[0])=="target" for x in set_rows) if set_rows else True
-        reps_owned=all(normalize_reps_source(x[1])=="target" for x in set_rows) if set_rows else True
+        set_rows=conn.execute("SELECT id,set_number,weight_source,reps_source FROM workout_sets WHERE session_id=? ORDER BY set_number,id",(sid,)).fetchall()
+        weight_owned=all(normalize_weight_source(x[2])=="target" for x in set_rows) if set_rows else True
+        reps_owned=all(normalize_reps_source(x[3])=="target" for x in set_rows) if set_rows else True
         if not weight_owned or not reps_owned:
             skipped.append(sid); continue
-        conn.execute("UPDATE workout_sessions SET target_weight=?,target_reps=? WHERE id=?",(next_weight,next_reps,sid))
-        conn.execute("UPDATE workout_sets SET weight=CASE WHEN COALESCE(weight_source,'target')='target' THEN ? ELSE weight END, reps=CASE WHEN COALESCE(reps_source,'target')='target' THEN ? ELSE reps END, target_weight=?,target_reps=?,normal_target_weight=?,normal_target_reps=? WHERE session_id=?",
-            (next_weight,next_reps,next_weight,next_reps,next_weight,next_reps,sid))
+        first_weight,first_reps=targets[0]
+        conn.execute("UPDATE workout_sessions SET target_weight=?,target_reps=? WHERE id=?",(first_weight,first_reps,sid))
+        for row_id,set_number,weight_source,reps_source in set_rows:
+            index=max(0,int(set_number or 1)-1)
+            next_weight,next_reps=targets[min(index,len(targets)-1)]
+            conn.execute("""UPDATE workout_sets SET
+                weight=CASE WHEN COALESCE(weight_source,'target')='target' THEN ? ELSE weight END,
+                reps=CASE WHEN COALESCE(reps_source,'target')='target' THEN ? ELSE reps END,
+                target_weight=?,target_reps=?,normal_target_weight=?,normal_target_reps=?
+                WHERE id=? AND session_id=?""",
+                (next_weight,next_reps,next_weight,next_reps,next_weight,next_reps,row_id,sid))
         updated.append(sid)
     return tuple(updated),tuple(skipped)
 
@@ -306,13 +352,12 @@ def commit_completed_revision(conn, snapshot, revised_rows, *, audit_writer=None
         for n,row_id in enumerate(ids,1): conn.execute("UPDATE workout_sets SET set_number=? WHERE id=?",(-n,row_id))
         for n,row_id in enumerate(ids,1): conn.execute("UPDATE workout_sets SET set_number=? WHERE id=?",(n,row_id))
         stage="progression"; persisted=tuple(RevisedCompletedSet(**{**r.__dict__,"set_number":i}) for i,r in enumerate(prepared,1))
+        context=_revision_progression_context(conn,snapshot)
         progression=recalculate_after_completed_revision(
             conn,snapshot.session_id,persisted,exercise_name=snapshot.exercise,
-            movement_type=snapshot.movement_type,bodyweight=snapshot.historical_bodyweight_snapshot or 0.0,
+            movement_type=snapshot.movement_type,**context,
         )
-        first_target=progression["next_targets"][0]
-        next_w,next_r=float(first_target["w"]),int(first_target["r"])
-        stage="future_sync"; updated,skipped=_sync_future(conn,snapshot,next_w,next_r)
+        stage="future_sync"; updated,skipped=_sync_future(conn,snapshot,progression["next_targets"])
         stage="audit"; _audit(conn,"completed_exercise_revision_saved",{
             "session_id":snapshot.session_id,"sets_added_count":added,"sets_removed_count":removed,
             "sets_modified_count":modified,"progression_recalculated":True,
@@ -336,9 +381,9 @@ def return_to_pending(conn, session_id: int, *, audit_writer=None) -> ReturnToPe
         conn.execute("UPDATE workout_sessions SET status=? WHERE id=?",(PENDING,snap.session_id))
         # Deterministically restore target-owned future rows to the completed
         # session's pre-progression target snapshot; user-owned drafts are skipped.
-        first=snap.completed_sets[0] if snap.completed_sets else None
+        restore_targets=tuple({"w":row.normal_target_weight,"r":row.normal_target_reps} for row in snap.completed_sets)
         stage="progression_reconcile"
-        updated,skipped=_sync_future(conn,snap,first.normal_target_weight if first else 0,first.normal_target_reps if first else 1,restore=True)
+        updated,skipped=_sync_future(conn,snap,restore_targets,restore=True)
         stage="audit"; _audit(conn,"completed_exercise_returned_to_pending",{
             "session_id":snap.session_id,"sets_added_count":0,"sets_removed_count":0,"sets_modified_count":len(snap.completed_sets),
             "progression_recalculated":True,"future_sessions_updated":len(updated),"user_owned_sessions_skipped":len(skipped),"result_code":"pending"},audit_writer)

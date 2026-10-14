@@ -16,6 +16,11 @@ def db():
     CREATE TABLE workout_sessions(id INTEGER PRIMARY KEY,exercise TEXT,movement_type TEXT,status TEXT,date TEXT,meso_number INTEGER,week TEXT,day_of_week TEXT,workout_order INTEGER,bodyweight_snapshot REAL,target_weight REAL,target_reps INTEGER);
     CREATE TABLE workout_sets(id INTEGER PRIMARY KEY AUTOINCREMENT,session_id INTEGER,set_number INTEGER,weight REAL,reps INTEGER,rpe REAL,rest_seconds INTEGER,target_weight REAL,target_reps INTEGER,normal_target_weight REAL,normal_target_reps INTEGER,completed_at TEXT,is_complete INTEGER,progression_decision TEXT,progression_reason_code TEXT,progression_reason TEXT,progression_settings_snapshot TEXT,weight_source TEXT,reps_source TEXT);
     CREATE TABLE app_audit(id INTEGER PRIMARY KEY AUTOINCREMENT,created_at TEXT,action TEXT,details TEXT);
+    CREATE TABLE user_settings(setting_key TEXT PRIMARY KEY,setting_value TEXT);
+    CREATE TABLE exercise_dict(name TEXT PRIMARY KEY,equipment TEXT,progression_mode TEXT,progression_step REAL,reduction_steps INTEGER,rep_ceiling INTEGER,reduction_threshold REAL,max_progress_rpe REAL,max_progression_weight REAL);
+    INSERT INTO user_settings VALUES('age','52');
+    INSERT INTO user_settings VALUES('progression_profile','3');
+    INSERT INTO exercise_dict(name,equipment) VALUES('Bench','Dumbbell');
     """)
     return c
 

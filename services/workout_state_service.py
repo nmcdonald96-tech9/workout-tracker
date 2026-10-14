@@ -42,14 +42,24 @@ def _placeholders(values):
     return ",".join("?" for _ in values)
 
 def load_workout_state(conn, *, meso_number, week, day_of_week):
-    """Load all state needed to render one workout using one DB snapshot."""
+    """Load one snapshot and close only the read transaction owned here."""
+    owns_transaction = not conn.in_transaction
+    if owns_transaction:
+        conn.execute("BEGIN")
+    try:
+        return _load_workout_state_snapshot(
+            conn, meso_number=meso_number, week=week, day_of_week=day_of_week
+        )
+    finally:
+        if owns_transaction and conn.in_transaction:
+            conn.rollback()
+
+
+def _load_workout_state_snapshot(conn, *, meso_number, week, day_of_week):
+    """Run the snapshot SELECTs inside the caller's active transaction."""
     started = perf_counter()
     cursor = conn.cursor()
     query_count = 0
-    # Hold one SQLite read transaction across all SELECTs so a concurrent
-    # autosave cannot produce a mix of pre-change and post-change card data.
-    if not conn.in_transaction:
-        cursor.execute("BEGIN")
 
     cursor.execute(
         "SELECT id, exercise, target_weight, target_reps, status, movement_type, category, COALESCE(workout_order,id) "
