@@ -2902,14 +2902,9 @@ class WorkoutTrackerApp:
                 options=cat_options
             )
 
-            self.dict_progression_mode = ft.Dropdown(label="Progression", value="default", options=[ft.dropdown.Option(key="default", text="Use Default"), ft.dropdown.Option(key="custom", text="Custom")])
-            self.dict_progression_step = ft.TextField(label="Weight step (lbs)", keyboard_type=ft.KeyboardType.NUMBER, expand=True, text_size=12)
-            self.dict_reduction_steps = ft.Dropdown(label="Reduction steps", value="1", options=[ft.dropdown.Option(str(i)) for i in range(1,4)], width=132, text_size=12)
-            self.dict_rep_ceiling = ft.TextField(label="Rep ceiling", keyboard_type=ft.KeyboardType.NUMBER, expand=True, text_size=12)
-            self.dict_reduction_threshold = ft.TextField(label="Reduce below (%)", keyboard_type=ft.KeyboardType.NUMBER, width=150, text_size=12)
-            self.dict_max_rpe = ft.Dropdown(label="Max progression RPE", value="9.5", options=[ft.dropdown.Option(f"{x/2:.1f}") for x in range(12,21)])
-            self.dict_max_progression_weight = ft.TextField(label="Maximum progression weight (lbs)", hint_text="Optional", keyboard_type=ft.KeyboardType.NUMBER, text_size=12)
-            self.dict_progression_preview = ft.Text("Select an exercise to view effective settings.", size=10, color="cyan200")
+            self.dict_progression_preview = ft.Text(
+                "Select an exercise to view its effective progression settings.", size=10, color="cyan200"
+            )
             self.dict_progression_simulation = ft.Text("", size=11, color="green300", weight="bold")
             self.dict_rename_field = ft.TextField(
                 label="Personal display name",
@@ -2931,10 +2926,8 @@ class WorkoutTrackerApp:
                     ft.Row([self.dict_cat_dropdown, ft.ElevatedButton("Update", style=ft.ButtonStyle(bgcolor="blue700", color="white", padding=10), on_click=self.update_dictionary_category)], spacing=6),
                     ft.Divider(height=6, color="white10"),
                     ft.Text("Exercise Progression", size=12, weight="bold", color="cyan300"),
-                    self.dict_progression_mode,
-                    ft.Row([self.dict_progression_step, self.dict_reduction_steps], spacing=6),
-                    ft.Row([self.dict_rep_ceiling, self.dict_reduction_threshold], spacing=6),
-                    self.dict_max_rpe, self.dict_max_progression_weight, self.dict_progression_preview, self.dict_progression_simulation,
+                    ft.Text("Read-only summary. Use Open Progression Editor to make changes.", size=10, color="white54"),
+                    self.dict_progression_preview, self.dict_progression_simulation,
                     ft.Row([ft.TextButton("Reset Defaults", on_click=self.reset_dictionary_progression), ft.ElevatedButton("Open Progression Editor", on_click=lambda ev: self.open_exercise_progression_editor(self.dict_dropdown.value) if self.dict_dropdown.value else self.show_snackbar("Select an exercise first.", "red300"), style=ft.ButtonStyle(bgcolor="purple700", color="white"))], alignment="spaceBetween"),
                     ft.Divider(height=6, color="white10"), self.dict_rename_field,
                     ft.Row([self.dict_restore_name_button, ft.ElevatedButton("Change Display Name", style=ft.ButtonStyle(bgcolor="teal700", color="white"), on_click=self.rename_dictionary_exercise, expand=True)], spacing=6),
@@ -2970,17 +2963,16 @@ class WorkoutTrackerApp:
             with get_db() as conn:
                 row = conn.execute("SELECT progression_mode, progression_step, reduction_steps, rep_ceiling, reduction_threshold, max_progress_rpe, max_progression_weight FROM exercise_dict WHERE name=?", (selected_ex,)).fetchone()
             mode = row[0] if row and row[0] else "default"
-            self.dict_progression_mode.value = mode
-            self.dict_progression_step.value = "" if not row or row[1] is None else str(row[1])
-            self.dict_reduction_steps.value = str(row[2] if row and row[2] is not None else 1)
-            self.dict_rep_ceiling.value = "" if not row or row[3] is None else str(row[3])
-            self.dict_reduction_threshold.value = "" if not row or row[4] is None else f"{float(row[4])*100:g}"
-            self.dict_max_rpe.value = str(row[5] if row and row[5] is not None else 9.5)
-            self.dict_max_progression_weight.value = "" if not row or row[6] is None else f"{float(row[6]):g}"
-            cap_text = f" • max load {settings['max_progression_weight']:g} lb" if settings.get("max_progression_weight") is not None else " • max load none"
             step_source = "custom" if row and row[1] is not None else "inherited"
             cap_source = "custom" if row and row[6] is not None else "none"
-            self.dict_progression_preview.value = f"Effective: {step_source} step {settings['progression_step']:g} lb • max load {settings['max_progression_weight']:g} lb ({cap_source})" if settings.get("max_progression_weight") is not None else f"Effective: {step_source} step {settings['progression_step']:g} lb • max load none"
+            mode_text = "Custom overrides" if mode == "custom" else "Inherited defaults"
+            max_load = f"{settings['max_progression_weight']:g} lb" if settings.get("max_progression_weight") is not None else "none"
+            self.dict_progression_preview.value = (
+                f"{mode_text} • step {settings['progression_step']:g} lb ({step_source}) • "
+                f"reduction {int(settings['reduction_steps'])} step(s) • rep ceiling {int(settings['rep_ceiling'])} • "
+                f"reduce below {float(settings['reduction_threshold'])*100:g}% • max RPE {float(settings['max_progress_rpe']):g} • "
+                f"max load {max_load} ({cap_source})"
+            )
             try:
                 with get_db() as conn:
                     latest = conn.execute("SELECT target_weight,target_reps FROM workout_sessions WHERE exercise=? ORDER BY id DESC LIMIT 1", (selected_ex,)).fetchone()
@@ -2989,7 +2981,7 @@ class WorkoutTrackerApp:
                 self.dict_progression_simulation.value = "If the next target succeeds: " + simulation["summary"]
             except Exception:
                 self.dict_progression_simulation.value = "Simulation unavailable until a valid target exists."
-            for control in (self.dict_progression_mode,self.dict_progression_step,self.dict_reduction_steps,self.dict_rep_ceiling,self.dict_reduction_threshold,self.dict_max_rpe,self.dict_max_progression_weight,self.dict_progression_preview,self.dict_progression_simulation):
+            for control in (self.dict_progression_preview,self.dict_progression_simulation):
                 try: control.update()
                 except: pass
         if hasattr(self, 'dict_rename_field'):
@@ -2999,35 +2991,6 @@ class WorkoutTrackerApp:
                 self.dict_rename_field.update()
             except:
                 pass
-
-    def save_dictionary_progression(self, e=None):
-        ex=self.dict_dropdown.value
-        if not ex: self.show_snackbar("Select an exercise first.", "red300"); return
-        try:
-            mode=self.dict_progression_mode.value or "default"
-            if mode == "default": values=(None,None,None,None,None,None)
-            else:
-                step_raw=(self.dict_progression_step.value or "").strip()
-                reduction_raw=str(self.dict_reduction_steps.value or "").strip()
-                ceiling_raw=(self.dict_rep_ceiling.value or "").strip()
-                threshold_raw=(self.dict_reduction_threshold.value or "").strip()
-                maxrpe_raw=str(self.dict_max_rpe.value or "").strip()
-                cap_raw=(self.dict_max_progression_weight.value or "").strip()
-                step=float(step_raw) if step_raw else None
-                reduction=int(reduction_raw) if reduction_raw else None
-                ceiling=int(ceiling_raw) if ceiling_raw else None
-                threshold=float(threshold_raw)/100.0 if threshold_raw else None
-                maxrpe=float(maxrpe_raw) if maxrpe_raw else None
-                maxweight=float(cap_raw) if cap_raw else None
-                if (step is not None and step<=0) or (reduction is not None and not 1<=reduction<=3) or (ceiling is not None and not 2<=ceiling<=50) or (threshold is not None and not .50<=threshold<=.85) or (maxrpe is not None and not 6<=maxrpe<=10) or (maxweight is not None and maxweight<=0): raise ValueError
-                if all(value is None for value in (step,reduction,ceiling,threshold,maxrpe,maxweight)): raise ValueError
-                values=(step,reduction,ceiling,threshold,maxrpe,maxweight)
-            with get_db() as conn:
-                conn.execute("UPDATE exercise_dict SET progression_mode=?, progression_step=?, reduction_steps=?, rep_ceiling=?, reduction_threshold=?, max_progress_rpe=?, max_progression_weight=? WHERE name=?", (mode,*values,ex)); conn.commit()
-            invalidate_progression_settings_cache(ex)
-            self.show_snackbar(f"Progression settings saved for {ex}.", COLOR_SUCCESS)
-            self.on_dict_ex_change(None)
-        except Exception: self.show_snackbar("Custom fields may be blank to inherit defaults. Enter positive step/max weight, reduction 1-3, ceiling 2-50, threshold 50-85%, and RPE 6-10.", "red300")
 
     def reset_dictionary_progression(self, e=None):
         ex=self.dict_dropdown.value
