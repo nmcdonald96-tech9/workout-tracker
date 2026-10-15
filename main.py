@@ -3335,7 +3335,11 @@ class WorkoutTrackerApp:
         }
         passed = sum(1 for value in checks.values() if value)
         return [
-            "2.0 acceptance status",
+            "2.1 development status",
+            "2.1 RPE wheel: Android accepted on feature branch",
+            "2.1 schema: unchanged at 20",
+            "2.1 release channel: development APK only; not a Play release candidate",
+            "2.0 acceptance status (preserved baseline)",
             f"2.0 readiness signals: {passed}/{len(checks)} passing",
             f"2.0 database integrity: {'pass' if checks['database_integrity'] else 'review'}",
             f"2.0 billing ownership: {'pass' if checks['billing_ownership'] else 'review'}",
