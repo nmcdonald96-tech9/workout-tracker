@@ -26,6 +26,12 @@ from exercise_catalog import BUILTIN_EXERCISE_CATALOG as CANONICAL_EXERCISES
 from onboarding_catalog import STARTER_TEMPLATES, EQUIPMENT as ONBOARDING_EQUIPMENT, EXPERIENCE_LEVELS, GOALS as ONBOARDING_GOALS, recommend_starter_template
 from database import *
 from services.rpe_service import RPE_ERROR, normalize_rpe
+from services.rpe_picker_service import (
+    RPE_PICKER_OPTIONS,
+    apply_picker_selection,
+    picker_index,
+    resolve_picker_default,
+)
 from services.workout_state_service import load_workout_state
 from services.target_ownership_service import (
     apply_direct_edit, apply_weight_derived_reps, clear_override,
@@ -118,6 +124,73 @@ class ExerciseCard(ft.Card):
                 self.app.sets[self.db_id][set_idx]["rpe"] = ev.control.value
                 self.autosave_pending_sets()
         return rpe_handler
+
+    def make_rpe_picker_handler(self, set_idx, suggested_rpe):
+        def open_picker(ev=None):
+            if self.status != STATUS_PENDING:
+                return
+            drafts = self.app.sets.get(self.db_id, [])
+            if set_idx >= len(drafts) or bool(drafts[set_idx].get("done")):
+                return
+            # The first-use guide owns the first tap. A second tap opens the wheel.
+            if not self.app.get_bool_setting("rpe_guide_seen", False):
+                return
+            selected = {"value": resolve_picker_default(drafts[set_idx].get("rpe"), suggested_rpe)}
+            picker = None
+
+            def changed(event):
+                raw_index = getattr(event, "data", None)
+                try:
+                    index = int(raw_index)
+                except (TypeError, ValueError):
+                    index = int(getattr(picker, "selected_index", picker_index(selected["value"])))
+                if 0 <= index < len(RPE_PICKER_OPTIONS):
+                    selected["value"] = RPE_PICKER_OPTIONS[index]
+
+            def cancel(event=None):
+                self.app.safe_close(dialog)
+
+            def apply(event=None):
+                current = self.app.sets.get(self.db_id, [])
+                if self.status != STATUS_PENDING or set_idx >= len(current) or bool(current[set_idx].get("done")):
+                    self.app.safe_close(dialog)
+                    return
+                updated = apply_picker_selection(current[set_idx], selected["value"])
+                current[set_idx].clear()
+                current[set_idx].update(updated)
+                self.autosave_pending_sets()
+                self.app.safe_close(dialog)
+                self.request_local_card_refresh("rpe_picker_applied")
+
+            picker = ft.CupertinoPicker(
+                controls=[
+                    ft.Text(value, size=24, weight="bold", text_align="center")
+                    for value in RPE_PICKER_OPTIONS
+                ],
+                item_extent=44,
+                selected_index=picker_index(selected["value"]),
+                use_magnifier=True,
+                magnification=1.12,
+                looping=False,
+                height=220,
+                on_change=changed,
+            )
+            dialog = ft.AlertDialog(
+                title=ft.Text(f"Select RPE - Set {set_idx + 1}", weight="bold"),
+                content=ft.Container(
+                    width=300,
+                    content=ft.Column([
+                        ft.Text("Slide to choose an RPE from 6 to 10.", size=10, color="white70"),
+                        picker,
+                    ], spacing=6, tight=True),
+                ),
+                actions=[
+                    ft.TextButton("Cancel", on_click=cancel),
+                    ft.ElevatedButton("Apply", on_click=apply),
+                ],
+            )
+            self.app.safe_open(dialog)
+        return open_picker
 
     def request_local_card_refresh(self, reason):
         """Coalesce one deferred card-only replacement without moving the workout viewport."""
@@ -713,11 +786,14 @@ class ExerciseCard(ft.Card):
                 border_color="transparent",
                 border_radius=6,
                 text_align="center",
-                keyboard_type=ft.KeyboardType.NUMBER
+                read_only=True,
+                show_cursor=False,
+                enable_interactive_selection=False,
+                suffix_icon="arrow_drop_down",
+                tooltip="Tap to select RPE"
             )
-            rpe_f.on_change = self.make_rpe_updater(idx)
             rpe_f.on_focus = self.make_rpe_focus_handler(idx)
-            rpe_f.on_blur = self.make_blur_handler(idx, "rpe")
+            rpe_f.on_click = self.make_rpe_picker_handler(idx, rpe_hint)
 
             self.weight_fields.append(w_f)
             self.reps_fields.append(r_f)
