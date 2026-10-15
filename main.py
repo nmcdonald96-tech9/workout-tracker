@@ -32,7 +32,7 @@ from services.rpe_picker_service import (
     picker_index,
     resolve_picker_default,
 )
-from services.rep_nudge_service import REP_NUDGE_DELTAS, nudge_pending_reps
+from services.rep_nudge_service import REP_NUDGE_DELTAS, nudge_pending_reps, numeric_values_equal
 from services.workout_state_service import load_workout_state
 from services.target_ownership_service import (
     apply_direct_edit, apply_weight_derived_reps, clear_override,
@@ -211,12 +211,16 @@ class ExerciseCard(ft.Card):
         reps_are_user_owned = normalize_reps_source(drafts[set_idx].get("r_source")) == "user"
         if not reps_are_user_owned and set_idx < len(self.weight_fields):
             weight_field = self.weight_fields[set_idx]
-            self.commit_weight_edit(
-                set_idx,
-                getattr(weight_field, "value", None),
-                "weight_rep_nudge_preview",
-            )
-            drafts = self.app.sets.get(self.db_id, drafts)
+            field_weight = getattr(weight_field, "value", None)
+            draft_weight = drafts[set_idx].get("w")
+            if not numeric_values_equal(field_weight, draft_weight):
+                self.commit_weight_edit(
+                    set_idx,
+                    field_weight,
+                    "weight_rep_nudge_preview",
+                    refresh_feedback=False,
+                )
+                drafts = self.app.sets.get(self.db_id, drafts)
         return drafts
 
     def nudge_active_set_reps(self, set_idx, delta):
@@ -362,7 +366,7 @@ class ExerciseCard(ft.Card):
             # workout canvas or replace the RPE destination synchronously.
             return self.request_local_card_refresh("weight_edit_feedback")
 
-    def commit_weight_edit(self, set_idx, raw_value=None, event_name="weight_commit"):
+    def commit_weight_edit(self, set_idx, raw_value=None, event_name="weight_commit", refresh_feedback=True):
         self.app.record_workout_ui_trace(event_name + "_started", self.db_id, set_idx, self)
         if not hasattr(self, "set_targets") or set_idx >= len(self.set_targets):
             self.app.record_workout_ui_trace(event_name + "_rejected_target", self.db_id, set_idx, self)
@@ -371,6 +375,10 @@ class ExerciseCard(ft.Card):
             self.app.record_workout_ui_trace(event_name + "_rejected_draft", self.db_id, set_idx, self)
             return False
         set_data = self.app.sets[self.db_id][set_idx]
+        reps_are_user_owned = normalize_reps_source(set_data.get("r_source")) == "user"
+        if raw_value is not None and reps_are_user_owned and numeric_values_equal(raw_value, set_data.get("w")):
+            self.app.record_workout_ui_trace(event_name + "_same_weight_manual_reps_preserved", self.db_id, set_idx, self)
+            return True
         if raw_value is not None:
             updated = apply_direct_edit(set_data, "w", raw_value)
             set_data.clear(); set_data.update(updated)
@@ -394,7 +402,7 @@ class ExerciseCard(ft.Card):
             updated = clear_override(updated, "r", current_target)
             set_data.clear(); set_data.update(updated)
             self.autosave_pending_sets()
-            ok = self.refresh_weight_edit_feedback(set_idx)
+            ok = self.refresh_weight_edit_feedback(set_idx) if refresh_feedback else True
             self.app.record_workout_ui_trace(event_name + "_cleared", self.db_id, set_idx, self, update_ok=ok)
             return True
         try:
@@ -412,7 +420,7 @@ class ExerciseCard(ft.Card):
             set_data.clear(); set_data.update(updated)
             self.app.record_workout_ui_trace(event_name + "_derived_applied", self.db_id, set_idx, self)
         self.autosave_pending_sets()
-        ok = self.refresh_weight_edit_feedback(set_idx)
+        ok = self.refresh_weight_edit_feedback(set_idx) if refresh_feedback else True
         self.app.record_workout_ui_trace(event_name + "_finished", self.db_id, set_idx, self, update_ok=ok)
         return True
 

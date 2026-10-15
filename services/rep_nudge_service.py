@@ -18,3 +18,10 @@ def nudge_pending_reps(draft, target_reps, delta, *, min_reps=1, max_reps=50):
     high = max(low, int(max_reps or 50))
     nudged = max(low, min(high, base_reps + int(delta)))
     return apply_direct_edit(row, "r", str(nudged))
+
+def numeric_values_equal(left, right):
+    """Compare numeric input values without treating formatting as a change."""
+    try:
+        return float(str(left).strip()) == float(str(right).strip())
+    except (TypeError, ValueError):
+        return str(left or "").strip() == str(right or "").strip()
