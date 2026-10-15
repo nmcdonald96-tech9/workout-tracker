@@ -21,8 +21,10 @@ def test_nudge_dialog_has_explicit_minus_plus_and_cancel():
     assert 'ft.Text("-1"' in b and 'ft.Text("+1"' in b
     assert b.count('height=48') >= 2
     assert 'ft.TextButton("Cancel"' in b
-def test_nudge_commits_pending_weight_before_rep_ownership():
-    b=method("nudge_active_set_reps","request_local_card_refresh")
-    assert 'normalize_reps_source(drafts[set_idx].get("r_source")) == "user"' in b
-    assert '"weight_rep_nudge"' in b
-    assert b.index('self.commit_weight_edit(') < b.index('updated = nudge_pending_reps(')
+def test_nudge_prepares_pending_weight_before_rep_ownership():
+    prepare=method("prepare_rep_nudge_weight","flush_pending_reps_after_nudge_dialog")
+    nudge=method("nudge_active_set_reps","request_local_card_refresh")
+    assert 'normalize_reps_source(drafts[set_idx].get("r_source")) == "user"' in prepare
+    assert '"weight_rep_nudge_preview"' in prepare
+    assert "drafts = self.prepare_rep_nudge_weight(set_idx)" in nudge
+    assert nudge.index("drafts = self.prepare_rep_nudge_weight(set_idx)") < nudge.index("updated = nudge_pending_reps(")

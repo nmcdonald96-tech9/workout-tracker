@@ -204,15 +204,43 @@ class ExerciseCard(ft.Card):
             self.app.safe_open(dialog)
         return open_picker
 
+    def prepare_rep_nudge_weight(self, set_idx):
+        drafts = self.app.sets.get(self.db_id, [])
+        if set_idx >= len(drafts):
+            return drafts
+        reps_are_user_owned = normalize_reps_source(drafts[set_idx].get("r_source")) == "user"
+        if not reps_are_user_owned and set_idx < len(self.weight_fields):
+            weight_field = self.weight_fields[set_idx]
+            self.commit_weight_edit(
+                set_idx,
+                getattr(weight_field, "value", None),
+                "weight_rep_nudge_preview",
+            )
+            drafts = self.app.sets.get(self.db_id, drafts)
+        return drafts
+
+    def flush_pending_reps_after_nudge_dialog(self):
+        if getattr(self, "_pending_reps_visual_refresh", False):
+            self._pending_reps_visual_refresh = False
+            return self.request_local_card_refresh("reps_restore_after_rep_nudge")
+        return False
+
     def open_rep_nudge_menu(self, set_idx, event=None):
         drafts = self.app.sets.get(self.db_id, [])
         active_idx = next((i for i, row in enumerate(drafts) if not bool(row.get("done"))), -1)
         if self.status != STATUS_PENDING or set_idx != active_idx:
             return False
+        drafts = self.prepare_rep_nudge_weight(set_idx)
+        if set_idx >= len(drafts) or bool(drafts[set_idx].get("done")):
+            return False
 
         def choose(delta):
             self.app.safe_close(dialog)
-            self.nudge_active_set_reps(set_idx, delta)
+            self.nudge_active_set_reps(set_idx, delta, weight_prepared=True)
+
+        def cancel(event=None):
+            self.app.safe_close(dialog)
+            self.flush_pending_reps_after_nudge_dialog()
 
         current_reps = str(drafts[set_idx].get("r", "")).strip() or str(
             self.set_targets[set_idx].get("r", self.tgt_r)
@@ -235,12 +263,13 @@ class ExerciseCard(ft.Card):
                     on_click=lambda ev: choose(1),
                 ),
             ], spacing=8, alignment=ft.MainAxisAlignment.CENTER, vertical_alignment="center"),
-            actions=[ft.TextButton("Cancel", on_click=lambda ev: self.app.safe_close(dialog))],
+            actions=[ft.TextButton("Cancel", on_click=cancel)],
+            on_dismiss=lambda ev: self.flush_pending_reps_after_nudge_dialog(),
         )
         self.app.safe_open(dialog)
         return True
 
-    def nudge_active_set_reps(self, set_idx, delta):
+    def nudge_active_set_reps(self, set_idx, delta, weight_prepared=False):
         if not self.app.require_premium("logging workouts"):
             return False
         drafts = self.app.sets.get(self.db_id, [])
@@ -249,15 +278,8 @@ class ExerciseCard(ft.Card):
         active_idx = next((i for i, row in enumerate(drafts) if not bool(row.get("done"))), -1)
         if set_idx != active_idx or bool(drafts[set_idx].get("done")):
             return False
-        reps_are_user_owned = normalize_reps_source(drafts[set_idx].get("r_source")) == "user"
-        if not reps_are_user_owned and set_idx < len(self.weight_fields):
-            weight_field = self.weight_fields[set_idx]
-            self.commit_weight_edit(
-                set_idx,
-                getattr(weight_field, "value", None),
-                "weight_rep_nudge",
-            )
-            drafts = self.app.sets.get(self.db_id, drafts)
+        if not weight_prepared:
+            drafts = self.prepare_rep_nudge_weight(set_idx)
         target = self.set_targets[set_idx] if set_idx < len(self.set_targets) else {"r": self.tgt_r}
         metadata = resolve_exercise_metadata(self.exercise)
         try:
@@ -274,6 +296,7 @@ class ExerciseCard(ft.Card):
         drafts[set_idx].clear()
         drafts[set_idx].update(updated)
         self.autosave_pending_sets()
+        self._pending_reps_visual_refresh = False
         self.app.record_workout_ui_trace(
             "rep_nudge_applied", self.db_id, set_idx, self, delta=int(delta),
         )
