@@ -32,6 +32,7 @@ from services.rpe_picker_service import (
     picker_index,
     resolve_picker_default,
 )
+from services.rep_nudge_service import REP_NUDGE_DELTAS, nudge_pending_reps
 from services.workout_state_service import load_workout_state
 from services.target_ownership_service import (
     apply_direct_edit, apply_weight_derived_reps, clear_override,
@@ -202,6 +203,36 @@ class ExerciseCard(ft.Card):
             )
             self.app.safe_open(dialog)
         return open_picker
+
+    def nudge_active_set_reps(self, set_idx, delta):
+        if not self.app.require_premium("logging workouts"):
+            return False
+        drafts = self.app.sets.get(self.db_id, [])
+        if self.status != STATUS_PENDING or set_idx >= len(drafts):
+            return False
+        active_idx = next((i for i, row in enumerate(drafts) if not bool(row.get("done"))), -1)
+        if set_idx != active_idx or bool(drafts[set_idx].get("done")):
+            return False
+        target = self.set_targets[set_idx] if set_idx < len(self.set_targets) else {"r": self.tgt_r}
+        metadata = resolve_exercise_metadata(self.exercise)
+        try:
+            updated = nudge_pending_reps(
+                drafts[set_idx],
+                target.get("r", self.tgt_r),
+                delta,
+                min_reps=metadata.get("min_reps", 1),
+                max_reps=metadata.get("max_reps", 50),
+            )
+        except (TypeError, ValueError) as err:
+            self.app.show_snackbar(str(err), "red300")
+            return False
+        drafts[set_idx].clear()
+        drafts[set_idx].update(updated)
+        self.autosave_pending_sets()
+        self.app.record_workout_ui_trace(
+            "rep_nudge_applied", self.db_id, set_idx, self, delta=int(delta),
+        )
+        return self.request_local_card_refresh("rep_nudge_applied")
 
     def request_local_card_refresh(self, reason):
         """Coalesce one deferred card-only replacement without moving the workout viewport."""
@@ -829,6 +860,25 @@ class ExerciseCard(ft.Card):
             
             # Explicit completion controls rest timing. Editing planned values never starts a timer.
             set_row = ft.Row([set_indicator, w_f, r_f, rpe_f, complete_set_btn], alignment="start", vertical_alignment="center", spacing=6)
+            rep_nudge_bar = None
+            if self.status == STATUS_PENDING and idx == kinetic_active_idx and not set_is_done:
+                rep_nudge_bar = ft.Row([
+                    ft.Text("Adjust reps", size=9, weight="bold", color="cyan200"),
+                    ft.OutlinedButton(
+                        content=ft.Text("-1 REP", size=10, weight="bold"),
+                        height=48,
+                        width=82,
+                        tooltip="Decrease active-set reps by 1",
+                        on_click=lambda ev, set_index=idx: self.nudge_active_set_reps(set_index, -1),
+                    ),
+                    ft.OutlinedButton(
+                        content=ft.Text("+1 REP", size=10, weight="bold"),
+                        height=48,
+                        width=82,
+                        tooltip="Increase active-set reps by 1",
+                        on_click=lambda ev, set_index=idx: self.nudge_active_set_reps(set_index, 1),
+                    ),
+                ], spacing=6, alignment=ft.MainAxisAlignment.END, vertical_alignment="center")
 
             # Kinetic dimming, baked in at construction (see kinetic_active_idx above).
             if idx < kinetic_active_idx or kinetic_active_idx == -1:
@@ -854,8 +904,9 @@ class ExerciseCard(ft.Card):
                     opacity=row_opacity, bgcolor=row_bgcolor
                 )
             else:
+                row_content = ft.Column([set_row, rep_nudge_bar], spacing=2, tight=True) if rep_nudge_bar else set_row
                 row_container = ft.Container(
-                    content=set_row, padding=3, border_radius=8,
+                    content=row_content, padding=3, border_radius=8,
                     opacity=row_opacity, bgcolor=row_bgcolor
                 )
 
