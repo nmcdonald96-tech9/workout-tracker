@@ -127,10 +127,11 @@ class ExerciseCard(ft.Card):
 
     def make_rpe_picker_handler(self, set_idx, suggested_rpe):
         def open_picker(ev=None):
-            if self.status != STATUS_PENDING:
+            is_revision = self.db_id in self.app.completed_revision_sessions
+            if self.status != STATUS_PENDING and not is_revision:
                 return
             drafts = self.app.sets.get(self.db_id, [])
-            if set_idx >= len(drafts) or bool(drafts[set_idx].get("done")):
+            if set_idx >= len(drafts) or (bool(drafts[set_idx].get("done")) and not is_revision):
                 return
             # The first-use guide owns the first tap. A second tap opens the wheel.
             if not self.app.get_bool_setting("rpe_guide_seen", False):
@@ -147,18 +148,27 @@ class ExerciseCard(ft.Card):
                 if 0 <= index < len(RPE_PICKER_OPTIONS):
                     selected["value"] = RPE_PICKER_OPTIONS[index]
 
+            def flush_pending_reps_refresh(event=None):
+                if getattr(self, "_pending_reps_visual_refresh", False):
+                    self._pending_reps_visual_refresh = False
+                    self.request_local_card_refresh("reps_restore_after_rpe")
+
             def cancel(event=None):
                 self.app.safe_close(dialog)
+                flush_pending_reps_refresh()
 
             def apply(event=None):
                 current = self.app.sets.get(self.db_id, [])
-                if self.status != STATUS_PENDING or set_idx >= len(current) or bool(current[set_idx].get("done")):
+                is_revision = self.db_id in self.app.completed_revision_sessions
+                if (self.status != STATUS_PENDING and not is_revision) or set_idx >= len(current) or (bool(current[set_idx].get("done")) and not is_revision):
                     self.app.safe_close(dialog)
+                    flush_pending_reps_refresh()
                     return
                 updated = apply_picker_selection(current[set_idx], selected["value"])
                 current[set_idx].clear()
                 current[set_idx].update(updated)
                 self.autosave_pending_sets()
+                self._pending_reps_visual_refresh = False
                 self.app.safe_close(dialog)
                 self.request_local_card_refresh("rpe_picker_applied")
 
@@ -188,6 +198,7 @@ class ExerciseCard(ft.Card):
                     ft.TextButton("Cancel", on_click=cancel),
                     ft.ElevatedButton("Apply", on_click=apply),
                 ],
+                on_dismiss=flush_pending_reps_refresh,
             )
             self.app.safe_open(dialog)
         return open_picker
@@ -789,6 +800,7 @@ class ExerciseCard(ft.Card):
                 read_only=True,
                 show_cursor=False,
                 enable_interactive_selection=False,
+                always_call_on_tap=True,
                 suffix_icon="arrow_drop_down",
                 tooltip="Tap to select RPE"
             )
@@ -1118,13 +1130,13 @@ class ExerciseCard(ft.Card):
             ft.Text("RPE means Rate of Perceived Exertion", size=15, weight="bold", color="cyan200"),
             ft.Text("RPE describes how difficult an individual completed set felt. After the set, estimate how many additional repetitions you could have completed with good technique.", size=11),
             ft.Text("RPE 7 = about 3 reps remaining\nRPE 8 = about 2 reps remaining\nRPE 9 = about 1 rep remaining\nRPE 10 = no additional good-form reps remaining", size=11),
-            ft.Text("Half steps are allowed. IronCycle accepts 1 to 10 in 0.5 steps and combines RPE with completed reps to progress, hold, or reduce future targets.", size=10, color="white70"),
+            ft.Text("Half steps are allowed. The quick picker covers RPE 6 to 10; IronCycle continues to accept existing RPE values from 1 to 10 in 0.5 steps.", size=10, color="white70"),
             ft.Text("Rate the set just completed, not the entire workout.", size=10, color="amber200"),
         ], tight=True, spacing=7)
         def close(ev=None):
             self.app.save_setting("rpe_guide_seen", "1")
             self.app.safe_close(dialog)
-        dialog = ft.AlertDialog(title=ft.Text("How RPE Works", weight="bold"), content=ft.Container(width=370, content=content), actions=[ft.ElevatedButton("Got it", on_click=close)])
+        dialog = ft.AlertDialog(title=ft.Text("How RPE Works", weight="bold"), content=ft.Container(width=370, content=content), actions=[ft.ElevatedButton("Got it", on_click=close)], on_dismiss=close)
         self.app.safe_open(dialog)
 
     def maybe_show_rpe_guide(self, e=None):
