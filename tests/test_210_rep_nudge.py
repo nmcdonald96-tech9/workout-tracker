@@ -52,13 +52,13 @@ def test_handler_is_active_pending_only_model_first_and_card_local():
     assert "rebuild_entire_display" not in block
 
 
-def test_ui_shows_one_48_dp_nudge_trigger_for_active_pending_set():
+def test_ui_shows_direct_stacked_rep_controls_for_active_pending_set():
     assert 'if self.status == STATUS_PENDING and idx == kinetic_active_idx and not set_is_done:' in SOURCE
-    assert 'content=ft.Text("±", size=22, weight="bold", color="cyan200")' in SOURCE
-    assert 'width=48' in SOURCE and 'height=48' in SOURCE
-    assert "Adjust active-set reps by 1" in SOURCE
-    card = SOURCE[SOURCE.index("    def build_card("):SOURCE.index("    def _reopen_completed(", SOURCE.index("    def build_card("))]
-    assert 'icon="remove"' not in card and 'icon="add"' not in card
+    assert 'content=ft.Text("+", size=16' in SOURCE
+    assert 'content=ft.Text("−", size=18' in SOURCE
+    assert 'self.nudge_active_set_reps(set_index, 1)' in SOURCE
+    assert 'self.nudge_active_set_reps(set_index, -1)' in SOURCE
+    assert "open_rep_nudge_menu" not in SOURCE
 
 def test_nudge_does_not_change_rpe_wheel_or_version_contracts():
     constants = (ROOT / "constants.py").read_text(encoding="utf-8")

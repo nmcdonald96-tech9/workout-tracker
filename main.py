@@ -219,57 +219,7 @@ class ExerciseCard(ft.Card):
             drafts = self.app.sets.get(self.db_id, drafts)
         return drafts
 
-    def flush_pending_reps_after_nudge_dialog(self):
-        if getattr(self, "_pending_reps_visual_refresh", False):
-            self._pending_reps_visual_refresh = False
-            return self.request_local_card_refresh("reps_restore_after_rep_nudge")
-        return False
-
-    def open_rep_nudge_menu(self, set_idx, event=None):
-        drafts = self.app.sets.get(self.db_id, [])
-        active_idx = next((i for i, row in enumerate(drafts) if not bool(row.get("done"))), -1)
-        if self.status != STATUS_PENDING or set_idx != active_idx:
-            return False
-        drafts = self.prepare_rep_nudge_weight(set_idx)
-        if set_idx >= len(drafts) or bool(drafts[set_idx].get("done")):
-            return False
-
-        def choose(delta):
-            self.app.safe_close(dialog)
-            self.nudge_active_set_reps(set_idx, delta, weight_prepared=True)
-
-        def cancel(event=None):
-            self.app.safe_close(dialog)
-            self.flush_pending_reps_after_nudge_dialog()
-
-        current_reps = str(drafts[set_idx].get("r", "")).strip() or str(
-            self.set_targets[set_idx].get("r", self.tgt_r)
-            if set_idx < len(self.set_targets) else self.tgt_r
-        )
-        dialog = ft.AlertDialog(
-            title=ft.Text("Adjust reps", weight="bold"),
-            content=ft.Row([
-                ft.ElevatedButton(
-                    content=ft.Text("-1", size=16, weight="bold"),
-                    width=72, height=48,
-                    tooltip="Decrease active-set reps by 1",
-                    on_click=lambda ev: choose(-1),
-                ),
-                ft.Text(current_reps, size=20, weight="bold", text_align="center", width=64),
-                ft.ElevatedButton(
-                    content=ft.Text("+1", size=16, weight="bold"),
-                    width=72, height=48,
-                    tooltip="Increase active-set reps by 1",
-                    on_click=lambda ev: choose(1),
-                ),
-            ], spacing=8, alignment=ft.MainAxisAlignment.CENTER, vertical_alignment="center"),
-            actions=[ft.TextButton("Cancel", on_click=cancel)],
-            on_dismiss=lambda ev: self.flush_pending_reps_after_nudge_dialog(),
-        )
-        self.app.safe_open(dialog)
-        return True
-
-    def nudge_active_set_reps(self, set_idx, delta, weight_prepared=False):
+    def nudge_active_set_reps(self, set_idx, delta):
         if not self.app.require_premium("logging workouts"):
             return False
         drafts = self.app.sets.get(self.db_id, [])
@@ -278,8 +228,7 @@ class ExerciseCard(ft.Card):
         active_idx = next((i for i, row in enumerate(drafts) if not bool(row.get("done"))), -1)
         if set_idx != active_idx or bool(drafts[set_idx].get("done")):
             return False
-        if not weight_prepared:
-            drafts = self.prepare_rep_nudge_weight(set_idx)
+        drafts = self.prepare_rep_nudge_weight(set_idx)
         target = self.set_targets[set_idx] if set_idx < len(self.set_targets) else {"r": self.tgt_r}
         metadata = resolve_exercise_metadata(self.exercise)
         try:
@@ -925,17 +874,40 @@ class ExerciseCard(ft.Card):
                 ),
             )
 
-            nudge_slot = ft.Container(width=48, height=48)
+            nudge_slot = ft.Container(width=44, height=48)
             if self.status == STATUS_PENDING and idx == kinetic_active_idx and not set_is_done:
                 nudge_slot = ft.Container(
-                    content=ft.Text("±", size=22, weight="bold", color="cyan200"),
-                    width=48,
+                    content=ft.Column([
+                        ft.Container(
+                            content=ft.Text("+", size=16, weight="bold", color="cyan100"),
+                            height=24,
+                            alignment=ft.Alignment(0, 0),
+                            ink=True,
+                            tooltip="Increase active-set reps by 1",
+                            on_click=lambda ev, set_index=idx: self.nudge_active_set_reps(set_index, 1),
+                        ),
+                        ft.Container(
+                            content=ft.Text("−", size=18, weight="bold", color="cyan100"),
+                            height=24,
+                            alignment=ft.Alignment(0, 0),
+                            border=ft.Border(top=ft.BorderSide(2, "cyan200")),
+                            ink=True,
+                            tooltip="Decrease active-set reps by 1",
+                            on_click=lambda ev, set_index=idx: self.nudge_active_set_reps(set_index, -1),
+                        ),
+                    ], spacing=0, tight=True),
+                    width=44,
                     height=48,
-                    alignment=ft.Alignment(0, 0),
+                    bgcolor="white10",
+                    border=ft.Border(
+                        top=ft.BorderSide(1, "cyan700"),
+                        right=ft.BorderSide(1, "cyan700"),
+                        bottom=ft.BorderSide(1, "cyan700"),
+                        left=ft.BorderSide(1, "cyan700"),
+                    ),
                     border_radius=7,
-                    ink=True,
-                    tooltip="Adjust active-set reps by 1",
-                    on_click=lambda ev, set_index=idx: self.open_rep_nudge_menu(set_index, ev),
+                    clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
+                    tooltip="Adjust active-set reps",
                 )
 
             # Stable portrait columns: weight, editable reps, nudge trigger, RPE, Done.
