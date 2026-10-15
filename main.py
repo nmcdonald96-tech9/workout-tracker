@@ -158,20 +158,35 @@ class ExerciseCard(ft.Card):
                 self.app.safe_close(dialog)
                 flush_pending_reps_refresh()
 
-            def apply(event=None):
+            def apply_selection(complete_set=False):
                 current = self.app.sets.get(self.db_id, [])
                 is_revision = self.db_id in self.app.completed_revision_sessions
                 if (self.status != STATUS_PENDING and not is_revision) or set_idx >= len(current) or (bool(current[set_idx].get("done")) and not is_revision):
                     self.app.safe_close(dialog)
                     flush_pending_reps_refresh()
-                    return
+                    return False
                 updated = apply_picker_selection(current[set_idx], selected["value"])
                 current[set_idx].clear()
                 current[set_idx].update(updated)
                 self.autosave_pending_sets()
                 self._pending_reps_visual_refresh = False
                 self.app.safe_close(dialog)
-                self.request_local_card_refresh("rpe_picker_applied")
+                if complete_set:
+                    completion_event = type(
+                        "RpeApplyDoneEvent",
+                        (),
+                        {"control": type("RpeApplyDoneControl", (), {"value": True, "data": True})()},
+                    )()
+                    self.make_set_done_handler(set_idx)(completion_event)
+                else:
+                    self.request_local_card_refresh("rpe_picker_applied")
+                return True
+
+            def apply(event=None):
+                return apply_selection(complete_set=False)
+
+            def apply_and_done(event=None):
+                return apply_selection(complete_set=True)
 
             picker = ft.CupertinoPicker(
                 controls=[
@@ -186,6 +201,12 @@ class ExerciseCard(ft.Card):
                 height=220,
                 on_change=changed,
             )
+            active_idx = next((i for i, row in enumerate(drafts) if not bool(row.get("done"))), -1)
+            can_apply_and_done = self.status == STATUS_PENDING and not is_revision and set_idx == active_idx
+            dialog_actions = [ft.TextButton("Cancel", on_click=cancel), ft.ElevatedButton("Apply", on_click=apply)]
+            if can_apply_and_done:
+                dialog_actions.append(ft.ElevatedButton("Apply & Done", on_click=apply_and_done))
+
             dialog = ft.AlertDialog(
                 title=ft.Text(f"Select RPE - Set {set_idx + 1}", weight="bold"),
                 content=ft.Container(
@@ -195,10 +216,7 @@ class ExerciseCard(ft.Card):
                         picker,
                     ], spacing=6, tight=True),
                 ),
-                actions=[
-                    ft.TextButton("Cancel", on_click=cancel),
-                    ft.ElevatedButton("Apply", on_click=apply),
-                ],
+                actions=dialog_actions,
                 on_dismiss=flush_pending_reps_refresh,
             )
             self.app.safe_open(dialog)

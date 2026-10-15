@@ -26,10 +26,12 @@ def test_cancel_and_dismiss_flush_pending_reps_visual_restore():
 
 def test_apply_coalesces_reps_restore_into_picker_refresh():
     block = method("make_rpe_picker_handler", "request_local_card_refresh")
-    apply_start = block.index("            def apply(event=None):")
-    apply_block = block[apply_start:]
-    assert 'self._pending_reps_visual_refresh = False' in apply_block
-    assert 'self.request_local_card_refresh("rpe_picker_applied")' in apply_block
+    shared_start = block.index("            def apply_selection(complete_set=False):")
+    shared_end = block.index("            picker = ft.CupertinoPicker(", shared_start)
+    shared = block[shared_start:shared_end]
+    assert 'self._pending_reps_visual_refresh = False' in shared
+    assert 'self.request_local_card_refresh("rpe_picker_applied")' in shared
+    assert "if complete_set:" in shared
 
 
 def test_first_use_guide_dismissal_cannot_deadlock_picker():
