@@ -204,6 +204,42 @@ class ExerciseCard(ft.Card):
             self.app.safe_open(dialog)
         return open_picker
 
+    def open_rep_nudge_menu(self, set_idx, event=None):
+        drafts = self.app.sets.get(self.db_id, [])
+        active_idx = next((i for i, row in enumerate(drafts) if not bool(row.get("done"))), -1)
+        if self.status != STATUS_PENDING or set_idx != active_idx:
+            return False
+
+        def choose(delta):
+            self.app.safe_close(dialog)
+            self.nudge_active_set_reps(set_idx, delta)
+
+        current_reps = str(drafts[set_idx].get("r", "")).strip() or str(
+            self.set_targets[set_idx].get("r", self.tgt_r)
+            if set_idx < len(self.set_targets) else self.tgt_r
+        )
+        dialog = ft.AlertDialog(
+            title=ft.Text("Adjust reps", weight="bold"),
+            content=ft.Row([
+                ft.ElevatedButton(
+                    content=ft.Text("-1", size=16, weight="bold"),
+                    width=72, height=48,
+                    tooltip="Decrease active-set reps by 1",
+                    on_click=lambda ev: choose(-1),
+                ),
+                ft.Text(current_reps, size=20, weight="bold", text_align="center", width=64),
+                ft.ElevatedButton(
+                    content=ft.Text("+1", size=16, weight="bold"),
+                    width=72, height=48,
+                    tooltip="Increase active-set reps by 1",
+                    on_click=lambda ev: choose(1),
+                ),
+            ], spacing=8, alignment=ft.MainAxisAlignment.CENTER, vertical_alignment="center"),
+            actions=[ft.TextButton("Cancel", on_click=lambda ev: self.app.safe_close(dialog))],
+        )
+        self.app.safe_open(dialog)
+        return True
+
     def nudge_active_set_reps(self, set_idx, delta):
         if not self.app.require_premium("logging workouts"):
             return False
@@ -213,6 +249,15 @@ class ExerciseCard(ft.Card):
         active_idx = next((i for i, row in enumerate(drafts) if not bool(row.get("done"))), -1)
         if set_idx != active_idx or bool(drafts[set_idx].get("done")):
             return False
+        reps_are_user_owned = normalize_reps_source(drafts[set_idx].get("r_source")) == "user"
+        if not reps_are_user_owned and set_idx < len(self.weight_fields):
+            weight_field = self.weight_fields[set_idx]
+            self.commit_weight_edit(
+                set_idx,
+                getattr(weight_field, "value", None),
+                "weight_rep_nudge",
+            )
+            drafts = self.app.sets.get(self.db_id, drafts)
         target = self.set_targets[set_idx] if set_idx < len(self.set_targets) else {"r": self.tgt_r}
         metadata = resolve_exercise_metadata(self.exercise)
         try:
@@ -832,7 +877,6 @@ class ExerciseCard(ft.Card):
                 show_cursor=False,
                 enable_interactive_selection=False,
                 always_call_on_tap=True,
-                suffix_icon="arrow_drop_down",
                 tooltip="Tap to select RPE"
             )
             rpe_f.on_focus = self.make_rpe_focus_handler(idx)
@@ -850,7 +894,7 @@ class ExerciseCard(ft.Card):
                 tooltip="Reopen this set" if set_is_done else ("Complete final set and log exercise" if idx == len(self.app.sets[self.db_id]) - 1 else "Complete this set"),
                 on_click=self.make_set_done_handler(idx),
                 height=48,
-                width=58,
+                width=54,
                 style=ft.ButtonStyle(
                     bgcolor=COLOR_COMPLETE if set_is_done else COLOR_ACTIVE,
                     color="white", padding=2,
@@ -858,39 +902,22 @@ class ExerciseCard(ft.Card):
                 ),
             )
 
-            reps_control = r_f
+            nudge_slot = ft.Container(width=48, height=48)
             if self.status == STATUS_PENDING and idx == kinetic_active_idx and not set_is_done:
-                r_f.expand = True
-                r_f.bgcolor = "transparent"
-                r_f.border_radius = 0
-                reps_control = ft.Container(
-                    content=ft.Row([
-                        ft.IconButton(
-                            icon="remove", icon_size=18, width=48, height=48, padding=0,
-                            tooltip="Decrease active-set reps by 1",
-                            on_click=lambda ev, set_index=idx: self.nudge_active_set_reps(set_index, -1),
-                        ),
-                        r_f,
-                        ft.IconButton(
-                            icon="add", icon_size=18, width=48, height=48, padding=0,
-                            tooltip="Increase active-set reps by 1",
-                            on_click=lambda ev, set_index=idx: self.nudge_active_set_reps(set_index, 1),
-                        ),
-                    ], spacing=0, vertical_alignment="center"),
-                    expand=4, height=48, bgcolor="white5",
-                    border=ft.Border(
-                        top=ft.BorderSide(1, "cyan700"),
-                        right=ft.BorderSide(1, "cyan700"),
-                        bottom=ft.BorderSide(1, "cyan700"),
-                        left=ft.BorderSide(1, "cyan700"),
-                    ), border_radius=6,
-                    tooltip="Adjust reps with minus, keyboard entry, or plus",
+                nudge_slot = ft.IconButton(
+                    icon="exposure",
+                    icon_size=20,
+                    width=48,
+                    height=48,
+                    padding=0,
+                    tooltip="Adjust active-set reps by 1",
+                    on_click=lambda ev, set_index=idx: self.open_rep_nudge_menu(set_index, ev),
                 )
 
-            # Keep weight, inline reps stepper, RPE, and Done in one portrait-safe row.
+            # Stable portrait columns: weight, editable reps, nudge trigger, RPE, Done.
             set_row = ft.Row(
-                [set_indicator, w_f, reps_control, rpe_f, complete_set_btn],
-                alignment="start", vertical_alignment="center", spacing=4,
+                [set_indicator, w_f, r_f, nudge_slot, rpe_f, complete_set_btn],
+                alignment="start", vertical_alignment="center", spacing=3,
             )
 
             # Kinetic dimming, baked in at construction (see kinetic_active_idx above).

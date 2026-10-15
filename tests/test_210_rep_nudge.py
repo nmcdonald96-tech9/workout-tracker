@@ -52,13 +52,13 @@ def test_handler_is_active_pending_only_model_first_and_card_local():
     assert "rebuild_entire_display" not in block
 
 
-def test_ui_shows_inline_48_dp_controls_only_for_active_pending_set():
+def test_ui_shows_one_48_dp_nudge_trigger_for_active_pending_set():
     assert 'if self.status == STATUS_PENDING and idx == kinetic_active_idx and not set_is_done:' in SOURCE
-    assert 'icon="remove"' in SOURCE and 'icon="add"' in SOURCE
-    assert SOURCE.count("height=48") >= 3
-    assert "Decrease active-set reps by 1" in SOURCE
-    assert "Increase active-set reps by 1" in SOURCE
-    assert 'ft.Text("-1 REP"' not in SOURCE and 'ft.Text("+1 REP"' not in SOURCE
+    assert 'icon="exposure"' in SOURCE
+    assert 'width=48' in SOURCE and 'height=48' in SOURCE
+    assert "Adjust active-set reps by 1" in SOURCE
+    card = SOURCE[SOURCE.index("    def build_card("):SOURCE.index("    def _reopen_completed(", SOURCE.index("    def build_card("))]
+    assert 'icon="remove"' not in card and 'icon="add"' not in card
 
 def test_nudge_does_not_change_rpe_wheel_or_version_contracts():
     constants = (ROOT / "constants.py").read_text(encoding="utf-8")
