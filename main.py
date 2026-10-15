@@ -844,41 +844,54 @@ class ExerciseCard(ft.Card):
 
             set_is_done = bool(set_data.get("done"))
             complete_set_btn = ft.ElevatedButton(
-                content=ft.Text("✓ DONE" if set_is_done else ("DONE + LOG" if idx == len(self.app.sets[self.db_id]) - 1 else "COMPLETE"), size=9, weight="bold"),
+                content=ft.Text("✓" if set_is_done else "DONE", size=10, weight="bold"),
                 data=(not set_is_done),
                 disabled=(self.status == STATUS_COMPLETED),
+                tooltip="Reopen this set" if set_is_done else ("Complete final set and log exercise" if idx == len(self.app.sets[self.db_id]) - 1 else "Complete this set"),
                 on_click=self.make_set_done_handler(idx),
-                height=40,
-                width=88,
+                height=48,
+                width=58,
                 style=ft.ButtonStyle(
                     bgcolor=COLOR_COMPLETE if set_is_done else COLOR_ACTIVE,
-                    color="white",
-                    padding=6,
+                    color="white", padding=2,
                     shape=ft.RoundedRectangleBorder(radius=7),
                 ),
             )
-            
-            # Explicit completion controls rest timing. Editing planned values never starts a timer.
-            set_row = ft.Row([set_indicator, w_f, r_f, rpe_f, complete_set_btn], alignment="start", vertical_alignment="center", spacing=6)
-            rep_nudge_bar = None
+
+            reps_control = r_f
             if self.status == STATUS_PENDING and idx == kinetic_active_idx and not set_is_done:
-                rep_nudge_bar = ft.Row([
-                    ft.Text("Adjust reps", size=9, weight="bold", color="cyan200"),
-                    ft.OutlinedButton(
-                        content=ft.Text("-1 REP", size=10, weight="bold"),
-                        height=48,
-                        width=82,
-                        tooltip="Decrease active-set reps by 1",
-                        on_click=lambda ev, set_index=idx: self.nudge_active_set_reps(set_index, -1),
-                    ),
-                    ft.OutlinedButton(
-                        content=ft.Text("+1 REP", size=10, weight="bold"),
-                        height=48,
-                        width=82,
-                        tooltip="Increase active-set reps by 1",
-                        on_click=lambda ev, set_index=idx: self.nudge_active_set_reps(set_index, 1),
-                    ),
-                ], spacing=6, alignment=ft.MainAxisAlignment.END, vertical_alignment="center")
+                r_f.expand = True
+                r_f.bgcolor = "transparent"
+                r_f.border_radius = 0
+                reps_control = ft.Container(
+                    content=ft.Row([
+                        ft.IconButton(
+                            icon="remove", icon_size=18, width=48, height=48, padding=0,
+                            tooltip="Decrease active-set reps by 1",
+                            on_click=lambda ev, set_index=idx: self.nudge_active_set_reps(set_index, -1),
+                        ),
+                        r_f,
+                        ft.IconButton(
+                            icon="add", icon_size=18, width=48, height=48, padding=0,
+                            tooltip="Increase active-set reps by 1",
+                            on_click=lambda ev, set_index=idx: self.nudge_active_set_reps(set_index, 1),
+                        ),
+                    ], spacing=0, vertical_alignment="center"),
+                    expand=4, height=48, bgcolor="white5",
+                    border=ft.Border(
+                        top=ft.BorderSide(1, "cyan700"),
+                        right=ft.BorderSide(1, "cyan700"),
+                        bottom=ft.BorderSide(1, "cyan700"),
+                        left=ft.BorderSide(1, "cyan700"),
+                    ), border_radius=6,
+                    tooltip="Adjust reps with minus, keyboard entry, or plus",
+                )
+
+            # Keep weight, inline reps stepper, RPE, and Done in one portrait-safe row.
+            set_row = ft.Row(
+                [set_indicator, w_f, reps_control, rpe_f, complete_set_btn],
+                alignment="start", vertical_alignment="center", spacing=4,
+            )
 
             # Kinetic dimming, baked in at construction (see kinetic_active_idx above).
             if idx < kinetic_active_idx or kinetic_active_idx == -1:
@@ -904,9 +917,8 @@ class ExerciseCard(ft.Card):
                     opacity=row_opacity, bgcolor=row_bgcolor
                 )
             else:
-                row_content = ft.Column([set_row, rep_nudge_bar], spacing=2, tight=True) if rep_nudge_bar else set_row
                 row_container = ft.Container(
-                    content=row_content, padding=3, border_radius=8,
+                    content=set_row, padding=3, border_radius=8,
                     opacity=row_opacity, bgcolor=row_bgcolor
                 )
 
