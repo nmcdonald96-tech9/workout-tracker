@@ -54,7 +54,7 @@ def test_handler_is_active_pending_only_model_first_and_card_local():
 
 def test_ui_shows_one_48_dp_nudge_trigger_for_active_pending_set():
     assert 'if self.status == STATUS_PENDING and idx == kinetic_active_idx and not set_is_done:' in SOURCE
-    assert 'icon="exposure"' in SOURCE
+    assert 'content=ft.Text("±", size=22, weight="bold", color="cyan200")' in SOURCE
     assert 'width=48' in SOURCE and 'height=48' in SOURCE
     assert "Adjust active-set reps by 1" in SOURCE
     card = SOURCE[SOURCE.index("    def build_card("):SOURCE.index("    def _reopen_completed(", SOURCE.index("    def build_card("))]

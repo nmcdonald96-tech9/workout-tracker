@@ -927,12 +927,13 @@ class ExerciseCard(ft.Card):
 
             nudge_slot = ft.Container(width=48, height=48)
             if self.status == STATUS_PENDING and idx == kinetic_active_idx and not set_is_done:
-                nudge_slot = ft.IconButton(
-                    icon="exposure",
-                    icon_size=20,
+                nudge_slot = ft.Container(
+                    content=ft.Text("±", size=22, weight="bold", color="cyan200"),
                     width=48,
                     height=48,
-                    padding=0,
+                    alignment=ft.Alignment(0, 0),
+                    border_radius=7,
+                    ink=True,
                     tooltip="Adjust active-set reps by 1",
                     on_click=lambda ev, set_index=idx: self.open_rep_nudge_menu(set_index, ev),
                 )

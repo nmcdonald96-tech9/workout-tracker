@@ -7,7 +7,7 @@ def build_card_block():
     return method("build_card","_reopen_completed")
 def test_single_48_dp_trigger_replaces_two_inline_buttons():
     b=build_card_block();assert 'nudge_slot = ft.Container(width=48, height=48)' in b
-    assert 'icon="exposure"' in b and 'self.open_rep_nudge_menu(set_index, ev)' in b
+    assert 'content=ft.Text("±", size=22, weight="bold", color="cyan200")' in b and 'self.open_rep_nudge_menu(set_index, ev)' in b
     assert 'icon="remove"' not in b and 'icon="add"' not in b
     assert "reps_control" not in b
 def test_active_and_inactive_rows_share_stable_columns():
