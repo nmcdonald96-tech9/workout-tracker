@@ -33,7 +33,7 @@ def test_verified_interactions_remain_present():
  s=(ROOT/'main.py').read_text()
  assert 'self.close_week_day_selector()' in method('change_active_week','change_active_day')
  done=method('make_set_done_handler','make_live_updater')
- assert 'CompletionAction.LOG_EXERCISE' in done and 'self.app.advance_group_flow' in done
+ assert 'CompletionAction.LOG_EXERCISE' in done and 'self.app.resolve_group_flow' in done and 'self.app.apply_group_flow_instruction' in done
 def test_readiness_diagnostics_remain_present():
  assert '2.0 acceptance status' in method('release_readiness_lines','open_diagnostics_dialog')
 def test_release_contract():

@@ -1457,11 +1457,17 @@ class ExerciseCard(ft.Card):
                 set_data["done"] = False
                 set_data["completed_at"] = None
             self.autosave_pending_sets()
-            grouped_advanced=requested_value and self.app.advance_group_flow(self.db_id,set_idx+1)
+            group_instruction = self.app.resolve_group_flow(self.db_id, set_idx + 1) if requested_value else None
+            execution_available = self.app.group_flow_has_target(group_instruction)
             all_done = bool(self.app.sets.get(self.db_id)) and all(bool(x.get("done")) for x in self.app.sets[self.db_id])
-            completion_instruction=resolve_completion_action(requested_complete=requested_value,set_index=set_idx,total_sets=len(self.app.sets[self.db_id]),all_done=all_done,execution_available=grouped_advanced)
-            if completion_instruction.action==CompletionAction.LOG_EXERCISE:self.on_save(None);return
-            if completion_instruction.action==CompletionAction.APPLY_EXECUTION:return
+            completion_instruction=resolve_completion_action(requested_complete=requested_value,set_index=set_idx,total_sets=len(self.app.sets[self.db_id]),all_done=all_done,execution_available=execution_available)
+            if completion_instruction.action==CompletionAction.LOG_EXERCISE:
+                self.on_save(None, suppress_refresh=execution_available)
+                if execution_available:self.app.apply_group_flow_instruction(group_instruction)
+                return
+            if completion_instruction.action==CompletionAction.APPLY_EXECUTION:
+                self.app.apply_group_flow_instruction(group_instruction)
+                return
             if requested_value and not exercise_was_started:
                 category_name = self.context.get("category") if self.context else None
                 self.app.activate_exercise(category_name, self.db_id)  # rebuilds internally
@@ -1590,7 +1596,7 @@ class ExerciseCard(ft.Card):
         self.app.rebuild_navigation_headers()
         self.app.request_structural_refresh("exercise_card_structure", rebuild_navigation=True)
 
-    def on_save(self, ev):
+    def on_save(self, ev, suppress_refresh=False):
         if not self.app.require_premium("logging workouts"):
             return
         revision_snapshot = self.app.completed_revision_sessions.get(self.db_id)
@@ -1775,7 +1781,8 @@ class ExerciseCard(ft.Card):
             print(f"[on_save] rebuild_navigation_headers failed: {nav_err}")
 
         # Unconditional — runs regardless of what happened above.
-        self.app.request_structural_refresh("exercise_card_structure", rebuild_navigation=True)
+        if not suppress_refresh:
+            self.app.request_structural_refresh("exercise_card_structure", rebuild_navigation=True)
 
 
 class WorkoutTrackerApp:
@@ -5272,15 +5279,54 @@ class WorkoutTrackerApp:
             remount_canvas=True,
         )
 
-    def advance_group_flow(self,session_id,completed_set):
-        with get_db() as execution_conn:instruction=resolve_post_set_action(execution_conn,session_id=session_id,completed_set_number=completed_set)
-        if instruction.action not in (SupersetExecutionAction.ADVANCE_SET,SupersetExecutionAction.ADVANCE_GROUP):return False
-        nxt=instruction.as_legacy_group_step()
+    def resolve_group_flow(self, session_id, completed_set):
+        with get_db() as execution_conn:
+            return resolve_post_set_action(
+                execution_conn,
+                session_id=session_id,
+                completed_set_number=completed_set,
+            )
+
+    @staticmethod
+    def group_flow_has_target(instruction):
+        return instruction is not None and instruction.action in (
+            SupersetExecutionAction.ADVANCE_SET,
+            SupersetExecutionAction.ADVANCE_GROUP,
+        )
+
+    def apply_group_flow_instruction(self, instruction):
+        if not self.group_flow_has_target(instruction):
+            return False
+        nxt = instruction.as_legacy_group_step()
         with get_db() as conn:
-            cats=[r[0] for r in conn.execute("SELECT DISTINCT category FROM workout_sessions WHERE meso_number=? AND week=? AND day_of_week=?",(self.current_meso,self.current_week,self.current_day)).fetchall() if r[0]]
-        for dcat in cats:self.collapsed_categories[self.category_key(dcat)]=(dcat!=nxt['category'])
-        self.collapsed_categories[self.category_key(nxt['category'])]=False;self.active_exercise_by_category[self.category_key(nxt['category'])]=nxt['session_id'];self.pending_scroll_key=exercise_anchor_key(nxt['session_id']);self.remount_main_canvas_on_rebuild=True
-        record_audit('superset_advance',f"{session_id} set {completed_set} -> {nxt['session_id']} set {nxt['pending_set']}; round_complete={int(bool(nxt.get('round_complete')))}; remaining={nxt.get('remaining_members')}");self.rebuild_entire_display();return True
+            cats = [
+                row[0]
+                for row in conn.execute(
+                    "SELECT DISTINCT category FROM workout_sessions WHERE meso_number=? AND week=? AND day_of_week=?",
+                    (self.current_meso, self.current_week, self.current_day),
+                ).fetchall()
+                if row[0]
+            ]
+        for category in cats:
+            self.collapsed_categories[self.category_key(category)] = category != nxt["category"]
+        self.collapsed_categories[self.category_key(nxt["category"])] = False
+        self.active_exercise_by_category[self.category_key(nxt["category"])] = nxt["session_id"]
+        self.pending_scroll_key = exercise_anchor_key(nxt["session_id"])
+        self.remount_main_canvas_on_rebuild = True
+        record_audit(
+            "superset_advance",
+            f"{instruction.source_session_id} set {instruction.completed_set_number} -> "
+            f"{nxt['session_id']} set {nxt['pending_set']}; "
+            f"round_complete={int(bool(nxt.get('round_complete')))}; remaining={nxt.get('remaining_members')}",
+        )
+        self.rebuild_entire_display()
+        return True
+
+    def advance_group_flow(self, session_id, completed_set):
+        """Compatibility wrapper for callers that still resolve and apply at once."""
+        return self.apply_group_flow_instruction(
+            self.resolve_group_flow(session_id, completed_set)
+        )
 
     def activate_exercise(self, category_name, session_id):
         if not category_name:

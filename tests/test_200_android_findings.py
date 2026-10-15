@@ -19,9 +19,11 @@ def test_nonfinal_grouped_set_still_applies_execution():
 
 def test_done_handler_retains_group_handoff_and_log_paths():
     done=block('    def make_set_done_handler(', '    def make_live_updater(')
-    assert 'self.app.advance_group_flow(self.db_id,set_idx+1)' in done
-    assert 'CompletionAction.LOG_EXERCISE:self.on_save(None);return' in done
-    assert 'CompletionAction.APPLY_EXECUTION:return' in done
+    assert 'self.app.resolve_group_flow(self.db_id, set_idx + 1)' in done
+    assert 'CompletionAction.LOG_EXERCISE:' in done
+    assert 'self.on_save(None, suppress_refresh=execution_available)' in done
+    assert 'CompletionAction.APPLY_EXECUTION:' in done
+    assert 'self.app.apply_group_flow_instruction(group_instruction)' in done
 
 def test_library_closes_before_opening_editor_and_returns_fresh():
     opener=block('    def open_dictionary_progression_editor(', '    async def _return_to_exercise_library(')

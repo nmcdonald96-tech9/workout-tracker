@@ -18,7 +18,7 @@ def test_verified_workout_baseline_is_untouched():
  assert 'self.set_targets[set_idx]["r"] = new_target_r' not in weight
  assert 'apply_weight_derived_reps(set_data, new_w, new_target_r)' in weight
  complete=method('make_set_done_handler','make_live_updater')
- assert 'self.app.advance_group_flow(self.db_id,set_idx+1)' in complete
+ assert 'self.app.resolve_group_flow(self.db_id, set_idx + 1)' in complete
 def test_week_day_lifecycle_is_retained():
  assert 'self.close_week_day_selector()' in method('change_active_week','change_active_day')
  assert 'self.close_week_day_selector()' in method('change_active_day','toggle_add_exercise_form')

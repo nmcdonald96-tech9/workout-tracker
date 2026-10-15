@@ -46,13 +46,19 @@ class SupersetExecutionInstruction:
         }
 
 
-def _pending(conn, session_id):
+def _pending(conn, session_id, *, assume_complete_through=0):
     rows = conn.execute(
         "SELECT set_number,is_complete FROM workout_sets "
         "WHERE session_id=? ORDER BY set_number",
         (session_id,),
     ).fetchall()
-    return 1 if not rows else next((int(number) for number, done in rows if not done), None)
+    if not rows:
+        return 1 if int(assume_complete_through or 0) < 1 else None
+    assumed = int(assume_complete_through or 0)
+    return next(
+        (int(number) for number, done in rows if not done and int(number) > assumed),
+        None,
+    )
 
 
 def select_cyclic_target(candidates, *, source_position, completed_set_number):
@@ -69,11 +75,8 @@ def select_cyclic_target(candidates, *, source_position, completed_set_number):
     after = [item for item in ordered if item[3] > int(source_position)]
     wrapped = [item for item in ordered if item[3] <= int(source_position)]
     cyclic = after + wrapped
-    same_round = [item for item in cyclic if item[4] <= int(completed_set_number)]
-    if same_round:
-        return same_round[0]
-    next_round = min(item[4] for item in cyclic)
-    return next(item for item in cyclic if item[4] == next_round)
+    target_round = min(item[4] for item in cyclic)
+    return next(item for item in cyclic if item[4] == target_round)
 
 
 def resolve_post_set_action(conn, *, session_id, completed_set_number):
@@ -130,7 +133,12 @@ def resolve_post_set_action(conn, *, session_id, completed_set_number):
     ).fetchall()
     candidates = []
     for member_id, member_exercise, member_category, member_status, member_position in members:
-        pending = _pending(conn, member_id) if member_status == "Pending" else None
+        assumed_complete = completed_set_number if int(member_id) == session_id else 0
+        pending = (
+            _pending(conn, member_id, assume_complete_through=assumed_complete)
+            if member_status == "Pending"
+            else None
+        )
         if pending is not None:
             candidates.append(
                 (

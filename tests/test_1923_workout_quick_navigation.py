@@ -11,7 +11,7 @@ def method_block(name, next_name):
 
 
 def test_jump_uses_tuple_scoped_category_keys_and_deferred_refresh():
-    block = method_block("jump_to_category", "advance_group_flow")
+    block = method_block("jump_to_category", "resolve_group_flow")
     assert "jump_to_category_state(" not in block
     assert "self.collapsed_categories[self.category_key(category)]" in block
     assert "self.collapsed_categories[self.category_key(selected)] = False" in block

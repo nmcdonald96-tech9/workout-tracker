@@ -24,7 +24,7 @@ def test_weight_baseline_fix_is_untouched():
  assert 'apply_weight_derived_reps(set_data, new_w, new_target_r)' in block
 def test_complete_handler_is_untouched_by_modal_patch():
  b=method('make_set_done_handler','make_live_updater')
- assert 'self.app.advance_group_flow(self.db_id,set_idx+1)' in b
+ assert 'self.app.resolve_group_flow(self.db_id, set_idx + 1)' in b
  assert 'CompletionAction.LOG_EXERCISE' in b
 def test_release_contract():
  c=(ROOT/'constants.py').read_text(); assert 'APP_VERSION = "2.1.0"' in c and 'DATABASE_SCHEMA_VERSION = 20' in c
