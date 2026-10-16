@@ -112,7 +112,8 @@ class ExerciseCard(ft.Card):
         self.reps_fields = []
         self.rpe_fields = []
         self.committed_weight_values = {}
-        self._reps_focus_sync_needed = set()
+        if not hasattr(self.app, "_reps_focus_sync_targets"):
+            self.app._reps_focus_sync_targets = set()
         if not hasattr(self.app, "_autofocus_reps_target"):
             self.app._autofocus_reps_target = None
         self.app.record_workout_ui_trace("card_created", self.db_id, None, self)
@@ -282,11 +283,14 @@ class ExerciseCard(ft.Card):
     def request_local_card_refresh(self, reason):
         """Coalesce one deferred card-only replacement without moving the workout viewport."""
         if getattr(self, "_local_card_refresh_scheduled", False):
+            if reason == "reps_focus_weight_sync":
+                self._local_card_refresh_follow_up = True
             self.app.record_workout_ui_trace(
                 "local_card_refresh_coalesced", self.db_id, None, self, reason=reason,
             )
             return True
         self._local_card_refresh_scheduled = True
+        self._local_card_refresh_follow_up = False
 
         async def refresh_after_event():
             await asyncio.sleep(0)
@@ -300,7 +304,14 @@ class ExerciseCard(ft.Card):
                     reason=reason, refreshed=bool(refreshed),
                 )
             finally:
+                follow_up = bool(getattr(self, "_local_card_refresh_follow_up", False))
                 self._local_card_refresh_scheduled = False
+                self._local_card_refresh_follow_up = False
+                target = getattr(self.app, "_autofocus_reps_target", None)
+                if follow_up and target and target[0] == self.db_id:
+                    current = self.app.mounted_exercise_card(self.db_id)
+                    if current is not None and current is not self:
+                        current.request_local_card_refresh("reps_focus_weight_sync")
 
         runner = getattr(getattr(self.app, "page", None), "run_task", None)
         if not callable(runner):
@@ -432,9 +443,9 @@ class ExerciseCard(ft.Card):
             set_data.clear(); set_data.update(updated)
             self.committed_weight_values[set_idx] = str(set_data.get("w", ""))
             if event_name == "weight_blur":
-                self._reps_focus_sync_needed.add(set_idx)
+                self.app._reps_focus_sync_targets.add((self.db_id, set_idx))
             else:
-                self._reps_focus_sync_needed.discard(set_idx)
+                self.app._reps_focus_sync_targets.discard((self.db_id, set_idx))
             self.autosave_pending_sets()
             ok = self.refresh_weight_edit_feedback(set_idx) if refresh_feedback else True
             self.app.record_workout_ui_trace(event_name + "_cleared", self.db_id, set_idx, self, update_ok=ok)
@@ -455,9 +466,9 @@ class ExerciseCard(ft.Card):
             self.app.record_workout_ui_trace(event_name + "_derived_applied", self.db_id, set_idx, self)
         self.committed_weight_values[set_idx] = str(set_data.get("w", ""))
         if event_name == "weight_blur":
-            self._reps_focus_sync_needed.add(set_idx)
+            self.app._reps_focus_sync_targets.add((self.db_id, set_idx))
         else:
-            self._reps_focus_sync_needed.discard(set_idx)
+            self.app._reps_focus_sync_targets.discard((self.db_id, set_idx))
         self.autosave_pending_sets()
         ok = self.refresh_weight_edit_feedback(set_idx) if refresh_feedback else True
         self.app.record_workout_ui_trace(event_name + "_finished", self.db_id, set_idx, self, update_ok=ok)
@@ -488,9 +499,9 @@ class ExerciseCard(ft.Card):
                     refresh_feedback=False,
                 ):
                     return
-            elif set_idx not in self._reps_focus_sync_needed:
+            elif (self.db_id, set_idx) not in self.app._reps_focus_sync_targets:
                 return
-            self._reps_focus_sync_needed.discard(set_idx)
+            self.app._reps_focus_sync_targets.discard((self.db_id, set_idx))
             self.app._autofocus_reps_target = (self.db_id, set_idx)
             self.request_local_card_refresh("reps_focus_weight_sync")
         return focus_handler
@@ -861,7 +872,6 @@ class ExerciseCard(ft.Card):
                 set_data["_display_target_w"] = target["w"]
                 set_data["_display_target_r"] = target["r"]
             self.committed_weight_values[idx] = str(set_data.get("w", ""))
-            self._reps_focus_sync_needed.discard(idx)
             w_hint = str(target["w"])
             r_hint = str(target["r"])
             rpe_hint = past_rpe_list[idx].strip() if idx < len(past_rpe_list) else "8"
@@ -909,9 +919,6 @@ class ExerciseCard(ft.Card):
             r_f.on_change = self.make_live_updater(idx, "r")
             r_f.on_focus = self.make_reps_focus_handler(idx)
             r_f.on_blur = self.make_blur_handler(idx, "r")
-            if autofocus_reps:
-                self.app._autofocus_reps_target = None
-
             rpe_f = ft.TextField(
                 value=set_data["rpe"],
                 label="RPE",
@@ -5150,6 +5157,16 @@ class WorkoutTrackerApp:
     def preserve_workout_viewport(self):
         self.pending_scroll_offset=float(self.workout_scroll_offset or 0.0)
 
+    def mounted_exercise_card(self, session_id):
+        wanted_key = exercise_anchor_key(session_id)
+        return next(
+            (
+                control for control in self.main_canvas.controls
+                if getattr(control, "key", None) == wanted_key
+            ),
+            None,
+        )
+
     def replace_exercise_card_in_place(self, card):
         """Replace one child while preserving the existing ListView and scroll position."""
         wanted_key = exercise_anchor_key(card.db_id)
@@ -5165,6 +5182,10 @@ class WorkoutTrackerApp:
             replacement.key = wanted_key
             self.main_canvas.controls[index] = replacement
             self.main_canvas.update()
+            target = getattr(self, "_autofocus_reps_target", None)
+            if target and target[0] == card.db_id:
+                self._autofocus_reps_target = None
+                self._reps_focus_sync_targets.discard(target)
             return True
         except Exception as ex:
             print(f"[replace_exercise_card_in_place] {ex}")
