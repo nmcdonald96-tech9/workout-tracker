@@ -42,29 +42,27 @@ def test_weight_commit_marks_blur_handoff_and_clears_other_paths():
     assert block.count("self.committed_weight_values[set_idx]") == 2
 
 
-def test_focus_first_commits_then_requests_card_refresh():
+def test_focus_first_commits_then_runs_direct_sync():
     block = method("make_reps_focus_handler", "make_rpe_focus_handler")
-    assert "if not numeric_values_equal(field_weight, committed_weight):" in block
+    assert "changed_here = not numeric_values_equal(field_weight, committed_weight)" in block
     assert '"weight_reps_focus"' in block
     assert "refresh_feedback=False" in block
-    assert 'self.request_local_card_refresh("reps_focus_weight_sync")' in block
+    assert "runner(synchronize_focused_reps)" in block
 
 
-def test_blur_first_marker_still_forces_card_refresh():
+def test_blur_first_marker_still_forces_direct_sync():
     block = method("make_reps_focus_handler", "make_rpe_focus_handler")
-    assert "elif (self.db_id, set_idx) not in self.app._reps_focus_sync_targets:" in block
-    assert "self.app._reps_focus_sync_targets.discard((self.db_id, set_idx))" in block
-    assert block.index("elif (self.db_id, set_idx) not in self.app._reps_focus_sync_targets:") < block.index("self.app._autofocus_reps_target")
+    assert "elif target not in self.app._reps_focus_sync_targets:" in block
+    assert "self.app._reps_focus_sync_targets.discard(target)" in block
+    assert block.index("elif target not in self.app._reps_focus_sync_targets:") < block.index("runner(synchronize_focused_reps)")
 
 
-def test_reps_focus_uses_one_shot_autofocus_target():
+def test_reps_focus_uses_explicit_focus_boundaries():
     block = method("make_reps_focus_handler", "make_rpe_focus_handler")
-    assert 'self.app._autofocus_reps_target = (self.db_id, set_idx)' in block
-    card = build_card()
-    assert 'autofocus_reps = self.app._autofocus_reps_target == (self.db_id, idx)' in card
-    assert 'autofocus=autofocus_reps' in card
-    replace = method("replace_exercise_card_in_place", "remount_main_canvas")
-    assert 'self._autofocus_reps_target = None' in replace
+    assert "field.blur()" in block
+    assert "field.update()" in block
+    assert "field.focus()" in block
+    assert "request_local_card_refresh" not in block
 
 
 def test_reps_field_has_focus_handler_and_existing_paths_remain():
