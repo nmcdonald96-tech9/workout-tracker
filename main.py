@@ -468,7 +468,7 @@ class ExerciseCard(ft.Card):
             self.commit_weight_edit(set_idx, getattr(e.control, "value", None), event_name)
         return commit_handler
 
-    def make_reps_focus_handler(self, set_idx):
+    def make_reps_tap_handler(self, set_idx):
         """Synchronize derived reps through explicit Android focus boundaries."""
         def focus_handler(event):
             drafts = self.app.sets.get(self.db_id, [])
@@ -924,10 +924,11 @@ class ExerciseCard(ft.Card):
                 border_color="transparent",
                 border_radius=6,
                 text_align="center",
-                keyboard_type=ft.KeyboardType.NUMBER
+                keyboard_type=ft.KeyboardType.NUMBER,
+                always_call_on_tap=True,
             )
             r_f.on_change = self.make_live_updater(idx, "r")
-            r_f.on_focus = self.make_reps_focus_handler(idx)
+            r_f.on_click = self.make_reps_tap_handler(idx)
             r_f.on_blur = self.make_blur_handler(idx, "r")
             rpe_f = ft.TextField(
                 value=set_data["rpe"],

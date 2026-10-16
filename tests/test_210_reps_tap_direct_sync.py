@@ -10,7 +10,7 @@ def method(name, next_name):
 
 
 def test_focus_sync_uses_existing_reps_control_not_card_replacement():
-    focus = method("make_reps_focus_handler", "make_rpe_focus_handler")
+    focus = method("make_reps_tap_handler", "make_rpe_focus_handler")
     assert "reps_field = self.reps_fields[set_idx]" in focus
     assert "request_local_card_refresh" not in focus
     assert "replace_exercise_card_in_place" not in focus
@@ -18,7 +18,7 @@ def test_focus_sync_uses_existing_reps_control_not_card_replacement():
 
 
 def test_sync_blurs_updates_and_refocuses_across_event_boundaries():
-    focus = method("make_reps_focus_handler", "make_rpe_focus_handler")
+    focus = method("make_reps_tap_handler", "make_rpe_focus_handler")
     blur = focus.index("field.blur()")
     value = focus.index('field.value = str(current_drafts[set_idx].get("r", ""))')
     update = focus.index("field.update()")
@@ -31,7 +31,7 @@ def test_sync_blurs_updates_and_refocuses_across_event_boundaries():
 
 
 def test_both_callback_orders_remain_supported():
-    focus = method("make_reps_focus_handler", "make_rpe_focus_handler")
+    focus = method("make_reps_tap_handler", "make_rpe_focus_handler")
     assert "changed_here = not numeric_values_equal(field_weight, committed_weight)" in focus
     assert '"weight_reps_focus"' in focus
     assert "elif target not in self.app._reps_focus_sync_targets:" in focus
@@ -39,14 +39,14 @@ def test_both_callback_orders_remain_supported():
 
 
 def test_programmatic_refocus_does_not_reenter_sync():
-    focus = method("make_reps_focus_handler", "make_rpe_focus_handler")
+    focus = method("make_reps_tap_handler", "make_rpe_focus_handler")
     discard = focus.index("self.app._reps_focus_sync_targets.discard(target)")
     refocus = focus.index("field.focus()")
     assert discard < refocus
 
 
 def test_stale_card_guard_prevents_old_control_updates():
-    focus = method("make_reps_focus_handler", "make_rpe_focus_handler")
+    focus = method("make_reps_tap_handler", "make_rpe_focus_handler")
     assert "current = self.app.mounted_exercise_card(self.db_id)" in focus
     assert "current is not self" in focus
 
@@ -55,3 +55,9 @@ def test_no_autofocus_replacement_contract_remains():
     assert "_autofocus_reps_target" not in SOURCE
     card = method("build_card", "_reopen_completed")
     assert "autofocus=autofocus_reps" not in card
+
+def test_reps_tap_event_is_repeatable_even_when_field_already_has_focus():
+    card = method("build_card", "_reopen_completed")
+    assert "always_call_on_tap=True" in card
+    assert "r_f.on_click = self.make_reps_tap_handler(idx)" in card
+    assert "r_f.on_focus =" not in card[card.index("r_f = ft.TextField("):card.index("rpe_f = ft.TextField(")]

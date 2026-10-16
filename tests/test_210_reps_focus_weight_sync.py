@@ -43,7 +43,7 @@ def test_weight_commit_marks_blur_handoff_and_clears_other_paths():
 
 
 def test_focus_first_commits_then_runs_direct_sync():
-    block = method("make_reps_focus_handler", "make_rpe_focus_handler")
+    block = method("make_reps_tap_handler", "make_rpe_focus_handler")
     assert "changed_here = not numeric_values_equal(field_weight, committed_weight)" in block
     assert '"weight_reps_focus"' in block
     assert "refresh_feedback=False" in block
@@ -51,14 +51,14 @@ def test_focus_first_commits_then_runs_direct_sync():
 
 
 def test_blur_first_marker_still_forces_direct_sync():
-    block = method("make_reps_focus_handler", "make_rpe_focus_handler")
+    block = method("make_reps_tap_handler", "make_rpe_focus_handler")
     assert "elif target not in self.app._reps_focus_sync_targets:" in block
     assert "self.app._reps_focus_sync_targets.discard(target)" in block
     assert block.index("elif target not in self.app._reps_focus_sync_targets:") < block.index("runner(synchronize_focused_reps)")
 
 
 def test_reps_focus_uses_explicit_focus_boundaries():
-    block = method("make_reps_focus_handler", "make_rpe_focus_handler")
+    block = method("make_reps_tap_handler", "make_rpe_focus_handler")
     assert "field.blur()" in block
     assert "field.update()" in block
     assert "field.focus()" in block
@@ -67,7 +67,7 @@ def test_reps_focus_uses_explicit_focus_boundaries():
 
 def test_reps_field_has_focus_handler_and_existing_paths_remain():
     card = build_card()
-    assert "r_f.on_focus = self.make_reps_focus_handler(idx)" in card
+    assert "r_f.on_click = self.make_reps_tap_handler(idx)" in card
     assert 'w_f.on_submit = self.make_weight_commit_handler(idx, "weight_submit")' in card
     assert 'w_f.on_blur = self.make_weight_commit_handler(idx, "weight_blur")' in card
     assert "rpe_f.on_focus = self.make_rpe_focus_handler(idx)" in card
