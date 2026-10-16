@@ -111,9 +111,6 @@ class ExerciseCard(ft.Card):
         self.weight_fields = []
         self.reps_fields = []
         self.rpe_fields = []
-        self.committed_weight_values = {}
-        if not hasattr(self.app, "_reps_focus_sync_targets"):
-            self.app._reps_focus_sync_targets = set()
         self.app.record_workout_ui_trace("card_created", self.db_id, None, self)
         self.build_card()
         self.app.record_workout_ui_trace(
@@ -233,10 +230,8 @@ class ExerciseCard(ft.Card):
         if not reps_are_user_owned and set_idx < len(self.weight_fields):
             weight_field = self.weight_fields[set_idx]
             field_weight = getattr(weight_field, "value", None)
-            committed_weight = self.committed_weight_values.get(
-                set_idx, drafts[set_idx].get("w")
-            )
-            if not numeric_values_equal(field_weight, committed_weight):
+            draft_weight = drafts[set_idx].get("w")
+            if not numeric_values_equal(field_weight, draft_weight):
                 self.commit_weight_edit(
                     set_idx,
                     field_weight,
@@ -398,14 +393,9 @@ class ExerciseCard(ft.Card):
             self.app.record_workout_ui_trace(event_name + "_rejected_draft", self.db_id, set_idx, self)
             return False
         set_data = self.app.sets[self.db_id][set_idx]
-        committed_weight = self.committed_weight_values.get(
-            set_idx, set_data.get("w")
-        )
-        if raw_value is not None and numeric_values_equal(raw_value, committed_weight):
-            self.app.record_workout_ui_trace(
-                event_name + "_same_committed_weight_skipped",
-                self.db_id, set_idx, self,
-            )
+        reps_are_user_owned = normalize_reps_source(set_data.get("r_source")) == "user"
+        if raw_value is not None and reps_are_user_owned and numeric_values_equal(raw_value, set_data.get("w")):
+            self.app.record_workout_ui_trace(event_name + "_same_weight_manual_reps_preserved", self.db_id, set_idx, self)
             return True
         if raw_value is not None:
             updated = apply_direct_edit(set_data, "w", raw_value)
@@ -429,11 +419,6 @@ class ExerciseCard(ft.Card):
             updated = clear_override(set_data, "w", current_target)
             updated = clear_override(updated, "r", current_target)
             set_data.clear(); set_data.update(updated)
-            self.committed_weight_values[set_idx] = str(set_data.get("w", ""))
-            if event_name == "weight_blur":
-                self.app._reps_focus_sync_targets.add((self.db_id, set_idx))
-            else:
-                self.app._reps_focus_sync_targets.discard((self.db_id, set_idx))
             self.autosave_pending_sets()
             ok = self.refresh_weight_edit_feedback(set_idx) if refresh_feedback else True
             self.app.record_workout_ui_trace(event_name + "_cleared", self.db_id, set_idx, self, update_ok=ok)
@@ -452,11 +437,6 @@ class ExerciseCard(ft.Card):
             updated = apply_weight_derived_reps(set_data, new_w, new_target_r)
             set_data.clear(); set_data.update(updated)
             self.app.record_workout_ui_trace(event_name + "_derived_applied", self.db_id, set_idx, self)
-        self.committed_weight_values[set_idx] = str(set_data.get("w", ""))
-        if event_name == "weight_blur":
-            self.app._reps_focus_sync_targets.add((self.db_id, set_idx))
-        else:
-            self.app._reps_focus_sync_targets.discard((self.db_id, set_idx))
         self.autosave_pending_sets()
         ok = self.refresh_weight_edit_feedback(set_idx) if refresh_feedback else True
         self.app.record_workout_ui_trace(event_name + "_finished", self.db_id, set_idx, self, update_ok=ok)
@@ -467,56 +447,6 @@ class ExerciseCard(ft.Card):
             self.app.record_workout_ui_trace(event_name + "_received", self.db_id, set_idx, self, control=getattr(e, "control", None))
             self.commit_weight_edit(set_idx, getattr(e.control, "value", None), event_name)
         return commit_handler
-
-    def make_reps_tap_handler(self, set_idx):
-        """Synchronize derived reps through explicit Android focus boundaries."""
-        def focus_handler(event):
-            drafts = self.app.sets.get(self.db_id, [])
-            if set_idx >= len(drafts) or set_idx >= len(self.weight_fields) or set_idx >= len(self.reps_fields):
-                return
-            weight_field = self.weight_fields[set_idx]
-            reps_field = self.reps_fields[set_idx]
-            field_weight = getattr(weight_field, "value", None)
-            committed_weight = self.committed_weight_values.get(
-                set_idx, drafts[set_idx].get("w")
-            )
-            target = (self.db_id, set_idx)
-            changed_here = not numeric_values_equal(field_weight, committed_weight)
-            if changed_here:
-                if not self.commit_weight_edit(
-                    set_idx,
-                    field_weight,
-                    "weight_reps_focus",
-                    refresh_feedback=False,
-                ):
-                    return
-            elif target not in self.app._reps_focus_sync_targets:
-                return
-            self.app._reps_focus_sync_targets.discard(target)
-
-            async def synchronize_focused_reps():
-                await asyncio.sleep(0)
-                current = self.app.mounted_exercise_card(self.db_id)
-                if current is not self or set_idx >= len(self.reps_fields):
-                    return
-                field = self.reps_fields[set_idx]
-                field.blur()
-                await asyncio.sleep(0)
-                current_drafts = self.app.sets.get(self.db_id, [])
-                if set_idx >= len(current_drafts):
-                    return
-                field.value = str(current_drafts[set_idx].get("r", ""))
-                field.update()
-                await asyncio.sleep(0)
-                field.focus()
-                self.app.record_workout_ui_trace(
-                    "reps_focus_sync_finished", self.db_id, set_idx, self, control=field,
-                )
-
-            runner = getattr(getattr(self.app, "page", None), "run_task", None)
-            if callable(runner):
-                runner(synchronize_focused_reps)
-        return focus_handler
 
     def make_rpe_focus_handler(self, set_idx):
         """Finish a pending weight commit without replacing manual reps."""
@@ -883,7 +813,6 @@ class ExerciseCard(ft.Card):
                 set_data.update(resolved_draft)
                 set_data["_display_target_w"] = target["w"]
                 set_data["_display_target_r"] = target["r"]
-            self.committed_weight_values[idx] = str(set_data.get("w", ""))
             w_hint = str(target["w"])
             r_hint = str(target["r"])
             rpe_hint = past_rpe_list[idx].strip() if idx < len(past_rpe_list) else "8"
@@ -924,12 +853,11 @@ class ExerciseCard(ft.Card):
                 border_color="transparent",
                 border_radius=6,
                 text_align="center",
-                keyboard_type=ft.KeyboardType.NUMBER,
-                always_call_on_tap=True,
+                keyboard_type=ft.KeyboardType.NUMBER
             )
             r_f.on_change = self.make_live_updater(idx, "r")
-            r_f.on_click = self.make_reps_tap_handler(idx)
             r_f.on_blur = self.make_blur_handler(idx, "r")
+
             rpe_f = ft.TextField(
                 value=set_data["rpe"],
                 label="RPE",

@@ -19,8 +19,8 @@ def test_numeric_weight_equivalence_ignores_formatting():
 
 def test_untouched_weight_nudge_skips_weight_commit():
     block = method("prepare_rep_nudge_weight", "nudge_active_set_reps")
-    assert "field_weight =" in block and "committed_weight =" in block
-    assert "if not numeric_values_equal(field_weight, committed_weight):" in block
+    assert "field_weight =" in block and "draft_weight =" in block
+    assert "if not numeric_values_equal(field_weight, draft_weight):" in block
     assert block.index("if not numeric_values_equal") < block.index("self.commit_weight_edit(")
 
 
@@ -32,9 +32,10 @@ def test_changed_weight_commits_without_intermediate_feedback_update():
 
 def test_same_weight_delayed_blur_preserves_user_owned_reps():
     block = method("commit_weight_edit", "make_weight_commit_handler")
-    guard = 'raw_value is not None and numeric_values_equal(raw_value, committed_weight)'
+    assert 'reps_are_user_owned = normalize_reps_source(set_data.get("r_source")) == "user"' in block
+    guard = 'raw_value is not None and reps_are_user_owned and numeric_values_equal(raw_value, set_data.get("w"))'
     assert guard in block
-    assert '"_same_committed_weight_skipped"' in block
+    assert '"_same_weight_manual_reps_preserved"' in block
     assert block.index(guard) < block.index('updated = apply_direct_edit(set_data, "w", raw_value)')
 
 
