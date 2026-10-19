@@ -72,6 +72,7 @@ from services.completed_revision_service import (
 )
 from services.exercise_completion_service import CompletionAction, resolve_completion_action
 from services.superset_execution_service import SupersetExecutionAction, resolve_post_set_action
+from services.rest_timer_service import latest_completed_timestamp, rest_timer_snapshot
 from services.persistent_superset_service import (
     SupersetScope, apply_persistent_superset,
 )
@@ -1545,9 +1546,11 @@ class ExerciseCard(ft.Card):
                 set_data["rpe"] = normalized_rpe
                 set_data["done"] = True
                 set_data["completed_at"] = datetime.now().isoformat(timespec="seconds")
+                self.app.set_active_rest_start(set_data["completed_at"])
             else:
                 set_data["done"] = False
                 set_data["completed_at"] = None
+                self.app.sync_active_rest_from_sets()
             self.autosave_pending_sets()
             group_instruction = self.app.resolve_group_flow(self.db_id, set_idx + 1) if requested_value else None
             execution_available = self.app.group_flow_has_target(group_instruction)
@@ -1911,6 +1914,10 @@ class WorkoutTrackerApp:
         # Retained for compatibility with older in-memory state. Rest timing now
         # uses each set's explicit Done checkbox and workout_sets.completed_at.
         self.set_touch_times = {}
+        self._active_rest_started_at = None
+        self._rest_timer_task_started = False
+        self._rest_timer_ui_suspended = False
+        self._rest_timer_rendered_phase = None
         self.view_mode = "workout" 
         self.collapsed_categories = {}
         # Quick-nav and active-exercise focus state.
@@ -1963,6 +1970,7 @@ class WorkoutTrackerApp:
         try:self.page.on_app_lifecycle_state_change=self.on_app_lifecycle_state_change
         except Exception:pass
         self.build_ui_shell()
+        self.ensure_rest_timer_task()
         self.rebuild_navigation_headers()
         self.rebuild_entire_display()
         try:self.page.run_task(self.reconcile_billing_ownership, "startup")
@@ -2234,7 +2242,18 @@ class WorkoutTrackerApp:
             alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
             spacing=4,
         )
-        self.sticky_workout_header_host = ft.Container()
+        self.rest_timer_text = ft.Text("REST 0:00", size=11, weight="bold", color="cyan100")
+        self.rest_timer_pill = ft.Container(
+            content=self.rest_timer_text,
+            bgcolor="cyan900",
+            border_radius=14,
+            padding=ft.Padding(left=10,right=10,top=5,bottom=5),
+            visible=False,
+        )
+        self.sticky_workout_header_host = ft.Container(
+            content=ft.Row([self.rest_timer_pill], alignment=ft.MainAxisAlignment.END),
+            padding=ft.Padding(left=4,right=4,top=1,bottom=2),
+        )
         self.week_header_row = ft.Row([self.week_nav_row], alignment=ft.MainAxisAlignment.START, vertical_alignment=ft.CrossAxisAlignment.CENTER)
         self.day_header_row = ft.Row([self.day_nav_row], alignment=ft.MainAxisAlignment.START, vertical_alignment=ft.CrossAxisAlignment.CENTER)
 
@@ -2251,6 +2270,55 @@ class WorkoutTrackerApp:
             ft.Divider(height=1, color="white10"),
             self.main_canvas_host
         ], spacing=0, expand=True), expand=True))
+
+    def set_active_rest_start(self, completed_at):
+        self._active_rest_started_at = completed_at
+        self.refresh_rest_timer_pill()
+
+    def sync_active_rest_from_sets(self):
+        self._active_rest_started_at = latest_completed_timestamp(self.sets)
+        return self._active_rest_started_at
+
+    def _rest_timer_colors(self, phase):
+        return {
+            "early": ("cyan900", "cyan100"),
+            "middle": ("teal900", "teal100"),
+            "extended": ("amber900", "amber100"),
+        }.get(phase, ("cyan900", "cyan100"))
+
+    def refresh_rest_timer_pill(self):
+        pill = getattr(self, "rest_timer_pill", None)
+        text = getattr(self, "rest_timer_text", None)
+        if pill is None or text is None:
+            return
+        snapshot = rest_timer_snapshot(self._active_rest_started_at)
+        visible = self.view_mode == "workout" and snapshot is not None
+        pill.visible = visible
+        if snapshot is not None:
+            text.value = snapshot.text
+            self._rest_timer_rendered_phase = snapshot.phase
+        try:
+            if visible:
+                text.update()
+            pill.update()
+        except (AssertionError, RuntimeError):
+            pass
+
+    def ensure_rest_timer_task(self):
+        if self._rest_timer_task_started:
+            return False
+        runner = getattr(self.page, "run_task", None)
+        if not callable(runner):
+            return False
+        self._rest_timer_task_started = True
+        runner(self._rest_timer_loop)
+        return True
+
+    async def _rest_timer_loop(self):
+        while True:
+            if not self._rest_timer_ui_suspended:
+                self.refresh_rest_timer_pill()
+            await asyncio.sleep(1)
 
     async def reconcile_billing_ownership(self, reason="background", force=False):
         """Quiet ownership recovery. Transient failures never revoke access."""
@@ -4495,7 +4563,10 @@ class WorkoutTrackerApp:
     def on_app_lifecycle_state_change(self,e):
         state=str(getattr(getattr(e,'state',None),'name',getattr(e,'state',''))).upper()
         self.flush_pending_set_drafts()
+        self._rest_timer_ui_suspended = state not in ('SHOW','RESTART','RESUME')
         if state in ('SHOW','RESTART','RESUME'):
+            self.sync_active_rest_from_sets()
+            self.refresh_rest_timer_pill()
             # Never start Microsoft authentication or Graph network traffic from
             # an Android lifecycle callback. Offline resume must remain local-only.
             # A pending device-code flow is resumed explicitly with the existing
@@ -7714,6 +7785,8 @@ class WorkoutTrackerApp:
         return coordinator.request(reason, rebuild_navigation=rebuild_navigation, remount_canvas=remount_canvas)
 
     def rebuild_entire_display(self):
+        self.sync_active_rest_from_sets()
+        self.refresh_rest_timer_pill()
         if hasattr(self, "foundation"):
             self.foundation.sync(self)
         rebuild_started_at = time.perf_counter()
