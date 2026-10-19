@@ -1123,25 +1123,145 @@ def plan_diagnostics(meso):
  return {"pending":len(p),"exceptions":sum(x['exception'] for x in p),"unexpected":len(unexpected_future_placements(meso)),"duplicates":dups}
 
 
-def get_recurring_week_template(meso_number,source_week):
+def _recurring_identity_rows(conn):
+    """Return canonical recurrence keys keyed by stored exercise name and alias."""
+    identities = {}
+    for name, catalog_id, is_custom, identity_status in conn.execute(
+        "SELECT name,catalog_id,COALESCE(is_custom,0),identity_status FROM exercise_dict"
+    ).fetchall():
+        if catalog_id:
+            identities[name] = f"catalog:{catalog_id}"
+        elif is_custom or identity_status == "intentional_custom":
+            identities[name] = f"custom:{str(name).strip().casefold()}"
+        else:
+            identities[name] = f"legacy:{str(name).strip().casefold()}"
+    for alias, catalog_id, exercise_name in conn.execute(
+        "SELECT alias,catalog_id,exercise_name FROM exercise_aliases WHERE COALESCE(confirmed,0)=1"
+    ).fetchall():
+        key = f"catalog:{catalog_id}" if catalog_id else identities.get(exercise_name)
+        if key:
+            identities[alias] = key
+    return identities
+
+
+def _recurring_identity(exercise, identities, explicit=None):
+    return explicit or identities.get(exercise) or f"legacy:{str(exercise).strip().casefold()}"
+
+
+def recurring_identity_for(conn, exercise):
+    """Resolve a stored name or confirmed alias to its recurrence identity."""
+    return _recurring_identity(exercise, _recurring_identity_rows(conn))
+
+
+def add_exercise_to_recurring_blueprint(conn, meso_number, day, exercise):
+    """Persist a Quick Add member without rewriting unrelated blueprint structure."""
+    row = conn.execute(
+        "SELECT blueprint_json FROM meso_configs WHERE meso_number=?", (int(meso_number),)
+    ).fetchone()
+    if not row:
+        raise ValueError("The active mesocycle has no recurring blueprint.")
+    try:
+        blueprint = json.loads(row[0]) if row[0] else {}
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise ValueError("The recurring blueprint is invalid.") from exc
+    if not isinstance(blueprint, dict):
+        raise ValueError("The recurring blueprint is invalid.")
+    identities = _recurring_identity_rows(conn)
+    identity_key = _recurring_identity(exercise, identities)
+    items = blueprint.setdefault(day, [])
+    for item in items:
+        name = item if isinstance(item, str) else item.get("exercise") if isinstance(item, dict) else None
+        explicit = item.get("identity_key") if isinstance(item, dict) else None
+        if name and _recurring_identity(name, identities, explicit) == identity_key:
+            return False
+    items.append({
+        "exercise": exercise,
+        "identity_key": identity_key,
+        "order": len(items) + 1,
+        "group": None,
+        "group_position": None,
+    })
+    conn.execute(
+        "UPDATE meso_configs SET blueprint_json=? WHERE meso_number=?",
+        (json.dumps(blueprint, separators=(",", ":")), int(meso_number)),
+    )
+    return True
+
+
+def get_recurring_week_template(meso_number, source_week):
+    """Build the next-week structure from blueprint identity plus latest targets."""
     with get_db() as c:
-        cfg=c.execute("SELECT blueprint_json FROM meso_configs WHERE meso_number=?",(meso_number,)).fetchone()
-        rows=c.execute("SELECT exercise,category,day_of_week,target_weight,target_reps,movement_type,COALESCE(schedule_origin_day,day_of_week) FROM workout_sessions WHERE meso_number=? AND week=? ORDER BY id",(meso_number,str(source_week))).fetchall()
-        library={r[0]:r[1:] for r in c.execute("SELECT name,category,COALESCE(movement_type,'Isolation') FROM exercise_dict").fetchall()}
-    latest={r[0]:r for r in rows};template=[];seen=set();blueprint={}
-    try:blueprint=json.loads(cfg[0]) if cfg and cfg[0] else {}
-    except Exception:blueprint={}
-    if isinstance(blueprint,dict) and blueprint:
+        cfg = c.execute(
+            "SELECT blueprint_json FROM meso_configs WHERE meso_number=?", (meso_number,)
+        ).fetchone()
+        rows = c.execute(
+            "SELECT exercise,category,day_of_week,target_weight,target_reps,movement_type,"
+            "COALESCE(schedule_origin_day,day_of_week),COALESCE(workout_order,id),"
+            "exercise_group_id,group_position FROM workout_sessions "
+            "WHERE meso_number=? AND week=? ORDER BY COALESCE(workout_order,id),id",
+            (meso_number, str(source_week)),
+        ).fetchall()
+        library = {r[0]: r[1:] for r in c.execute(
+            "SELECT name,category,COALESCE(movement_type,'Isolation') FROM exercise_dict"
+        ).fetchall()}
+        identities = _recurring_identity_rows(c)
+    try:
+        blueprint = json.loads(cfg[0]) if cfg and cfg[0] else {}
+    except (TypeError, ValueError, json.JSONDecodeError):
+        blueprint = {}
+    latest = {}
+    for row in rows:
+        key = (_recurring_identity(row[0], identities), row[6] or row[2])
+        latest[key] = row
+    template = []
+    seen = set()
+    if isinstance(blueprint, dict) and blueprint:
         for day in PLAN_DAYS:
-            for exercise in blueprint.get(day,[]) or []:
-                if exercise in seen:continue
-                prior=latest.get(exercise);lib=library.get(exercise,("General","Isolation"))
-                template.append({"exercise":exercise,"category":prior[1] if prior else lib[0],"day":day,"target_weight":prior[3] if prior else None,"target_reps":prior[4] if prior else None,"movement_type":prior[5] if prior else lib[1]});seen.add(exercise)
-    # Preserve recurring additions absent from an older blueprint, but always use origin day.
-    for r in rows:
-        if r[0] in seen:continue
-        template.append({"exercise":r[0],"category":r[1],"day":r[6] or r[2],"target_weight":r[3],"target_reps":r[4],"movement_type":r[5]});seen.add(r[0])
-    return template
+            for position, member in enumerate(blueprint.get(day, []) or [], 1):
+                if isinstance(member, str):
+                    exercise = member; explicit = None; order = position; group = None; group_position = None
+                elif isinstance(member, dict) and member.get("exercise"):
+                    exercise = member["exercise"]; explicit = member.get("identity_key")
+                    order = int(member.get("order", position)); group = member.get("group")
+                    group_position = member.get("group_position")
+                else:
+                    continue
+                identity_key = _recurring_identity(exercise, identities, explicit)
+                recurrence_key = (identity_key, day)
+                if recurrence_key in seen:
+                    continue
+                prior = latest.get(recurrence_key)
+                if prior:
+                    exercise = prior[0]
+                lib = library.get(exercise, ("General", "Isolation"))
+                template.append({
+                    "exercise": exercise, "identity_key": identity_key,
+                    "category": prior[1] if prior else lib[0], "day": day,
+                    "target_weight": prior[3] if prior else None,
+                    "target_reps": prior[4] if prior else None,
+                    "movement_type": prior[5] if prior else lib[1],
+                    "workout_order": order, "exercise_group_id": group,
+                    "group_position": group_position,
+                })
+                seen.add(recurrence_key)
+    # Legacy safety: preserve source-week additions not yet represented in the blueprint.
+    for row in rows:
+        day = row[6] or row[2]
+        identity_key = _recurring_identity(row[0], identities)
+        recurrence_key = (identity_key, day)
+        if recurrence_key in seen:
+            continue
+        template.append({
+            "exercise": row[0], "identity_key": identity_key, "category": row[1],
+            "day": day, "target_weight": row[3], "target_reps": row[4],
+            "movement_type": row[5], "workout_order": row[7],
+            "exercise_group_id": row[8], "group_position": row[9],
+        })
+        seen.add(recurrence_key)
+    return sorted(template, key=lambda item: (
+        PLAN_DAYS.index(item["day"]) if item["day"] in PLAN_DAYS else 99,
+        int(item.get("workout_order") or 999), item["exercise"],
+    ))
 
 def validate_generated_week(meso_number,week):
     with get_db() as c:

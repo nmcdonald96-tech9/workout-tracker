@@ -2139,6 +2139,13 @@ class WorkoutTrackerApp:
         category_options = [ft.dropdown.Option(c) for c in ex_dict.keys()]
         if "Custom" not in ex_dict.keys(): category_options.append(ft.dropdown.Option("Custom"))
         self.wizard_cat_dropdown = ft.Dropdown(label="Category", value="Chest", expand=True, text_size=12, options=category_options)
+        self.wizard_add_scope = ft.Dropdown(
+            label="Add to", value="current", expand=True, text_size=12, dense=True,
+            options=[
+                ft.dropdown.Option(key="current", text="This workout only"),
+                ft.dropdown.Option(key="current_and_future", text="This and future workouts"),
+            ],
+        )
 
         self.wizard_exercise_dropdown = ft.Dropdown(
             label="Pick Exercise", value=self.first_valid_exercise, expand=True, text_size=12,
@@ -2539,7 +2546,10 @@ class WorkoutTrackerApp:
                 enqueue_cloud_backup('automatic: persistent superset changed')
                 self.schedule_automatic_cloud_backup();refresh(True)
                 message=('Superset group removed.' if remove else 'Superset group created.')
-                message+=f' Future workouts updated: {result.future_updated}.'
+                if result.blueprint_updated and result.future_updated == 0:
+                    message+=' Saved to the recurring plan; no future workout has been generated yet.'
+                else:
+                    message+=f' Future workouts updated: {result.future_updated}.'
                 skipped=result.skipped_started+result.skipped_missing+result.skipped_conflict+result.skipped_exception
                 if skipped:message+=f' Skipped safely: {skipped}.'
                 refresh_workout_after_group_change(message)
@@ -7432,11 +7442,21 @@ class WorkoutTrackerApp:
             return
         with get_db() as conn:
             cursor = conn.cursor()
+            cursor.execute("BEGIN IMMEDIATE")
+            next_order=cursor.execute(
+                "SELECT COALESCE(MAX(workout_order),0)+1 FROM workout_sessions "
+                "WHERE meso_number=? AND week=? AND day_of_week=?",
+                (self.current_meso,str(self.current_week),self.current_day),
+            ).fetchone()[0]
             cursor.execute(
-                "INSERT INTO workout_sessions (date, exercise, category, day_of_week, week, target_weight, target_reps, status, movement_type, meso_number) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (today_str, ex_name, cat, self.current_day, self.current_week, w, r, STATUS_PENDING, m_type, self.current_meso)
+                "INSERT INTO workout_sessions (date, exercise, category, day_of_week, week, target_weight, target_reps, status, movement_type, meso_number, schedule_origin_day, workout_order) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (today_str, ex_name, cat, self.current_day, self.current_week, w, r, STATUS_PENDING, m_type, self.current_meso, self.current_day, next_order)
             )
+            if self.wizard_add_scope.value == "current_and_future":
+                add_exercise_to_recurring_blueprint(
+                    conn,self.current_meso,self.current_day,ex_name,
+                )
             conn.commit()
             
         self.show_add_form = False
@@ -7595,17 +7615,24 @@ class WorkoutTrackerApp:
             today_str=datetime.now().strftime("%Y-%m-%d");new_sessions=[]
             with get_db() as conn:
                 cursor=conn.cursor();cursor.execute("BEGIN IMMEDIATE")
-                existing={r[0] for r in cursor.execute("SELECT exercise FROM workout_sessions WHERE meso_number=? AND week=?",(self.current_meso,next_w)).fetchall()}
+                existing={
+                    (database.recurring_identity_for(conn,row[0]),row[1] or row[2])
+                    for row in cursor.execute(
+                        "SELECT exercise,schedule_origin_day,day_of_week FROM workout_sessions "
+                        "WHERE meso_number=? AND week=?",(self.current_meso,next_w)
+                    ).fetchall()
+                }
                 for item in template:
                     ex=item["exercise"]
-                    if ex in existing:continue
+                    recurrence_key=(item["identity_key"],item["day"])
+                    if recurrence_key in existing:continue
                     try:new_w,new_r,_=get_exercise_smart_defaults(ex,self.current_meso)
                     except Exception:
                         is_bw=EXERCISE_METADATA.get(ex,{}).get("equipment")=="Bodyweight";new_w=float(item["target_weight"]) if item["target_weight"] is not None else (0.0 if is_bw else 45.0);new_r=int(item["target_reps"] or 10)
                     if mode=="Deload":
                         is_bw=EXERCISE_METADATA.get(ex,{}).get("equipment")=="Bodyweight";new_w=new_w if is_bw else new_w*0.65;new_r=max(1,int(item["target_reps"] or 10)//2)
-                    new_sessions.append((today_str,ex,item["category"],item["day"],next_w,new_w,new_r,STATUS_PENDING,item["movement_type"],self.current_meso,item["day"],0,None))
-                cursor.executemany("INSERT INTO workout_sessions(date,exercise,category,day_of_week,week,target_weight,target_reps,status,movement_type,meso_number,schedule_origin_day,schedule_exception,skip_reason) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",new_sessions)
+                    new_sessions.append((today_str,ex,item["category"],item["day"],next_w,new_w,new_r,STATUS_PENDING,item["movement_type"],self.current_meso,item["day"],0,None,item.get("workout_order"),item.get("exercise_group_id"),item.get("group_position")))
+                cursor.executemany("INSERT INTO workout_sessions(date,exercise,category,day_of_week,week,target_weight,target_reps,status,movement_type,meso_number,schedule_origin_day,schedule_exception,skip_reason,workout_order,exercise_group_id,group_position) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",new_sessions)
                 conn.commit()
             report=validate_generated_week(self.current_meso,next_w)
             if not report["ok"]:raise RuntimeError(f"Generated week validation failed: {report}")
@@ -7828,6 +7855,7 @@ class WorkoutTrackerApp:
                     ft.Row([self.wizard_custom_input]),
                     ft.Row([self.wizard_weight_input, self.wizard_reps_input], spacing=10),
                     ft.Row([self.wizard_type_dropdown, self.wizard_cat_dropdown], spacing=10),
+                    ft.Row([self.wizard_add_scope], spacing=10),
                     ft.Row([
                         ft.Container(),
                         ft.Row([cancel_btn, add_btn], spacing=5)
