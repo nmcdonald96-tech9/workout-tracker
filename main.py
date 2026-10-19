@@ -1546,12 +1546,15 @@ class ExerciseCard(ft.Card):
                 set_data["rpe"] = normalized_rpe
                 set_data["done"] = True
                 set_data["completed_at"] = datetime.now().isoformat(timespec="seconds")
-                self.app.set_active_rest_start(set_data["completed_at"])
+                if self.db_id not in self.app.completed_revision_sessions:
+                    self.app.set_active_rest_start(set_data["completed_at"])
             else:
                 set_data["done"] = False
                 set_data["completed_at"] = None
+            autosaved = self.autosave_pending_sets()
+            if not requested_value and self.db_id not in self.app.completed_revision_sessions and autosaved:
                 self.app.sync_active_rest_from_sets()
-            self.autosave_pending_sets()
+                self.app.refresh_rest_timer_pill()
             group_instruction = self.app.resolve_group_flow(self.db_id, set_idx + 1) if requested_value else None
             execution_available = self.app.group_flow_has_target(group_instruction)
             all_done = bool(self.app.sets.get(self.db_id)) and all(bool(x.get("done")) for x in self.app.sets[self.db_id])
@@ -1645,7 +1648,10 @@ class ExerciseCard(ft.Card):
         if self.db_id not in self.app.sets or len(self.app.sets[self.db_id]) <= 1:
             return
         self.app.sets[self.db_id] = remove_last_set(self.app.sets[self.db_id])
-        self.autosave_pending_sets() # Force atomic save
+        autosaved = self.autosave_pending_sets() # Force atomic save
+        if autosaved:
+            self.app.sync_active_rest_from_sets()
+            self.app.refresh_rest_timer_pill()
         self.request_set_structure_refresh("remove_set")
 
     def trigger_delete_warning(self, ev):
