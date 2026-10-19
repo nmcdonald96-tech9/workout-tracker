@@ -91,9 +91,13 @@ jobs:
             https://github.com/flet-dev/flet.git \
             "$RUNNER_TEMP/flet-v0865"
 
-          test -f "$RUNNER_TEMP/flet-v0865/client/pubspec.yaml"
+          TEMPLATE_DIR="$RUNNER_TEMP/flet-v0865/sdk/python/templates/build"
+          TEMPLATE_PUBSPEC="$TEMPLATE_DIR/{{cookiecutter.out_dir}}/pubspec.yaml"
 
-          python - "$RUNNER_TEMP/flet-v0865/client/pubspec.yaml" <<'PY'
+          test -f "$TEMPLATE_DIR/cookiecutter.json"
+          test -f "$TEMPLATE_PUBSPEC"
+
+          python - "$TEMPLATE_PUBSPEC" <<'PY'
           from pathlib import Path
           import sys
 
@@ -101,17 +105,22 @@ jobs:
           source = path.read_text(encoding="utf-8")
 
           old_line = "  jni: 1.0.0\n"
+          count = source.count(old_line)
 
-          if source.count(old_line) != 1:
+          if count > 1:
               raise SystemExit(
-                  "FAIL: expected exactly one JNI 1.0.0 override in "
-                  f"{path}; found {source.count(old_line)}"
+                  "FAIL: expected at most one JNI 1.0.0 override in "
+                  f"{path}; found {count}"
               )
 
-          path.write_text(
-              source.replace(old_line, "", 1),
-              encoding="utf-8",
-          )
+          if count == 1:
+              path.write_text(
+                  source.replace(old_line, "", 1),
+                  encoding="utf-8",
+              )
+              print(f"PASS: removed JNI 1.0.0 override from {path}")
+          else:
+              print(f"PASS: no JNI 1.0.0 override present in {path}")
 
           verified = path.read_text(encoding="utf-8")
 
@@ -119,11 +128,7 @@ jobs:
               raise SystemExit(
                   "FAIL: stale JNI 1.0.0 override remains in template."
               )
-
-          print(f"PASS: removed JNI 1.0.0 override from {path}")
           PY
-
-          grep -q '^name: flet_client$'             "$RUNNER_TEMP/flet-v0865/client/pubspec.yaml"
 
           python -m py_compile main.py database.py constants.py $(find app components services views -type f -name '*.py' -print | tr '\n' ' ')
           python -m pytest -q
@@ -214,7 +219,7 @@ jobs:
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           set -euo pipefail
-          flet build apk --org com.ironcycle --project myapp --product IronCycle --build-version "$APP_VERSION" --build-number "$ANDROID_VERSION_CODE" --android-signing-key-store "$ANDROID_KEYSTORE_PATH" --android-signing-key-store-password "$ANDROID_KEYSTORE_PASSWORD" --android-signing-key-alias "$ANDROID_KEY_ALIAS" --android-signing-key-password "$ANDROID_KEY_PASSWORD" --verbose --template "$RUNNER_TEMP/flet-v0865" --template-dir client
+          flet build apk --org com.ironcycle --project myapp --product IronCycle --build-version "$APP_VERSION" --build-number "$ANDROID_VERSION_CODE" --android-signing-key-store "$ANDROID_KEYSTORE_PATH" --android-signing-key-store-password "$ANDROID_KEYSTORE_PASSWORD" --android-signing-key-alias "$ANDROID_KEY_ALIAS" --android-signing-key-password "$ANDROID_KEY_PASSWORD" --verbose --template "$RUNNER_TEMP/flet-v0865" --template-dir sdk/python/templates/build
 
       - name: Locate and verify APK
         shell: bash
@@ -244,7 +249,7 @@ jobs:
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           set -euo pipefail
-          flet build aab --org com.ironcycle --project myapp --product IronCycle --build-version "$APP_VERSION" --build-number "$ANDROID_VERSION_CODE" --android-signing-key-store "$ANDROID_KEYSTORE_PATH" --android-signing-key-store-password "$ANDROID_KEYSTORE_PASSWORD" --android-signing-key-alias "$ANDROID_KEY_ALIAS" --android-signing-key-password "$ANDROID_KEY_PASSWORD" --verbose --template "$RUNNER_TEMP/flet-v0865" --template-dir client
+          flet build aab --org com.ironcycle --project myapp --product IronCycle --build-version "$APP_VERSION" --build-number "$ANDROID_VERSION_CODE" --android-signing-key-store "$ANDROID_KEYSTORE_PATH" --android-signing-key-store-password "$ANDROID_KEYSTORE_PASSWORD" --android-signing-key-alias "$ANDROID_KEY_ALIAS" --android-signing-key-password "$ANDROID_KEY_PASSWORD" --verbose --template "$RUNNER_TEMP/flet-v0865" --template-dir sdk/python/templates/build
 
       - name: Locate and verify AAB
         shell: bash

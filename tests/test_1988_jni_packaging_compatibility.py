@@ -42,7 +42,7 @@ def test_authentic_workflows_use_patched_flet_0865_template():
         'old_line = "  jni: 1.0.0\\n"',
         'source.replace(old_line, "", 1)',
         '--template "$RUNNER_TEMP/flet-v0865"',
-        "--template-dir client",
+        "--template-dir sdk/python/templates/build",
     )
 
     for workflow in workflows:
