@@ -28,3 +28,10 @@ def test_release_remains_1988_schema_20():
     text = (ROOT / "constants.py").read_text(encoding="utf-8")
     assert 'APP_VERSION = "2.1.0"' in text
     assert "DATABASE_SCHEMA_VERSION = 20" in text
+
+def test_root_pubspec_overrides_jni_1_1_0():
+    text = Path("pubspec.yaml").read_text(encoding="utf-8")
+    assert "dependency_overrides:" in text
+    assert "jni: 1.1.0" in text
+    assert "jni: 1.0.0" not in text
+

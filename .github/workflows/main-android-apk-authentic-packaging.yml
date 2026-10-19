@@ -98,6 +98,9 @@ jobs:
           test -f "$billing_pubspec"
           test -d "$billing_extension"
           grep -q 'jni_flutter: 1.0.3' "$billing_pubspec"
+          test -f pubspec.yaml
+          grep -q '^dependency_overrides:$' pubspec.yaml
+          grep -q '^  jni: 1.1.0$' pubspec.yaml
 
       - name: Stage local Billing extension for isolated Flet packaging
         shell: bash
