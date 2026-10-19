@@ -72,6 +72,9 @@ from services.completed_revision_service import (
 )
 from services.exercise_completion_service import CompletionAction, resolve_completion_action
 from services.superset_execution_service import SupersetExecutionAction, resolve_post_set_action
+from services.persistent_superset_service import (
+    SupersetScope, apply_persistent_superset,
+)
 
 # --- WIFI TRANSFER HARDENING ---
 # Threaded server prevents browser side-requests (favicon/retries) from blocking the
@@ -2482,6 +2485,16 @@ class WorkoutTrackerApp:
         day=ft.Dropdown(label='Day',value=self.current_day,options=[ft.dropdown.Option(x) for x in ordered_day_names()],expand=True)
         selected=set([int(source_session_id)]) if source_session_id else set()
         items=ft.Column(scroll='auto',expand=True,spacing=5)
+        scope=ft.Dropdown(
+            label='Apply superset to',
+            value=SupersetScope.CURRENT.value,
+            options=[
+                ft.dropdown.Option(key=SupersetScope.CURRENT.value,text='This workout only'),
+                ft.dropdown.Option(key=SupersetScope.CURRENT_AND_FUTURE.value,text='This and future workouts'),
+                ft.dropdown.Option(key=SupersetScope.FUTURE.value,text='Future workouts only'),
+            ],
+            dense=True,
+        )
         compact=float(getattr(self.page,'width',0) or 0)<700
         def rows():return [x for x in get_plan_sessions(self.current_meso) if x['week']==week.value and x['day']==day.value]
         def refresh(ev=None):
@@ -2509,15 +2522,33 @@ class WorkoutTrackerApp:
         def refresh_workout_after_group_change(message):
             self.request_structural_refresh('superset_assignment_changed',rebuild_navigation=False,remount_canvas=True)
             self.show_snackbar(message,'green300')
-        def group(ev=None):
+        def apply_group_change(remove=False):
             selected_ids=[x['id'] for x in rows() if x['id'] in selected]
-            if len(selected_ids)<2:self.show_snackbar('Select at least two pending exercises.','amber300');return
-            set_exercise_group(self.current_meso,week.value,day.value,selected_ids);enqueue_cloud_backup('automatic: workout structure changed');self.schedule_automatic_cloud_backup();refresh(True);refresh_workout_after_group_change('Superset group created.')
-        def ungroup(ev=None):
-            if not selected:self.show_snackbar('Select a grouped exercise.','amber300');return
-            clear_exercise_group(self.current_meso,week.value,day.value,next(iter(selected)));enqueue_cloud_backup('automatic: workout structure changed');self.schedule_automatic_cloud_backup();refresh(True);refresh_workout_after_group_change('Superset group removed.')
+            if remove and len(selected_ids)==1:
+                chosen=next((x for x in rows() if x['id']==selected_ids[0]),None)
+                if chosen and chosen.get('group_id'):
+                    selected_ids=[x['id'] for x in rows() if x.get('group_id')==chosen['group_id']]
+            if len(selected_ids) not in (2,3):
+                self.show_snackbar('Select 2 exercises for a superset or 3 for a circuit.','amber300');return
+            try:
+                with get_db() as conn:
+                    result=apply_persistent_superset(
+                        conn,meso=self.current_meso,source_week=week.value,day=day.value,
+                        session_ids=selected_ids,scope=scope.value,remove=remove,
+                    )
+                enqueue_cloud_backup('automatic: persistent superset changed')
+                self.schedule_automatic_cloud_backup();refresh(True)
+                message=('Superset group removed.' if remove else 'Superset group created.')
+                message+=f' Future workouts updated: {result.future_updated}.'
+                skipped=result.skipped_started+result.skipped_missing+result.skipped_conflict+result.skipped_exception
+                if skipped:message+=f' Skipped safely: {skipped}.'
+                refresh_workout_after_group_change(message)
+            except Exception as err:
+                self.show_snackbar(str(err),'red300')
+        def group(ev=None):apply_group_change(False)
+        def ungroup(ev=None):apply_group_change(True)
         week.on_select=refresh;day.on_select=refresh;refresh()
-        dialog=ft.AlertDialog(title=ft.Text('Workout Structure & Supersets',weight='bold',size=18 if compact else 20),content=ft.Container(width=420,height=540,content=ft.Column([ft.Row([week,day]),items,ft.Text('Card arrows move within a muscle group. A arrows change execution order.',size=9,color='white54'),ft.Row([ft.ElevatedButton('Create Group',on_click=group,expand=True),ft.ElevatedButton('Ungroup',on_click=ungroup,expand=True)],spacing=6)],expand=True,spacing=5)),actions=[ft.TextButton('Done',on_click=lambda ev:[self.safe_close(dialog),self.sets.clear(),self.rebuild_entire_display()])],inset_padding=10 if compact else 12,content_padding=12 if compact else 16)
+        dialog=ft.AlertDialog(title=ft.Text('Workout Structure & Supersets',weight='bold',size=18 if compact else 20),content=ft.Container(width=420,height=540,content=ft.Column([ft.Row([week,day]),scope,items,ft.Text('Card arrows move within a muscle group. A arrows change execution order.',size=9,color='white54'),ft.Row([ft.ElevatedButton('Create Group',on_click=group,expand=True),ft.ElevatedButton('Ungroup',on_click=ungroup,expand=True)],spacing=6)],expand=True,spacing=5)),actions=[ft.TextButton('Done',on_click=lambda ev:[self.safe_close(dialog),self.sets.clear(),self.rebuild_entire_display()])],inset_padding=10 if compact else 12,content_padding=12 if compact else 16)
         self.safe_open(dialog)
     def restore_future_schedule(self,e=None):
         try:
