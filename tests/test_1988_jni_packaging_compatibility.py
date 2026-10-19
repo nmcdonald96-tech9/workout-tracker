@@ -36,13 +36,22 @@ def test_authentic_workflows_use_patched_flet_0865_template():
     )
 
     required = (
-        "--branch v0.86.5",
-        "https://github.com/flet-dev/flet.git",
-        "$RUNNER_TEMP/flet-v0865",
+        "releases/download/v0.86.5/flet-build-template.zip",
+        "find \"$TEMPLATE_EXTRACT\"",
+        "-name cookiecutter.json",
+        'TEMPLATE_DIR="$RUNNER_TEMP/flet-v0865-template"',
+        'TEMPLATE_PUBSPEC="$TEMPLATE_DIR/{{cookiecutter.out_dir}}/pubspec.yaml"',
         'old_line = "  jni: 1.0.0\\n"',
         'source.replace(old_line, "", 1)',
-        '--template "$RUNNER_TEMP/flet-v0865"',
+        'git -C "$TEMPLATE_DIR" init',
+        'git -C "$TEMPLATE_DIR" add .',
+        '--template "$RUNNER_TEMP/flet-v0865-template"',
+    )
+
+    forbidden = (
+        "--template-dir client",
         "--template-dir sdk/python/templates/build",
+        "../../../../../packages/flet",
     )
 
     for workflow in workflows:
@@ -50,9 +59,11 @@ def test_authentic_workflows_use_patched_flet_0865_template():
 
         for marker in required:
             assert marker in text, (
-                f"{workflow} is missing required template marker: "
-                f"{marker}"
+                f"{workflow} is missing required marker: {marker}"
             )
 
-        assert "patch_flet_jni_override.py" not in text
-        assert '"flet-cli==0.86.5"' not in text
+        for marker in forbidden:
+            assert marker not in text, (
+                f"{workflow} contains forbidden marker: {marker}"
+            )
+
