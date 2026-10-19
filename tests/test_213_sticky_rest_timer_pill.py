@@ -19,15 +19,15 @@ def test_elapsed_format_and_clock_rollback_are_deterministic():
     assert format_rest_elapsed(3605) == "60:05"
 
 
-def test_phase_boundaries_do_not_claim_recovery():
+def test_phase_boundaries_are_accessible_and_deterministic():
     assert rest_timer_phase(0) == "early"
     assert rest_timer_phase(59) == "early"
-    assert rest_timer_phase(60) == "middle"
-    assert rest_timer_phase(119) == "middle"
-    assert rest_timer_phase(120) == "extended"
-    snapshot = rest_timer_snapshot("2026-10-19T10:00:00", "2026-10-19T10:02:00")
-    assert snapshot.text == "REST 2:00"
-    assert snapshot.phase == "extended"
+    assert rest_timer_phase(60) == "target"
+    assert rest_timer_phase(329) == "target"
+    assert rest_timer_phase(330) == "long"
+    assert rest_timer_snapshot("2026-10-19T10:00:00", "2026-10-19T10:00:59").text == "🟡 EARLY 0:59"
+    assert rest_timer_snapshot("2026-10-19T10:00:00", "2026-10-19T10:01:00").text == "🟢 TARGET 1:00"
+    assert rest_timer_snapshot("2026-10-19T10:00:00", "2026-10-19T10:05:30").text == "🔴 LONG 5:30"
 
 
 def test_latest_completed_timestamp_ignores_pending_and_invalid_rows():

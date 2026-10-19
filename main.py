@@ -72,7 +72,7 @@ from services.completed_revision_service import (
 )
 from services.exercise_completion_service import CompletionAction, resolve_completion_action
 from services.superset_execution_service import SupersetExecutionAction, resolve_post_set_action
-from services.rest_timer_service import latest_completed_timestamp, rest_timer_snapshot
+from services.rest_timer_service import latest_active_workout_completion, rest_timer_snapshot
 from services.persistent_superset_service import (
     SupersetScope, apply_persistent_superset,
 )
@@ -1917,7 +1917,6 @@ class WorkoutTrackerApp:
         self._active_rest_started_at = None
         self._rest_timer_task_started = False
         self._rest_timer_ui_suspended = False
-        self._rest_timer_rendered_phase = None
         self.view_mode = "workout" 
         self.collapsed_categories = {}
         # Quick-nav and active-exercise focus state.
@@ -2280,15 +2279,19 @@ class WorkoutTrackerApp:
         self.refresh_rest_timer_pill()
 
     def sync_active_rest_from_sets(self):
-        self._active_rest_started_at = latest_completed_timestamp(self.sets)
+        # Keep the established coordinator name, but restore authority from the
+        # active workout in SQLite rather than the cross-view card cache.
+        if self.view_mode != "workout":
+            self._active_rest_started_at = None
+            return None
+        with get_db() as conn:
+            self._active_rest_started_at = latest_active_workout_completion(
+                conn,
+                meso_number=self.current_meso,
+                week=self.current_week,
+                day_of_week=self.current_day,
+            )
         return self._active_rest_started_at
-
-    def _rest_timer_colors(self, phase):
-        return {
-            "early": ("cyan900", "cyan100"),
-            "middle": ("teal900", "teal100"),
-            "extended": ("amber900", "amber100"),
-        }.get(phase, ("cyan900", "cyan100"))
 
     def refresh_rest_timer_pill(self):
         text = getattr(self, "rest_timer_text", None)
@@ -2297,8 +2300,6 @@ class WorkoutTrackerApp:
         snapshot = rest_timer_snapshot(self._active_rest_started_at)
         active = self.view_mode == "workout" and snapshot is not None
         text.value = snapshot.text if active else "REST --:--"
-        if snapshot is not None:
-            self._rest_timer_rendered_phase = snapshot.phase
         try:
             text.update()
         except (AssertionError, RuntimeError):
