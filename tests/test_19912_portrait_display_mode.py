@@ -15,7 +15,7 @@ def test_main_workout_screen_has_visible_current_display_mode():
  s=(ROOT/'main.py').read_text()
  assert 'View: {self.current_display_mode().title()} ▾' in s
  assert 'tooltip="Change workout display mode"' in s
- assert '[self.nav_collapse_button, self.display_mode_button]' in s
+ assert '[self.nav_collapse_button, self.rest_timer_slot, self.display_mode_button]' in s
 
 def test_display_mode_has_one_authoritative_mapping():
  b=block('    def apply_display_mode(', '    async def maybe_open_first_setup_wizard')

@@ -2237,23 +2237,27 @@ class WorkoutTrackerApp:
             tooltip="Change workout display mode",
             on_click=self.open_display_mode,
         )
-        self.nav_toggle_row = ft.Row(
-            [self.nav_collapse_button, self.display_mode_button],
-            alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-            spacing=4,
-        )
-        self.rest_timer_text = ft.Text("REST 0:00", size=11, weight="bold", color="cyan100")
+        # Keep the timer in the existing navigation row. The pill remains mounted
+        # with a compact inactive label so Android never has to reveal a hidden or
+        # replace a frozen mounted container when rest begins.
+        self.rest_timer_text = ft.Text("REST --:--", size=10, weight="bold", color="cyan100", no_wrap=True)
         self.rest_timer_pill = ft.Container(
             content=self.rest_timer_text,
             bgcolor="cyan900",
             border_radius=14,
-            padding=ft.Padding(left=10,right=10,top=5,bottom=5),
-            visible=False,
+            padding=ft.Padding(left=8,right=8,top=4,bottom=4),
         )
-        self.sticky_workout_header_host = ft.Container(
-            content=ft.Row([self.rest_timer_pill], alignment=ft.MainAxisAlignment.END),
-            padding=ft.Padding(left=4,right=4,top=1,bottom=2),
+        self.rest_timer_slot = ft.Container(
+            content=self.rest_timer_pill,
+            alignment=ft.Alignment(0,0),
         )
+        self.nav_toggle_row = ft.Row(
+            [self.nav_collapse_button, self.rest_timer_slot, self.display_mode_button],
+            alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            spacing=4,
+        )
+        self.sticky_workout_header_host = ft.Container()
         self.week_header_row = ft.Row([self.week_nav_row], alignment=ft.MainAxisAlignment.START, vertical_alignment=ft.CrossAxisAlignment.CENTER)
         self.day_header_row = ft.Row([self.day_nav_row], alignment=ft.MainAxisAlignment.START, vertical_alignment=ft.CrossAxisAlignment.CENTER)
 
@@ -2287,20 +2291,16 @@ class WorkoutTrackerApp:
         }.get(phase, ("cyan900", "cyan100"))
 
     def refresh_rest_timer_pill(self):
-        pill = getattr(self, "rest_timer_pill", None)
         text = getattr(self, "rest_timer_text", None)
-        if pill is None or text is None:
+        if text is None:
             return
         snapshot = rest_timer_snapshot(self._active_rest_started_at)
-        visible = self.view_mode == "workout" and snapshot is not None
-        pill.visible = visible
+        active = self.view_mode == "workout" and snapshot is not None
+        text.value = snapshot.text if active else "REST --:--"
         if snapshot is not None:
-            text.value = snapshot.text
             self._rest_timer_rendered_phase = snapshot.phase
         try:
-            if visible:
-                text.update()
-            pill.update()
+            text.update()
         except (AssertionError, RuntimeError):
             pass
 

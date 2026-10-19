@@ -47,7 +47,8 @@ def test_latest_completed_timestamp_ignores_pending_and_invalid_rows():
 
 def test_sticky_header_uses_one_app_owned_ticker_and_canonical_completion():
     source = Path("main.py").read_text()
-    assert "self.sticky_workout_header_host = ft.Container(" in source
+    assert "[self.nav_collapse_button, self.rest_timer_slot, self.display_mode_button]" in source
+    assert "self.sticky_workout_header_host = ft.Container()" in source
     assert "self._active_rest_started_at = None" in source
     assert "self._rest_timer_task_started = False" in source
     assert "if self._rest_timer_task_started:" in source
@@ -64,7 +65,8 @@ def test_ticker_updates_pill_only_and_apply_done_keeps_canonical_path():
     assert "rebuild_entire_display" not in loop
     refresh = source[source.index("    def refresh_rest_timer_pill("):source.index("    def ensure_rest_timer_task(")]
     assert "text.update()" in refresh
-    assert "pill.update()" in refresh
+    assert "pill.update()" not in refresh
+    assert "pill.visible" not in refresh
     assert "page.update()" not in refresh
     picker = source[source.index("    def make_rpe_picker_handler("):source.index("    def prepare_rep_nudge_weight(")]
     assert "self.make_set_done_handler(set_idx)(completion_event)" in picker
@@ -77,7 +79,8 @@ def test_lifecycle_resume_recalculates_and_non_workout_routes_hide_pill():
     assert "self.sync_active_rest_from_sets()" in lifecycle
     assert "self.refresh_rest_timer_pill()" in lifecycle
     refresh = source[source.index("    def refresh_rest_timer_pill("):source.index("    def ensure_rest_timer_task(")]
-    assert 'visible = self.view_mode == "workout" and snapshot is not None' in refresh
+    assert 'active = self.view_mode == "workout" and snapshot is not None' in refresh
+    assert 'text.value = snapshot.text if active else "REST --:--"' in refresh
 
 
 def test_rest_storage_and_analytics_floor_are_untouched():
@@ -89,3 +92,12 @@ def test_rest_storage_and_analytics_floor_are_untouched():
     constants = Path("constants.py").read_text()
     assert 'APP_VERSION = "2.1.0"' in constants
     assert "DATABASE_SCHEMA_VERSION = 20" in constants
+
+def test_timer_shares_existing_navigation_row_without_adding_header_height():
+    source = Path("main.py").read_text()
+    shell = source[source.index("        self.nav_collapse_button ="):source.index("        self.page.add(")]
+    assert "self.rest_timer_slot" in shell
+    assert "[self.nav_collapse_button, self.rest_timer_slot, self.display_mode_button]" in shell
+    assert "self.sticky_workout_header_host = ft.Container()" in shell
+    assert "content=ft.Row([self.rest_timer_pill]" not in shell
+    assert 'self.rest_timer_text = ft.Text("REST --:--"' in shell
