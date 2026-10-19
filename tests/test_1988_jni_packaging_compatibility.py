@@ -29,9 +29,29 @@ def test_release_remains_1988_schema_20():
     assert 'APP_VERSION = "2.1.0"' in text
     assert "DATABASE_SCHEMA_VERSION = 20" in text
 
-def test_root_pubspec_overrides_jni_1_1_0():
-    text = Path("pubspec.yaml").read_text(encoding="utf-8")
-    assert "dependency_overrides:" in text
-    assert "jni: 1.1.0" in text
-    assert "jni: 1.0.0" not in text
+def test_authentic_workflows_use_patched_flet_0865_template():
+    workflows = (
+        Path(".github/workflows/main-android-apk-authentic-packaging.yml"),
+        Path(".github/workflows/main-android-apk-aab-authentic-packaging.yml"),
+    )
 
+    required = (
+        "--branch v0.86.5",
+        "https://github.com/flet-dev/flet.git",
+        "$RUNNER_TEMP/flet-v0865",
+        'old_line = "  jni: 1.0.0\\n"',
+        'source.replace(old_line, "", 1)',
+        '--template "$RUNNER_TEMP/flet-v0865/client"',
+    )
+
+    for workflow in workflows:
+        text = workflow.read_text(encoding="utf-8")
+
+        for marker in required:
+            assert marker in text, (
+                f"{workflow} is missing required template marker: "
+                f"{marker}"
+            )
+
+        assert "patch_flet_jni_override.py" not in text
+        assert '"flet-cli==0.86.5"' not in text

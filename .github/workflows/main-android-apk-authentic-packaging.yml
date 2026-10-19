@@ -84,6 +84,47 @@ jobs:
           set -euo pipefail
           python -m pip install --upgrade pip
           python -m pip install "flet==0.86.5" "msal==1.39.0" "requests==2.34.2" "PyJWT==2.15.1" "cryptography==48.0.0" pytest pyyaml
+          rm -rf "$RUNNER_TEMP/flet-v0865"
+          git clone \
+            --depth 1 \
+            --branch v0.86.5 \
+            https://github.com/flet-dev/flet.git \
+            "$RUNNER_TEMP/flet-v0865"
+
+          test -f "$RUNNER_TEMP/flet-v0865/client/pubspec.yaml"
+
+          python - "$RUNNER_TEMP/flet-v0865/client/pubspec.yaml" <<'PY'
+          from pathlib import Path
+          import sys
+
+          path = Path(sys.argv[1])
+          source = path.read_text(encoding="utf-8")
+
+          old_line = "  jni: 1.0.0\n"
+
+          if source.count(old_line) != 1:
+              raise SystemExit(
+                  "FAIL: expected exactly one JNI 1.0.0 override in "
+                  f"{path}; found {source.count(old_line)}"
+              )
+
+          path.write_text(
+              source.replace(old_line, "", 1),
+              encoding="utf-8",
+          )
+
+          verified = path.read_text(encoding="utf-8")
+
+          if "jni: 1.0.0" in verified:
+              raise SystemExit(
+                  "FAIL: stale JNI 1.0.0 override remains in template."
+              )
+
+          print(f"PASS: removed JNI 1.0.0 override from {path}")
+          PY
+
+          grep -q '^name: flet_client$'             "$RUNNER_TEMP/flet-v0865/client/pubspec.yaml"
+
           python -m py_compile main.py database.py constants.py $(find app components services views -type f -name '*.py' -print | tr '\n' ' ')
           python -m pytest -q
           python - <<'PY'
@@ -98,9 +139,6 @@ jobs:
           test -f "$billing_pubspec"
           test -d "$billing_extension"
           grep -q 'jni_flutter: 1.0.3' "$billing_pubspec"
-          test -f pubspec.yaml
-          grep -q '^dependency_overrides:$' pubspec.yaml
-          grep -q '^  jni: 1.1.0$' pubspec.yaml
 
       - name: Stage local Billing extension for isolated Flet packaging
         shell: bash
@@ -176,7 +214,7 @@ jobs:
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           set -euo pipefail
-          flet build apk --org com.ironcycle --project myapp --product IronCycle --build-version "$APP_VERSION" --build-number "$ANDROID_VERSION_CODE" --android-signing-key-store "$ANDROID_KEYSTORE_PATH" --android-signing-key-store-password "$ANDROID_KEYSTORE_PASSWORD" --android-signing-key-alias "$ANDROID_KEY_ALIAS" --android-signing-key-password "$ANDROID_KEY_PASSWORD" --verbose
+          flet build apk --org com.ironcycle --project myapp --product IronCycle --build-version "$APP_VERSION" --build-number "$ANDROID_VERSION_CODE" --android-signing-key-store "$ANDROID_KEYSTORE_PATH" --android-signing-key-store-password "$ANDROID_KEYSTORE_PASSWORD" --android-signing-key-alias "$ANDROID_KEY_ALIAS" --android-signing-key-password "$ANDROID_KEY_PASSWORD" --verbose --template "$RUNNER_TEMP/flet-v0865/client"
 
       - name: Locate and verify APK
         shell: bash
