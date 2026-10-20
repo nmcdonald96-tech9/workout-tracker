@@ -22,7 +22,7 @@ import secrets
 import sys
 
 from constants import *
-from exercise_catalog import BUILTIN_EXERCISE_CATALOG as CANONICAL_EXERCISES
+from exercise_catalog import BUILTIN_EXERCISE_CATALOG as CANONICAL_EXERCISES, resolve_exercise_metadata
 from onboarding_catalog import STARTER_TEMPLATES, EQUIPMENT as ONBOARDING_EQUIPMENT, EXPERIENCE_LEVELS, GOALS as ONBOARDING_GOALS, recommend_starter_template
 from database import *
 from services.rpe_service import RPE_ERROR, normalize_rpe
@@ -73,6 +73,7 @@ from services.completed_revision_service import (
 from services.exercise_completion_service import CompletionAction, resolve_completion_action
 from services.superset_execution_service import SupersetExecutionAction, resolve_post_set_action
 from services.rest_timer_service import latest_active_workout_completion, rest_timer_snapshot
+from services.intra_session_autoregulation_service import evaluate_fatigue_advisory, apply_action
 from services.persistent_superset_service import (
     SupersetScope, apply_persistent_superset,
 )
@@ -124,6 +125,12 @@ class ExerciseCard(ft.Card):
             self.app._autofocus_reps_target = None
         if not hasattr(self.app, "_reps_field_sync_rev"):
             self.app._reps_field_sync_rev = {}
+        if not hasattr(self.app, "_fatigue_advisories"):
+            self.app._fatigue_advisories = {}
+        if not hasattr(self.app, "_fatigue_handled_triggers"):
+            self.app._fatigue_handled_triggers = set()
+        if not hasattr(self.app, "_fatigue_undo_snapshots"):
+            self.app._fatigue_undo_snapshots = {}
         self.app.record_workout_ui_trace("card_created", self.db_id, None, self)
         self.build_card()
         self.app.record_workout_ui_trace(
@@ -873,9 +880,16 @@ class ExerciseCard(ft.Card):
             visible=bool(plate_text)
         )
 
+        advisory = self.app._fatigue_advisories.get(self.db_id)
+        advisory_actions = []
+        if advisory:
+            labels = {"reduce_load":"Reduce load 5%", "reduce_reps":"Reduce reps by 1", "scratch_final":"Scratch final set", "keep_plan":"Keep plan"}
+            advisory_actions = [ft.TextButton(labels[action], data=action, on_click=self.apply_fatigue_action) for action in advisory.actions]
+        elif self.db_id in self.app._fatigue_undo_snapshots:
+            advisory_actions = [ft.TextButton("Undo session adjustment", on_click=self.undo_fatigue_action)]
         self.rpe_warning = ft.Container(
-            content=ft.Text("⚠️ Max effort reached. Drop weight or scratch next set to manage fatigue.", color="amber300", size=10, weight="bold"),
-            bgcolor="amber900", padding=4, border_radius=4, visible=False
+            content=ft.Column([ft.Text(f"High fatigue detected • {advisory.reason}" if advisory else "Session adjustment applied", color="amber200", size=10, weight="bold"), ft.Row(advisory_actions, wrap=True, spacing=2)], spacing=2),
+            bgcolor="amber900", padding=5, border_radius=4, visible=bool(advisory_actions)
         )
 
         for idx, set_data in enumerate(self.app.sets[self.db_id]):
@@ -1432,6 +1446,7 @@ class ExerciseCard(ft.Card):
         self.app.safe_open(dialog)
 
     def repeat_previous_set(self, e=None):
+        self.app._fatigue_advisories.pop(self.db_id, None); self.app._fatigue_undo_snapshots.pop(self.db_id, None)
         sets = self.app.sets.get(self.db_id, [])
         destination = next((i for i, row in enumerate(sets) if not row.get("done")), None)
         if destination is None or destination == 0:
@@ -1496,6 +1511,52 @@ class ExerciseCard(ft.Card):
     def normalize_rpe(value):
         return normalize_rpe(value)
 
+    def _fatigue_metadata(self):
+        meta = resolve_exercise_metadata(self.exercise)
+        return meta.get("equipment", "Other"), meta.get("weight_step"), meta.get("min_weight", 0)
+
+    def evaluate_fatigue_after_save(self, set_idx):
+        if self.db_id in self.app.completed_revision_sessions: return
+        equipment, step, minimum = self._fatigue_metadata()
+        settings = get_effective_progression_settings(self.exercise, self.mov_type, equipment, get_user_age(), get_user_progression_profile())
+        key=(self.db_id,set_idx)
+        advisory=evaluate_fatigue_advisory(rows=self.app.sets[self.db_id],trigger_index=set_idx,targets=self.set_targets,normal_targets=self.normal_set_targets,reduction_threshold=settings["reduction_threshold"],equipment=equipment,weight_step=step,min_weight=minimum,deload=self.app.current_week=="Deload",revision=False,handled=key in self.app._fatigue_handled_triggers)
+        if advisory:
+            self.app._fatigue_advisories[self.db_id]=advisory
+            self.app._fatigue_handled_triggers.add(key)
+
+    def _sync_fatigue_focus_state(self, before_rows):
+        for idx,draft in enumerate(self.app.sets.get(self.db_id, [])):
+            key=(self.db_id,idx)
+            self.app._committed_weight_values[key]=str(draft.get("w", ""))
+            self.app._reps_focus_sync_targets.discard(key)
+            old=before_rows[idx].get("r") if idx < len(before_rows) else None
+            if str(old) != str(draft.get("r")):
+                self.app._reps_field_sync_rev[key]=int(self.app._reps_field_sync_rev.get(key,0))+1
+        for idx in range(len(self.app.sets.get(self.db_id, [])), len(before_rows)):
+            key=(self.db_id,idx)
+            self.app._committed_weight_values.pop(key, None)
+            self.app._reps_focus_sync_targets.discard(key)
+
+    def apply_fatigue_action(self, ev):
+        advisory=self.app._fatigue_advisories.get(self.db_id)
+        if not advisory:return
+        equipment,step,minimum=self._fatigue_metadata(); action=str(getattr(ev.control,"data","") or "")
+        rows,before,changed=apply_action(self.app.sets[self.db_id],action=action,trigger_index=advisory.trigger_index,targets=self.set_targets,equipment=equipment,weight_step=step,min_weight=minimum)
+        self.app.sets[self.db_id]=rows
+        if action != "keep_plan" and changed:self.app._fatigue_undo_snapshots[self.db_id]=before
+        self.app._fatigue_advisories.pop(self.db_id,None)
+        self._sync_fatigue_focus_state(before)
+        if self.autosave_pending_sets():self.request_set_structure_refresh("fatigue_action")
+
+    def undo_fatigue_action(self, ev=None):
+        snapshot=self.app._fatigue_undo_snapshots.pop(self.db_id,None)
+        if snapshot is None:return
+        before=[dict(x) for x in self.app.sets.get(self.db_id,[])]
+        self.app.sets[self.db_id]=[dict(x) for x in snapshot]
+        self._sync_fatigue_focus_state(before)
+        if self.autosave_pending_sets():self.request_set_structure_refresh("fatigue_undo")
+
     def make_set_done_handler(self, set_idx):
         def set_done_changed(ev):
             if not self.app.require_premium("logging workouts"):
@@ -1552,6 +1613,15 @@ class ExerciseCard(ft.Card):
                 set_data["done"] = False
                 set_data["completed_at"] = None
             autosaved = self.autosave_pending_sets()
+            if requested_value and autosaved:
+                # A later completion resolves any ignored earlier advisory.
+                # The newly completed set may replace it with a fresh advisory.
+                self.app._fatigue_advisories.pop(self.db_id, None)
+                self.app._fatigue_undo_snapshots.pop(self.db_id, None)
+                self.evaluate_fatigue_after_save(set_idx)
+            elif not requested_value:
+                self.app._fatigue_advisories.pop(self.db_id, None)
+                self.app._fatigue_handled_triggers.discard((self.db_id, set_idx))
             if not requested_value and self.db_id not in self.app.completed_revision_sessions and autosaved:
                 self.app.sync_active_rest_from_sets()
                 self.app.refresh_rest_timer_pill()
@@ -1633,6 +1703,7 @@ class ExerciseCard(ft.Card):
         return self.app.replace_exercise_card_in_place(self)
 
     def on_add_set(self, ev):
+        self.app._fatigue_advisories.pop(self.db_id, None); self.app._fatigue_undo_snapshots.pop(self.db_id, None)
         if not self.app.require_premium("editing workout prescriptions"):
             return
         if self.db_id not in self.app.sets: return
@@ -1643,6 +1714,7 @@ class ExerciseCard(ft.Card):
         self.request_set_structure_refresh("add_set")
 
     def on_remove_set(self, ev):
+        self.app._fatigue_advisories.pop(self.db_id, None); self.app._fatigue_undo_snapshots.pop(self.db_id, None)
         if not self.app.require_premium("editing workout prescriptions"):
             return
         if self.db_id not in self.app.sets or len(self.app.sets[self.db_id]) <= 1:
@@ -1667,6 +1739,7 @@ class ExerciseCard(ft.Card):
         self.app.safe_open(self.app.delete_dialog)
 
     def on_skip(self, ev):
+        self.app._fatigue_advisories.pop(self.db_id, None); self.app._fatigue_undo_snapshots.pop(self.db_id, None)
         # A completed-exercise revision owns an exact rollback snapshot. Do not
         # allow a stale actions-menu callback to convert that revision into a
         # skipped exercise or discard the snapshot. The visible revision UI
@@ -1706,6 +1779,7 @@ class ExerciseCard(ft.Card):
         self.app.request_structural_refresh("exercise_card_structure", rebuild_navigation=True)
 
     def on_save(self, ev, suppress_refresh=False):
+        self.app._fatigue_advisories.pop(self.db_id, None); self.app._fatigue_undo_snapshots.pop(self.db_id, None)
         if not self.app.require_premium("logging workouts"):
             return
         revision_snapshot = self.app.completed_revision_sessions.get(self.db_id)
@@ -1914,6 +1988,9 @@ class WorkoutTrackerApp:
         self.pr_celebrations = {}
         self.strength_badges = {}
         self.completed_revision_sessions = {}
+        self._fatigue_advisories = {}
+        self._fatigue_handled_triggers = set()
+        self._fatigue_undo_snapshots = {}
         self.meso_just_completed = False
         self.summary_replay_mode = False
         self.summary_return_position = None
@@ -3036,6 +3113,9 @@ class WorkoutTrackerApp:
                 del self.sets[self.delete_dialog_id]
             if self.delete_dialog_id in self.set_touch_times:
                 del self.set_touch_times[self.delete_dialog_id]
+            self._fatigue_advisories.pop(self.delete_dialog_id, None)
+            self._fatigue_undo_snapshots.pop(self.delete_dialog_id, None)
+            self._fatigue_handled_triggers = {key for key in self._fatigue_handled_triggers if key[0] != self.delete_dialog_id}
                 
             self.delete_dialog_id = None
             
@@ -7618,19 +7698,27 @@ class WorkoutTrackerApp:
         except:
             pass
 
+    def clear_fatigue_session_state(self):
+        self._fatigue_advisories.clear()
+        self._fatigue_handled_triggers.clear()
+        self._fatigue_undo_snapshots.clear()
+
     def change_active_meso(self, meso_num):
+        self.clear_fatigue_session_state()
         self.current_meso = meso_num
         self.set_active_position()
         self.rebuild_navigation_headers()
         self.rebuild_entire_display()
 
     def change_active_week(self, week_str):
+        self.clear_fatigue_session_state()
         self.close_week_day_selector()
         self.set_active_position(force_week=week_str)
         self.rebuild_navigation_headers()
         self.rebuild_entire_display()
 
     def change_active_day(self, day_str):
+        self.clear_fatigue_session_state()
         self.close_week_day_selector()
         self.current_day = day_str
         self.rebuild_navigation_headers()
