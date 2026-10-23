@@ -47,7 +47,7 @@ def test_handler_is_active_pending_only_model_first_and_card_local():
     assert "set_idx != active_idx" in block
     assert "nudge_pending_reps(" in block
     assert "self.autosave_pending_sets()" in block
-    assert 'self.request_local_card_refresh("rep_nudge_applied")' in block
+    assert "self.refresh_rep_nudge_feedback(set_idx)" in block
     assert ".update()" not in block
     assert "rebuild_entire_display" not in block
 

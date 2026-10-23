@@ -66,4 +66,4 @@ def test_direct_nudge_prepares_weight_then_applies_one_delta():
     block = method("nudge_active_set_reps", "request_local_card_refresh")
     assert "drafts = self.prepare_rep_nudge_weight(set_idx)" in block
     assert block.index("drafts = self.prepare_rep_nudge_weight(set_idx)") < block.index("updated = nudge_pending_reps(")
-    assert 'self.request_local_card_refresh("rep_nudge_applied")' in block
+    assert "self.refresh_rep_nudge_feedback(set_idx)" in block

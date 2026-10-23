@@ -281,12 +281,22 @@ class ExerciseCard(ft.Card):
             return False
         drafts[set_idx].clear()
         drafts[set_idx].update(updated)
+        # Persistence stays best-effort here, matching direct weight edits. The
+        # already-mutated in-memory draft must still repaint immediately even if
+        # another partial row prevents the card-wide atomic save.
         self.autosave_pending_sets()
+        rev_key = (self.db_id, set_idx)
+        self.app._reps_focus_sync_targets.discard(rev_key)
+        if getattr(self.app, "_autofocus_reps_target", None) == rev_key:
+            self.app._autofocus_reps_target = None
+        self.app._reps_field_sync_rev[rev_key] = int(
+            self.app._reps_field_sync_rev.get(rev_key, 0)
+        ) + 1
         self._pending_reps_visual_refresh = False
         self.app.record_workout_ui_trace(
             "rep_nudge_applied", self.db_id, set_idx, self, delta=int(delta),
         )
-        return self.request_local_card_refresh("rep_nudge_applied")
+        return self.refresh_rep_nudge_feedback(set_idx)
 
     def request_local_card_refresh(self, reason):
         """Coalesce one deferred card-only replacement without moving the workout viewport."""
@@ -317,6 +327,50 @@ class ExerciseCard(ft.Card):
             return False
         runner(refresh_after_event)
         return True
+
+    def refresh_rep_nudge_feedback(self, set_idx):
+        """Paint one direct rep nudge during the active tap callback.
+
+        The model and durable draft are already authoritative. A mounted fast
+        path prevents the Android tap from waiting for a later focus/blur event;
+        stale or frozen ownership falls back to one deferred card replacement.
+        """
+        try:
+            draft = self.app.sets[self.db_id][set_idx]
+            field = self.reps_fields[set_idx]
+            mounted_card = next(
+                (
+                    control for control in self.app.main_canvas.controls
+                    if getattr(control, "key", None) == exercise_anchor_key(self.db_id)
+                ),
+                None,
+            )
+            card_page = getattr(self, "page", None)
+            field_is_current = (
+                mounted_card is self
+                and card_page is not None
+                and getattr(field, "page", None) is card_page
+            )
+            if not field_is_current:
+                raise RuntimeError("stale_rep_nudge_control")
+            rev = int(self.app._reps_field_sync_rev.get((self.db_id, set_idx), 0))
+            field.key = f"reps-{self.db_id}-{set_idx}-{rev}"
+            field.value = str(draft.get("r", ""))
+            plate = calculate_plates_per_side(self.exercise, draft.get("w", 0))
+            self.plate_feedback_label.value = f"Set {set_idx + 1}: {plate}" if plate else ""
+            self.plate_container.visible = bool(plate)
+            self.update()
+            self.app.record_workout_ui_trace(
+                "rep_nudge_feedback_flushed", self.db_id, set_idx, self,
+                control=field, flush_scope="card",
+            )
+            return True
+        except (KeyError, IndexError, AttributeError, RuntimeError, AssertionError) as err:
+            self.app.record_workout_ui_trace(
+                "rep_nudge_feedback_replacement", self.db_id, set_idx, self,
+                error=type(err).__name__,
+            )
+            return self.request_local_card_refresh("rep_nudge_feedback_fallback")
 
     def open_swap_dialog(self, e):
         with get_db() as conn:
